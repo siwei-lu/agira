@@ -1,3 +1,5 @@
+mod config;
+mod init;
 mod project;
 
 use std::process::ExitCode;
@@ -15,6 +17,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Status,
+    Init,
 }
 
 fn main() -> ExitCode {
@@ -31,12 +34,32 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
+        Commands::Init => match resolve_project() {
+            Ok(project) => match init::run_init(&project) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_init(&error)
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
     }
 }
 
 fn exit_code_for(error: &ProjectError) -> ExitCode {
     match error {
         ProjectError::NotInGitRepository | ProjectError::CreateStateDir(_, _) => ExitCode::from(1),
+        _ => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_init(error: &init::InitError) -> ExitCode {
+    match error {
+        init::InitError::NonInteractive | init::InitError::InputEnded => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
 }
