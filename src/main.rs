@@ -1,6 +1,7 @@
 mod config;
 mod init;
 mod project;
+mod tasks;
 
 use std::process::ExitCode;
 

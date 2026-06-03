@@ -162,6 +162,7 @@ fn config_for_stack(stack: &str, commands: Vec<String>, acceptance_testing: &str
         models: default_models(),
         verification: VerificationConfig { commands },
         acceptance_testing: acceptance_testing.to_owned(),
+        max_retries: 3,
         prd_path: None,
     }
 }
