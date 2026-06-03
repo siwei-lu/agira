@@ -8,7 +8,7 @@ use chrono::{DateTime, FixedOffset};
 use thiserror::Error;
 
 use crate::{
-    config::Config,
+    config::{Config, ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, Task, TaskPhase, TaskStore},
 };
@@ -40,7 +40,8 @@ pub enum NextError {
 
 pub fn run_next(project: &Project, prd_path: Option<&Path>) -> Result<(), NextError> {
     let config_path = project.state_dir.join("config.json");
-    let config = load_config(&config_path)?;
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
     let store = TaskStore::new(&project.state_dir, &config)?;
     let prd_content = prd_path.map(read_prd).transpose()?;
     let output = format_next_output(&config, store.all_tasks(), prd_content.as_deref());
@@ -49,16 +50,15 @@ pub fn run_next(project: &Project, prd_path: Option<&Path>) -> Result<(), NextEr
     Ok(())
 }
 
-fn load_config(path: &Path) -> Result<Config, NextError> {
-    let contents = fs::read_to_string(path).map_err(|source| NextError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    serde_json::from_str(&contents).map_err(|source| NextError::ConfigLoad {
-        path: path.to_path_buf(),
-        source,
-    })
+fn map_config_error(error: ConfigError) -> NextError {
+    match error {
+        ConfigError::NotFound { path } => NextError::Io {
+            path,
+            source: io::Error::new(io::ErrorKind::NotFound, "config file not found"),
+        },
+        ConfigError::Read { path, source } => NextError::Io { path, source },
+        ConfigError::Parse { path, source } => NextError::ConfigLoad { path, source },
+    }
 }
 
 fn read_prd(path: &Path) -> Result<String, NextError> {
@@ -133,7 +133,10 @@ fn format_decomposition_prompt(prd_content: &str) -> String {
 }
 
 fn format_task_prompt(task: &Task, config: &Config) -> String {
-    let role = config.models.get(&task.state).unwrap_or(&task.state);
+    let role = config
+        .models
+        .get(&task.state)
+        .unwrap_or(&config.default_model);
     let description = if task.description.is_empty() {
         "No description provided."
     } else {
@@ -283,6 +286,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -356,6 +360,22 @@ mod tests {
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
 
         assert!(prompt.contains("- Agent role: implementer"));
+    }
+
+    #[test]
+    fn task_prompt_uses_default_model_without_phase_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.default_model = "opus".to_owned();
+        config.models.remove("in_progress");
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Implement next", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
+
+        assert!(prompt.contains("- Agent role: opus"));
     }
 
     #[test]

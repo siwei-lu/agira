@@ -1,12 +1,9 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
 use crate::{
-    config::Config,
+    config::{ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -48,7 +45,8 @@ pub fn run_add(
     depends_on: &[String],
 ) -> Result<(), AddError> {
     let config_path = project.state_dir.join("config.json");
-    let config = load_config(&config_path)?;
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
     if config.state_machine.is_empty() {
         return Err(AddError::InvalidConfig {
             path: config_path,
@@ -66,26 +64,12 @@ pub fn run_add(
     )
 }
 
-fn load_config(path: &Path) -> Result<Config, AddError> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(AddError::ConfigNotFound {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(source) => {
-            return Err(AddError::ConfigRead {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
-    };
-
-    serde_json::from_str(&contents).map_err(|source| AddError::ConfigLoad {
-        path: path.to_path_buf(),
-        source,
-    })
+fn map_config_error(error: ConfigError) -> AddError {
+    match error {
+        ConfigError::NotFound { path } => AddError::ConfigNotFound { path },
+        ConfigError::Read { path, source } => AddError::ConfigRead { path, source },
+        ConfigError::Parse { path, source } => AddError::ConfigLoad { path, source },
+    }
 }
 
 fn add_task_flow(
@@ -140,7 +124,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::VerificationConfig,
+        config::{Config, VerificationConfig},
+        global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},
     };
 
@@ -152,6 +137,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -161,12 +147,27 @@ mod tests {
             git_root: temp_dir.path().to_path_buf(),
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
         }
     }
 
     fn write_config(project: &Project, config: &Config) {
         let contents = serde_json::to_vec_pretty(config).unwrap();
         fs::write(project.state_dir.join("config.json"), contents).unwrap();
+    }
+
+    fn write_config_without_max_retries(project: &Project) {
+        fs::write(
+            project.state_dir.join("config.json"),
+            r#"{
+  "stack": "rust",
+  "state_machine": ["enriching", "done"],
+  "models": {},
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
     }
 
     fn test_project_with_config() -> (TempDir, Project, Config) {
@@ -296,6 +297,21 @@ mod tests {
             .map(|task| task.id.as_str())
             .collect();
         assert_eq!(ids, ["task-001", "task-002", "task-003"]);
+    }
+
+    #[test]
+    fn add_task_uses_global_max_retries_when_project_config_omits_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut project = test_project(&temp_dir);
+        project.global_config.default_max_retries = 5;
+        write_config_without_max_retries(&project);
+
+        capture_output(|| run_add(&project, "Uses global retries", None, None, &[]))
+            .0
+            .unwrap();
+
+        let tasks_file = read_tasks(&project);
+        assert_eq!(tasks_file.tasks[0].max_retries, 5);
     }
 
     #[test]

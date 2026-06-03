@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    config::Config,
+    config::{ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, Task, TaskStore},
 };
@@ -74,7 +74,8 @@ pub fn run_status(project: &Project, json: bool) -> Result<(), StatusError> {
     }
 
     let config_path = project.state_dir.join("config.json");
-    let config = load_config(&config_path)?;
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
     let terminal_phase =
         config
             .state_machine
@@ -106,26 +107,12 @@ fn output_raw_json(project: &Project) -> Result<(), StatusError> {
     write_status_output(&contents, &path)
 }
 
-fn load_config(path: &Path) -> Result<Config, StatusError> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(StatusError::ConfigNotFound {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(source) => {
-            return Err(StatusError::ConfigRead {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
-    };
-
-    serde_json::from_str(&contents).map_err(|source| StatusError::ConfigLoad {
-        path: path.to_path_buf(),
-        source,
-    })
+fn map_config_error(error: ConfigError) -> StatusError {
+    match error {
+        ConfigError::NotFound { path } => StatusError::ConfigNotFound { path },
+        ConfigError::Read { path, source } => StatusError::ConfigRead { path, source },
+        ConfigError::Parse { path, source } => StatusError::ConfigLoad { path, source },
+    }
 }
 
 fn format_status_table(tasks: &[Task], terminal_phase: &str) -> String {
@@ -261,7 +248,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::VerificationConfig,
+        config::{Config, VerificationConfig},
+        global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},
     };
 
@@ -277,6 +265,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -286,6 +275,7 @@ mod tests {
             git_root: temp_dir.path().to_path_buf(),
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
         }
     }
 

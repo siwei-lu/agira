@@ -2,6 +2,7 @@ mod add;
 mod config;
 mod done;
 mod fail;
+mod global_config;
 mod init;
 mod next;
 mod project;
@@ -153,7 +154,11 @@ fn main() -> ExitCode {
 
 fn exit_code_for(error: &ProjectError) -> ExitCode {
     match error {
-        ProjectError::NotInGitRepository | ProjectError::CreateStateDir(_, _) => ExitCode::from(1),
+        ProjectError::NotInGitRepository
+        | ProjectError::CreateStateDir(_, _)
+        | ProjectError::GlobalConfig(crate::global_config::GlobalConfigError::Parse { .. }) => {
+            ExitCode::from(1)
+        }
         _ => ExitCode::from(2),
     }
 }

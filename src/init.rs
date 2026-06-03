@@ -47,7 +47,11 @@ pub fn run_init(project: &Project) -> Result<(), InitError> {
         return Err(InitError::NonInteractive);
     }
 
-    let defaults = scan_project(&project.git_root);
+    let defaults = scan_project(
+        &project.git_root,
+        project.global_config.default_max_retries,
+        &project.global_config.default_model,
+    );
     let config_path = project.state_dir.join("config.json");
 
     let stdin = io::stdin();
@@ -65,7 +69,7 @@ fn stdout_is_tty() -> bool {
     (unsafe { libc::isatty(libc::STDOUT_FILENO) }) == 1
 }
 
-fn scan_project(git_root: &Path) -> Config {
+fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
     let _commit_pattern = detect_commit_pattern(git_root);
 
     if git_root.join("Cargo.toml").exists() {
@@ -77,11 +81,13 @@ fn scan_project(git_root: &Path) -> Config {
                 "cargo test".to_owned(),
             ],
             "cli",
+            max_retries,
+            default_model,
         );
     }
 
     if git_root.join("package.json").exists() {
-        return scan_package_json_project(git_root);
+        return scan_package_json_project(git_root, max_retries, default_model);
     }
 
     if git_root.join("go.mod").exists() {
@@ -93,6 +99,8 @@ fn scan_project(git_root: &Path) -> Config {
                 "go test ./...".to_owned(),
             ],
             "api",
+            max_retries,
+            default_model,
         );
     }
 
@@ -105,17 +113,19 @@ fn scan_project(git_root: &Path) -> Config {
                 "python -m pytest".to_owned(),
             ],
             "api",
+            max_retries,
+            default_model,
         );
     }
 
     if git_root.join("pubspec.yaml").exists() {
-        return scan_pubspec_project(git_root);
+        return scan_pubspec_project(git_root, max_retries, default_model);
     }
 
-    config_for_stack("unknown", Vec::new(), "none")
+    config_for_stack("unknown", Vec::new(), "none", max_retries, default_model)
 }
 
-fn scan_package_json_project(git_root: &Path) -> Config {
+fn scan_package_json_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
     let package_json = read_package_json(&git_root.join("package.json"));
     let package_manager = detect_package_manager(git_root, package_json.as_ref());
     let stack = if is_typescript_project(git_root, package_json.as_ref()) {
@@ -126,10 +136,16 @@ fn scan_package_json_project(git_root: &Path) -> Config {
     let commands = package_commands(package_manager, package_json.as_ref());
     let acceptance_testing = package_acceptance_testing(package_json.as_ref());
 
-    config_for_stack(stack, commands, &acceptance_testing)
+    config_for_stack(
+        stack,
+        commands,
+        &acceptance_testing,
+        max_retries,
+        default_model,
+    )
 }
 
-fn scan_pubspec_project(git_root: &Path) -> Config {
+fn scan_pubspec_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
     let contents = fs::read_to_string(git_root.join("pubspec.yaml")).unwrap_or_default();
 
     if contents.contains("flutter:") || contents.contains("sdk: flutter") {
@@ -141,6 +157,8 @@ fn scan_pubspec_project(git_root: &Path) -> Config {
                 "flutter test".to_owned(),
             ],
             "ui",
+            max_retries,
+            default_model,
         )
     } else {
         config_for_stack(
@@ -151,18 +169,27 @@ fn scan_pubspec_project(git_root: &Path) -> Config {
                 "dart test".to_owned(),
             ],
             "cli",
+            max_retries,
+            default_model,
         )
     }
 }
 
-fn config_for_stack(stack: &str, commands: Vec<String>, acceptance_testing: &str) -> Config {
+fn config_for_stack(
+    stack: &str,
+    commands: Vec<String>,
+    acceptance_testing: &str,
+    max_retries: u32,
+    default_model: &str,
+) -> Config {
     Config {
         stack: stack.to_owned(),
         state_machine: default_state_machine(),
         models: default_models(),
         verification: VerificationConfig { commands },
         acceptance_testing: acceptance_testing.to_owned(),
-        max_retries: 3,
+        max_retries,
+        default_model: default_model.to_owned(),
         prd_path: None,
     }
 }
@@ -634,7 +661,7 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("Cargo.toml"), "").unwrap();
 
-        let config = scan_project(git_root.path());
+        let config = scan_project(git_root.path(), 5, "opus");
 
         assert_eq!(config.stack, "rust");
         assert_eq!(
@@ -646,17 +673,21 @@ mod tests {
             ]
         );
         assert_eq!(config.acceptance_testing, "cli");
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.default_model, "opus");
     }
 
     #[test]
     fn slug_defaults_for_unknown() {
         let git_root = TempDir::new().unwrap();
 
-        let config = scan_project(git_root.path());
+        let config = scan_project(git_root.path(), 4, "haiku");
 
         assert_eq!(config.stack, "unknown");
         assert!(config.verification.commands.is_empty());
         assert_eq!(config.acceptance_testing, "none");
+        assert_eq!(config.max_retries, 4);
+        assert_eq!(config.default_model, "haiku");
     }
 
     #[test]
@@ -710,6 +741,8 @@ mod tests {
                 "cargo test".to_owned(),
             ],
             "cli",
+            5,
+            "opus",
         );
 
         write_config(&path, &config).unwrap();
@@ -722,6 +755,11 @@ mod tests {
         assert!(value.get("models").is_some());
         assert!(value.get("verification").is_some());
         assert!(value.get("acceptance_testing").is_some());
+        assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));
+        assert_eq!(
+            value.get("default_model").and_then(Value::as_str),
+            Some("opus")
+        );
         assert!(value.get("prd_path").is_none());
     }
 

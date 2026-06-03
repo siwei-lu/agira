@@ -6,11 +6,14 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::global_config::{GlobalConfig, GlobalConfigError, load_or_create};
+
 #[derive(Debug, Clone)]
 pub struct Project {
     pub git_root: PathBuf,
     pub slug: String,
     pub state_dir: PathBuf,
+    pub global_config: GlobalConfig,
 }
 
 #[derive(Debug, Error)]
@@ -35,6 +38,9 @@ pub enum ProjectError {
 
     #[error("hashed slug collision at {0}")]
     HashSlugCollision(PathBuf),
+
+    #[error(transparent)]
+    GlobalConfig(#[from] GlobalConfigError),
 }
 
 pub fn resolve_project() -> Result<Project, ProjectError> {
@@ -52,6 +58,7 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
 
     fs::create_dir_all(agira_root)
         .map_err(|error| ProjectError::CreateStateDir(agira_root.to_path_buf(), error))?;
+    let global_config = load_or_create(agira_root)?;
 
     let base_slug = slugify(&git_root_basename(&git_root));
     let source_path_content = source_path_content(&git_root);
@@ -76,6 +83,7 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
         git_root,
         slug,
         state_dir,
+        global_config,
     })
 }
 

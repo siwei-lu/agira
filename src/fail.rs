@@ -1,12 +1,9 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
 use crate::{
-    config::Config,
+    config::{ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -55,7 +52,8 @@ pub enum FailError {
 pub fn run_fail(project: &Project, id: &str, reason: Option<&str>) -> Result<(), FailError> {
     let reason = validate_reason(reason)?;
     let config_path = project.state_dir.join("config.json");
-    let config = load_config(&config_path)?;
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
     let terminal_phase =
         config
             .state_machine
@@ -123,26 +121,12 @@ fn validate_reason(reason: Option<&str>) -> Result<&str, FailError> {
     Ok(reason)
 }
 
-fn load_config(path: &Path) -> Result<Config, FailError> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(FailError::ConfigNotFound {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(source) => {
-            return Err(FailError::ConfigRead {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
-    };
-
-    serde_json::from_str(&contents).map_err(|source| FailError::ConfigLoad {
-        path: path.to_path_buf(),
-        source,
-    })
+fn map_config_error(error: ConfigError) -> FailError {
+    match error {
+        ConfigError::NotFound { path } => FailError::ConfigNotFound { path },
+        ConfigError::Read { path, source } => FailError::ConfigRead { path, source },
+        ConfigError::Parse { path, source } => FailError::ConfigLoad { path, source },
+    }
 }
 
 fn map_store_error(error: StoreError, store: &TaskStore, id: &str) -> FailError {
@@ -185,7 +169,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{config::VerificationConfig, tasks::TaskStore};
+    use crate::{
+        config::{Config, VerificationConfig},
+        global_config::GlobalConfig,
+        tasks::TaskStore,
+    };
 
     fn test_config() -> Config {
         Config {
@@ -199,6 +187,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -208,6 +197,7 @@ mod tests {
             git_root: temp_dir.path().to_path_buf(),
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
         }
     }
 

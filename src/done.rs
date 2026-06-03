@@ -1,13 +1,10 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::PathBuf};
 
 use chrono::Utc;
 use thiserror::Error;
 
 use crate::{
-    config::Config,
+    config::{ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -57,7 +54,8 @@ pub fn run_done(project: &Project, id: &str, artifact: Option<&str>) -> Result<(
     }
 
     let config_path = project.state_dir.join("config.json");
-    let config = load_config(&config_path)?;
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
     let terminal_phase =
         config
             .state_machine
@@ -121,26 +119,12 @@ pub fn run_done(project: &Project, id: &str, artifact: Option<&str>) -> Result<(
     Ok(())
 }
 
-fn load_config(path: &Path) -> Result<Config, DoneError> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(DoneError::ConfigNotFound {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(source) => {
-            return Err(DoneError::ConfigRead {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
-    };
-
-    serde_json::from_str(&contents).map_err(|source| DoneError::ConfigLoad {
-        path: path.to_path_buf(),
-        source,
-    })
+fn map_config_error(error: ConfigError) -> DoneError {
+    match error {
+        ConfigError::NotFound { path } => DoneError::ConfigNotFound { path },
+        ConfigError::Read { path, source } => DoneError::ConfigRead { path, source },
+        ConfigError::Parse { path, source } => DoneError::ConfigLoad { path, source },
+    }
 }
 
 fn print_done_output(message: &str) {
@@ -169,7 +153,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::VerificationConfig,
+        config::{Config, VerificationConfig},
+        global_config::GlobalConfig,
         tasks::{StoreError, TaskStore},
     };
 
@@ -185,6 +170,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             stack: "rust".to_owned(),
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -194,6 +180,7 @@ mod tests {
             git_root: temp_dir.path().to_path_buf(),
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
         }
     }
 
