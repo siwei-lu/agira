@@ -1,9 +1,10 @@
 mod config;
 mod init;
+mod next;
 mod project;
 mod tasks;
 
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use project::{ProjectError, resolve_project};
@@ -19,6 +20,10 @@ struct Cli {
 enum Commands {
     Status,
     Init,
+    Next {
+        #[arg(long)]
+        prd: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -41,6 +46,19 @@ fn main() -> ExitCode {
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for_init(&error)
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
+        Commands::Next { prd } => match resolve_project() {
+            Ok(project) => match next::run_next(&project, prd.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(1)
                 }
             },
             Err(error) => {
