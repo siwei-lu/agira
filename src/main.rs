@@ -1,5 +1,6 @@
 mod config;
 mod done;
+mod fail;
 mod init;
 mod next;
 mod project;
@@ -29,6 +30,11 @@ enum Commands {
         id: String,
         #[arg(long)]
         artifact: Option<String>,
+    },
+    Fail {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -85,6 +91,19 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
+        Commands::Fail { id, reason } => match resolve_project() {
+            Ok(project) => match fail::run_fail(&project, &id, reason.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_fail(&error)
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
     }
 }
 
@@ -109,6 +128,28 @@ fn exit_code_for_done(error: &done::DoneError) -> ExitCode {
         MissingArtifact
         | EmptyArtifact
         | TaskNotFound { .. }
+        | AlreadyTerminal { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_fail(error: &fail::FailError) -> ExitCode {
+    use fail::FailError::*;
+
+    match error {
+        MissingReason
+        | EmptyReason
+        | TaskNotFound { .. }
+        | AlreadyFailed { .. }
         | AlreadyTerminal { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }

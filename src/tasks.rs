@@ -323,6 +323,56 @@ impl TaskStore {
 
         self.save(tasks_file)
     }
+
+    pub fn retry_task(&mut self, id: &str, reason: &str) -> Result<(u32, u32), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task_index = tasks_file
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .ok_or(StoreError::NotFound)?;
+        let previous_state = tasks_file.tasks[task_index].state.clone();
+
+        if previous_state == "failed" || previous_state == self.terminal_phase {
+            return Err(StoreError::AlreadyTerminal);
+        }
+
+        let first_phase =
+            self.state_machine
+                .first()
+                .cloned()
+                .ok_or_else(|| StoreError::InvalidTransition {
+                    from: previous_state.clone(),
+                    to: String::new(),
+                })?;
+
+        if !self
+            .state_machine
+            .iter()
+            .any(|state| state == &previous_state)
+        {
+            return Err(StoreError::InvalidTransition {
+                from: previous_state,
+                to: first_phase,
+            });
+        }
+
+        let task = &mut tasks_file.tasks[task_index];
+        let new_retry_count = task.retry_count + 1;
+        let max_retries = task.max_retries;
+        task.retry_count = new_retry_count;
+        task.state = first_phase.clone();
+        task.history.push(HistoryEntry {
+            from: Some(previous_state),
+            to: first_phase,
+            timestamp: Utc::now().to_rfc3339(),
+            reason: format!("retry {new_retry_count}/{max_retries}: {reason}"),
+        });
+
+        self.save(tasks_file)?;
+
+        Ok((new_retry_count, max_retries))
+    }
 }
 
 #[cfg(test)]
@@ -460,6 +510,50 @@ mod tests {
 
         let error = store.fail_task("task-001", "too late").unwrap_err();
         assert!(matches!(error, StoreError::AlreadyTerminal));
+    }
+
+    #[test]
+    fn retry_task_resets_state_and_increments_retry_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let (retry_count, max_retries) = store.retry_task("task-001", "try again").unwrap();
+        let task = store.get_task("task-001").unwrap();
+
+        assert_eq!((retry_count, max_retries), (1, 3));
+        assert_eq!(task.state, "pending");
+        assert_eq!(task.retry_count, 1);
+        let last = task.history.last().unwrap();
+        assert_eq!(last.from.as_deref(), Some("enriching"));
+        assert_eq!(last.to, "pending");
+        assert_eq!(last.reason, "retry 1/3: try again");
+        assert!(DateTime::parse_from_rfc3339(&last.timestamp).is_ok());
+    }
+
+    #[test]
+    fn retry_task_rejects_terminal_states() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("Done", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        let before_done = store.get_task("task-001").unwrap().clone();
+
+        let error = store.retry_task("task-001", "too late").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyTerminal));
+        assert_eq!(store.get_task("task-001").unwrap(), &before_done);
+
+        store.add_task("Failed", "", None, vec![]).unwrap();
+        store.fail_task("task-002", "failed").unwrap();
+        let before_failed = store.get_task("task-002").unwrap().clone();
+
+        let error = store.retry_task("task-002", "too late").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyTerminal));
+        assert_eq!(store.get_task("task-002").unwrap(), &before_failed);
     }
 
     #[test]
