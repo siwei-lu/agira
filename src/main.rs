@@ -58,16 +58,13 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Status { json } => match resolve_project() {
-            Ok(project) => {
-                let _project_slug = &project.slug;
-                match status::run_status(&project, json) {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(error) => {
-                        eprintln!("error: {error}");
-                        exit_code_for_status(&error)
-                    }
+            Ok(project) => match status::run_status(&project, json) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_status(&error)
                 }
-            }
+            },
             Err(error) => {
                 eprintln!("error: {error}");
                 exit_code_for(&error)
@@ -91,7 +88,7 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("error: {error}");
-                    ExitCode::from(1)
+                    exit_code_for_next(&error)
                 }
             },
             Err(error) => {
@@ -182,6 +179,21 @@ fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
             | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
+    }
+}
+
+fn exit_code_for_next(error: &next::NextError) -> ExitCode {
+    match error {
+        next::NextError::PrdNotFound { .. } | next::NextError::ConfigLoad { .. } => {
+            ExitCode::from(1)
+        }
+        next::NextError::Io { .. }
+        | next::NextError::StoreError(crate::tasks::StoreError::Io { .. })
+        | next::NextError::StoreError(crate::tasks::StoreError::Serialize(_))
+        | next::NextError::StoreError(crate::tasks::StoreError::Deserialize(_)) => {
+            ExitCode::from(2)
+        }
+        next::NextError::StoreError(_) => ExitCode::from(1),
     }
 }
 

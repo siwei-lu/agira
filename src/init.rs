@@ -3,7 +3,6 @@ use std::{
     fs,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use serde_json::Value;
@@ -16,9 +15,6 @@ use crate::{
 
 const DEFAULT_STATE_MACHINE: [&str; 4] = ["enriching", "in_progress", "verifying", "done"];
 const ACCEPTANCE_TESTING_VALUES: [&str; 5] = ["cli", "api", "ui", "hybrid", "none"];
-const CONVENTIONAL_COMMIT_TYPES: [&str; 10] = [
-    "feat", "fix", "chore", "docs", "refactor", "test", "perf", "ci", "build", "revert",
-];
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -70,8 +66,6 @@ fn stdout_is_tty() -> bool {
 }
 
 fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
-    let _commit_pattern = detect_commit_pattern(git_root);
-
     if git_root.join("Cargo.toml").exists() {
         return config_for_stack(
             "rust",
@@ -359,63 +353,6 @@ fn dependency_matches(name: &str, markers: &[&str]) -> bool {
             || (*marker == "hapi" && name.contains("hapi"))
             || (*marker == "nest" && name.starts_with("@nestjs/"))
     })
-}
-
-fn detect_commit_pattern(git_root: &Path) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(git_root)
-        .args(["log", "--no-merges", "-10", "--format=%s"])
-        .output();
-
-    let Ok(output) = output else {
-        return "unknown".to_owned();
-    };
-
-    if !output.status.success() {
-        return "unknown".to_owned();
-    }
-
-    let subjects = String::from_utf8_lossy(&output.stdout);
-    let subjects: Vec<&str> = subjects
-        .lines()
-        .map(str::trim)
-        .filter(|subject| !subject.is_empty())
-        .collect();
-
-    if subjects.is_empty() {
-        "unknown".to_owned()
-    } else if subjects
-        .iter()
-        .all(|subject| is_conventional_commit(subject))
-    {
-        "Conventional Commits".to_owned()
-    } else {
-        "unknown/mixed".to_owned()
-    }
-}
-
-fn is_conventional_commit(subject: &str) -> bool {
-    let Some((prefix, _message)) = subject.split_once(": ") else {
-        return false;
-    };
-    let prefix = prefix.strip_suffix('!').unwrap_or(prefix);
-    let commit_type = prefix
-        .split_once('(')
-        .map(|(commit_type, scope)| {
-            if scope.ends_with(')')
-                && scope[..scope.len() - 1].chars().all(|character| {
-                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-                })
-            {
-                commit_type
-            } else {
-                ""
-            }
-        })
-        .unwrap_or(prefix);
-
-    CONVENTIONAL_COMMIT_TYPES.contains(&commit_type)
 }
 
 fn confirm_overwrite<R: BufRead>(path: &Path, reader: &mut R) -> Result<bool, InitError> {
