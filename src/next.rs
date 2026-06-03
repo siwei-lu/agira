@@ -93,10 +93,14 @@ fn format_next_output(config: &Config, tasks: &[Task], prd_content: Option<&str>
     format_non_actionable_summary(tasks)
 }
 
-fn select_next_task<'a>(tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
-    tasks
+fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
+    let terminal_phase = config.state_machine.last()?;
+
+    all_tasks
         .iter()
-        .filter(|task| is_actionable(task, config))
+        .filter(|task| {
+            is_actionable(task, config) && deps_satisfied(task, all_tasks, terminal_phase)
+        })
         .min_by_key(|task| {
             (
                 phase_index(&task.state, config).unwrap_or(usize::MAX),
@@ -115,6 +119,15 @@ fn phase_index(phase: &str, config: &Config) -> Option<usize> {
 fn is_actionable(task: &Task, config: &Config) -> bool {
     config.state_machine.last().is_some_and(|terminal_phase| {
         task.state != *terminal_phase && phase_index(&task.state, config).is_some()
+    })
+}
+
+fn deps_satisfied(task: &Task, all_tasks: &[Task], terminal_phase: &str) -> bool {
+    task.dependencies.iter().all(|dep_id| {
+        all_tasks
+            .iter()
+            .find(|candidate| &candidate.id == dep_id)
+            .is_some_and(|dependency| dependency.state == terminal_phase)
     })
 }
 
@@ -342,6 +355,22 @@ mod tests {
 
         store.add_task("First", "", None, vec![]).unwrap();
         store.add_task("Second", "", None, vec![]).unwrap();
+
+        let selected = select_next_task(store.all_tasks(), &config).unwrap();
+
+        assert_eq!(selected.id, "task-001");
+    }
+
+    #[test]
+    fn test_blocked_task_not_selected() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Blocking task", "", None, vec![]).unwrap();
+        store
+            .add_task("Blocked task", "", None, vec!["task-001".to_owned()])
+            .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 

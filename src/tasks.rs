@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -398,6 +396,7 @@ mod tests {
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
+            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
