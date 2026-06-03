@@ -1,3 +1,4 @@
+mod add;
 mod config;
 mod done;
 mod fail;
@@ -35,6 +36,15 @@ enum Commands {
         id: String,
         #[arg(long)]
         reason: Option<String>,
+    },
+    Add {
+        title: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        prd: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        depends_on: Vec<String>,
     },
 }
 
@@ -104,6 +114,30 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
+        Commands::Add {
+            title,
+            description,
+            prd,
+            depends_on,
+        } => match resolve_project() {
+            Ok(project) => match add::run_add(
+                &project,
+                &title,
+                description.as_deref(),
+                prd.as_deref(),
+                &depends_on,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_add(&error)
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
     }
 }
 
@@ -156,6 +190,22 @@ fn exit_code_for_fail(error: &fail::FailError) -> ExitCode {
         | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_add(error: &add::AddError) -> ExitCode {
+    match error {
+        add::AddError::UnknownDependency { .. }
+        | add::AddError::ConfigNotFound { .. }
+        | add::AddError::ConfigLoad { .. }
+        | add::AddError::InvalidConfig { .. } => ExitCode::from(1),
+        add::AddError::ConfigRead { .. } => ExitCode::from(2),
+        add::AddError::StoreError(store_error) => match store_error {
             crate::tasks::StoreError::Io { .. }
             | crate::tasks::StoreError::Serialize(_)
             | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
