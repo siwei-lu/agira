@@ -202,6 +202,30 @@ impl TaskStore {
         self.tasks_file.tasks.iter().find(|task| task.id == id)
     }
 
+    pub fn record_phase_artifact(
+        &mut self,
+        id: &str,
+        artifact: &str,
+        completed_at: String,
+    ) -> Result<String, StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task = tasks_file
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id)
+            .ok_or(StoreError::NotFound)?;
+        let current_phase = task.state.clone();
+        task.phases.insert(
+            current_phase.clone(),
+            TaskPhase {
+                artifact: artifact.to_owned(),
+                completed_at,
+            },
+        );
+        self.save(tasks_file)?;
+        Ok(current_phase)
+    }
+
     pub fn all_tasks(&self) -> &[Task] {
         &self.tasks_file.tasks
     }

@@ -1,4 +1,5 @@
 mod config;
+mod done;
 mod init;
 mod next;
 mod project;
@@ -23,6 +24,11 @@ enum Commands {
     Next {
         #[arg(long)]
         prd: Option<PathBuf>,
+    },
+    Done {
+        id: String,
+        #[arg(long)]
+        artifact: Option<String>,
     },
 }
 
@@ -66,6 +72,19 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
+        Commands::Done { id, artifact } => match resolve_project() {
+            Ok(project) => match done::run_done(&project, &id, artifact.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_done(&error)
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
     }
 }
 
@@ -80,5 +99,26 @@ fn exit_code_for_init(error: &init::InitError) -> ExitCode {
     match error {
         init::InitError::NonInteractive | init::InitError::InputEnded => ExitCode::from(1),
         _ => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_done(error: &done::DoneError) -> ExitCode {
+    use done::DoneError::*;
+
+    match error {
+        MissingArtifact
+        | EmptyArtifact
+        | TaskNotFound { .. }
+        | AlreadyTerminal { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
     }
 }
