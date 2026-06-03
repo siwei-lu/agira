@@ -5,6 +5,7 @@ mod fail;
 mod init;
 mod next;
 mod project;
+mod status;
 mod tasks;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -21,7 +22,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Init,
     Next {
         #[arg(long)]
@@ -52,10 +56,16 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Status => match resolve_project() {
+        Commands::Status { json } => match resolve_project() {
             Ok(project) => {
-                let _resolved_project = (project.git_root, project.slug, project.state_dir);
-                ExitCode::SUCCESS
+                let _project_slug = &project.slug;
+                match status::run_status(&project, json) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_status(&error)
+                    }
+                }
             }
             Err(error) => {
                 eprintln!("error: {error}");
@@ -152,6 +162,21 @@ fn exit_code_for_init(error: &init::InitError) -> ExitCode {
     match error {
         init::InitError::NonInteractive | init::InitError::InputEnded => ExitCode::from(1),
         _ => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
+    use status::StatusError::*;
+
+    match error {
+        ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } | JsonOutput { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
     }
 }
 
