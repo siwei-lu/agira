@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 
 use chrono::{DateTime, FixedOffset};
 
@@ -41,10 +41,10 @@ pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Op
         .filter(|task| {
             is_actionable(task, config) && deps_satisfied(task, all_tasks, terminal_phase)
         })
-        .min_by_key(|task| {
+        .max_by_key(|task| {
             (
-                phase_index(&task.state, config).unwrap_or(usize::MAX),
-                task_id_number(&task.id),
+                phase_index(&task.state, config).unwrap_or(0),
+                Reverse(task_id_number(&task.id)),
             )
         })
 }
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn select_earliest_phase_wins() {
+    fn select_most_advanced_phase_wins() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
@@ -302,7 +302,7 @@ mod tests {
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
-        assert_eq!(selected.id, "task-002");
+        assert_eq!(selected.id, "task-001");
     }
 
     #[test]
