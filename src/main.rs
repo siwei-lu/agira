@@ -12,45 +12,67 @@ mod tasks;
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use project::{ProjectError, resolve_project};
+use project::{resolve_project, ProjectError};
 
 #[derive(Parser)]
-#[command(name = "agira", color = clap::ColorChoice::Never)]
+#[command(name = "agira", version, disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows")]
 struct Cli {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: Option<bool>,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Show current task status table
     Status {
+        /// Output raw JSON instead of the formatted table
         #[arg(long)]
         json: bool,
     },
+    /// Initialize project configuration interactively
     Init,
+    /// Print the next actionable task prompt for the AI agent
     Next {
+        /// Path to a PRD file to inject as requirements context
         #[arg(long)]
         prd: Option<PathBuf>,
     },
+    /// Advance a task to its next phase, recording an artifact as evidence
     Done {
+        /// Task ID to advance (e.g. task-001)
         id: String,
+        /// Evidence of completion for this phase
         #[arg(long)]
         artifact: Option<String>,
     },
+    /// Record a task failure and retry or terminate based on retry count
     Fail {
+        /// Task ID to fail (e.g. task-001)
         id: String,
+        /// Reason for the failure
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Add a new task to the project
     Add {
+        /// Task title
         title: String,
+        /// Optional longer description of the task
         #[arg(long)]
         description: Option<String>,
+        /// PRD module ID this task implements (e.g. FM-001)
         #[arg(long)]
         prd: Option<String>,
+        /// Comma-separated task IDs this task depends on
         #[arg(long, value_delimiter = ',')]
         depends_on: Vec<String>,
     },
+    /// Print version information
+    Version,
 }
 
 fn main() -> ExitCode {
@@ -146,6 +168,10 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
+        Commands::Version => {
+            println!("agira {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
     }
 }
 
