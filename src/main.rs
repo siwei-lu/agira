@@ -12,7 +12,7 @@ mod tasks;
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use project::{resolve_project, ProjectError};
+use project::{ProjectError, resolve_project};
 
 #[derive(Parser)]
 #[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"))]

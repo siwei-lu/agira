@@ -11,6 +11,7 @@ use crate::global_config::{GlobalConfig, GlobalConfigError, load_or_create};
 #[derive(Debug, Clone)]
 pub struct Project {
     pub git_root: PathBuf,
+    #[allow(dead_code)]
     pub slug: String,
     pub state_dir: PathBuf,
     pub global_config: GlobalConfig,
