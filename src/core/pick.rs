@@ -135,11 +135,11 @@ fn format_task_prompt(task: &Task, config: &Config, just_done: Option<(&str, &st
 
     let steps = if let Some((done_id, done_title)) = just_done {
         format!(
-            "1. Commit all changes from {done_id} \"{done_title}\" with a descriptive commit message.\n2. Spawn a subagent using model `{model}`.\n3. Pass the content between the delimiters below as the subagent's prompt.\n4. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
+            "1. Commit all changes from {done_id} \"{done_title}\" with a descriptive commit message.\n2. Spawn a subagent using model `{model}`.\nThe configured model is `{model}` — escalate to a higher-tier model if the task complexity warrants it.\n3. Pass the content between the delimiters below as the subagent's prompt.\n4. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
         )
     } else {
         format!(
-            "1. Spawn a subagent using model `{model}`.\n2. Pass the content between the delimiters below as the subagent's prompt.\n3. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
+            "1. Spawn a subagent using model `{model}`.\nThe configured model is `{model}` — escalate to a higher-tier model if the task complexity warrants it.\n2. Pass the content between the delimiters below as the subagent's prompt.\n3. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
         )
     };
 
@@ -351,6 +351,7 @@ mod tests {
         assert!(prompt.contains("--- END SUBAGENT PROMPT ---"));
         assert!(prompt.contains("# Agira Task Prompt"));
         assert!(prompt.contains("- Agent role: sonnet"));
+        assert!(prompt.contains("The configured model is `sonnet`"));
     }
 
     #[test]
@@ -392,6 +393,7 @@ mod tests {
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
         assert!(prompt.contains("1. Spawn a subagent"));
+        assert!(prompt.contains("The configured model is `opus`"));
         assert!(prompt.contains("2. Pass the content"));
         assert!(prompt.contains("3. Once the subagent finishes"));
         assert!(!prompt.contains("Commit all changes"));
@@ -413,6 +415,7 @@ mod tests {
 
         assert!(prompt.contains("1. Commit all changes from task-000 \"Previous Task\""));
         assert!(prompt.contains("2. Spawn a subagent"));
+        assert!(prompt.contains("The configured model is `opus`"));
         assert!(prompt.contains("3. Pass the content"));
         assert!(prompt.contains("4. Once the subagent finishes"));
     }
