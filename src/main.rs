@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use project::{resolve_project, ProjectError};
 
 #[derive(Parser)]
-#[command(name = "agira", version, disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows")]
+#[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"))]
 struct Cli {
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
