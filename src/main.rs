@@ -33,8 +33,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Initialize project configuration interactively
-    Init,
+    /// Initialize project configuration
+    Init {
+        #[arg(long)]
+        stack: Option<String>,
+        #[arg(long)]
+        phases: Option<String>,
+        #[arg(long)]
+        models: Option<String>,
+        #[arg(long = "verification-commands")]
+        verification_commands: Option<String>,
+        #[arg(long = "acceptance-testing")]
+        acceptance_testing: Option<String>,
+        #[arg(long = "prd-path")]
+        prd_path: Option<String>,
+    },
     /// Print the next actionable task prompt for the AI agent
     Next {
         /// Path to a PRD file to inject as requirements context
@@ -92,8 +105,25 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
-        Commands::Init => match resolve_project() {
-            Ok(project) => match init::run_init(&project) {
+        Commands::Init {
+            stack,
+            phases,
+            models,
+            verification_commands,
+            acceptance_testing,
+            prd_path,
+        } => match resolve_project() {
+            Ok(project) => match init::run_init(
+                &project,
+                init::InitFlags {
+                    stack,
+                    phases,
+                    models,
+                    verification_commands,
+                    acceptance_testing,
+                    prd_path,
+                },
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("error: {error}");
@@ -188,7 +218,10 @@ fn exit_code_for(error: &ProjectError) -> ExitCode {
 
 fn exit_code_for_init(error: &init::InitError) -> ExitCode {
     match error {
-        init::InitError::NonInteractive | init::InitError::InputEnded => ExitCode::from(1),
+        init::InitError::MissingFlags { .. }
+        | init::InitError::InvalidPhases
+        | init::InitError::InvalidModels
+        | init::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
 }

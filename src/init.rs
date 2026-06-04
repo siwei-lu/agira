@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, BufRead, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -18,14 +17,20 @@ const ACCEPTANCE_TESTING_VALUES: [&str; 5] = ["cli", "api", "ui", "hybrid", "non
 
 #[derive(Debug, Error)]
 pub enum InitError {
-    #[error("agira init requires an interactive terminal")]
-    NonInteractive,
+    #[error(
+        "agira init requires all flags or none; missing: {}",
+        missing.join(" ")
+    )]
+    MissingFlags { missing: Vec<String> },
 
-    #[error("input ended before init completed")]
-    InputEnded,
+    #[error("invalid phases: comma-separated phase names required, no spaces within a name")]
+    InvalidPhases,
 
-    #[error("failed to read stdin")]
-    StdinRead(#[source] io::Error),
+    #[error("invalid models: use comma-separated role=model pairs")]
+    InvalidModels,
+
+    #[error("invalid acceptance-testing: use cli, api, ui, hybrid, or none")]
+    InvalidAcceptanceTesting,
 
     #[error("failed to serialize config")]
     Serialize(#[source] serde_json::Error),
@@ -38,31 +43,59 @@ pub enum InitError {
     },
 }
 
-pub fn run_init(project: &Project) -> Result<(), InitError> {
-    if !stdout_is_tty() {
-        return Err(InitError::NonInteractive);
+#[derive(Debug, Default)]
+pub struct InitFlags {
+    pub stack: Option<String>,
+    pub phases: Option<String>,
+    pub models: Option<String>,
+    pub verification_commands: Option<String>,
+    pub acceptance_testing: Option<String>,
+    pub prd_path: Option<String>,
+}
+
+pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
+    let missing = detect_missing_flags(&flags);
+
+    if !missing.is_empty() {
+        return Err(InitError::MissingFlags { missing });
     }
 
-    let defaults = scan_project(
-        &project.git_root,
-        project.global_config.default_max_retries,
-        &project.global_config.default_model,
-    );
-    let config_path = project.state_dir.join("config.json");
-
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-
-    if !confirm_overwrite(&config_path, &mut reader)? {
+    if !has_required_flags(&flags) {
+        let _defaults = scan_project(
+            &project.git_root,
+            project.global_config.default_max_retries,
+            &project.global_config.default_model,
+        );
+        print!("{}", bare_invocation_prompt());
         return Ok(());
     }
 
-    let config = interview(&mut reader, defaults)?;
-    write_config(&config_path, &config)
-}
+    let stack = flags.stack.as_deref().unwrap_or_default().trim();
+    if stack.is_empty() {
+        return Err(InitError::MissingFlags {
+            missing: vec!["--stack".to_owned()],
+        });
+    }
 
-fn stdout_is_tty() -> bool {
-    (unsafe { libc::isatty(libc::STDOUT_FILENO) }) == 1
+    let config = Config {
+        stack: stack.to_owned(),
+        state_machine: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
+        models: parse_models_flag(flags.models.as_deref().unwrap_or_default())?,
+        verification: VerificationConfig {
+            commands: parse_verification_commands_flag(
+                flags.verification_commands.as_deref().unwrap_or_default(),
+            ),
+        },
+        acceptance_testing: parse_acceptance_testing_flag(
+            flags.acceptance_testing.as_deref().unwrap_or_default(),
+        )?,
+        max_retries: project.global_config.default_max_retries,
+        default_model: project.global_config.default_model.clone(),
+        prd_path: parse_prd_path_flag(flags.prd_path.as_deref()),
+    };
+
+    let config_path = project.state_dir.join("config.json");
+    write_config(&config_path, &config)
 }
 
 fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
@@ -106,6 +139,26 @@ fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Confi
                 "python -m ruff check .".to_owned(),
                 "python -m pytest".to_owned(),
             ],
+            "api",
+            max_retries,
+            default_model,
+        );
+    }
+
+    if git_root.join("pom.xml").exists() {
+        return config_for_stack(
+            "java",
+            vec!["mvn verify".to_owned()],
+            "api",
+            max_retries,
+            default_model,
+        );
+    }
+
+    if git_root.join("build.gradle").exists() || git_root.join("build.gradle.kts").exists() {
+        return config_for_stack(
+            "java",
+            vec!["./gradlew test".to_owned()],
             "api",
             max_retries,
             default_model,
@@ -355,179 +408,192 @@ fn dependency_matches(name: &str, markers: &[&str]) -> bool {
     })
 }
 
-fn confirm_overwrite<R: BufRead>(path: &Path, reader: &mut R) -> Result<bool, InitError> {
-    if !path.exists() {
-        return Ok(true);
-    }
+fn bare_invocation_prompt() -> &'static str {
+    r#"# agira init — agent setup required
 
-    println!("Config already exists. Overwrite? [y/N]");
-    io::stdout().flush().map_err(|source| InitError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+`agira init` was called without flags. Your job: scan this repo, reason about what you find,
+recommend configuration, interview the user, then call `agira init` with all flags filled in.
 
-    let line = read_required_line(reader)?;
-    Ok(line.starts_with('y') || line.starts_with('Y'))
+## Step 1 — Scan the repo
+
+Read and record findings from each of the following before asking the user anything:
+
+1. **Stack markers** — check the repo root for: `Cargo.toml`, `package.json`, `pom.xml`,
+   `build.gradle`, `build.gradle.kts`, `go.mod`, `pyproject.toml`, `pubspec.yaml`.
+   If `package.json` exists, read its content: detect TypeScript (tsconfig.json or `typescript`
+   in devDependencies), package manager (`packageManager` field or lockfiles: `bun.lockb`,
+   `pnpm-lock.yaml`, `yarn.lock`), frontend frameworks (next, vite, react, vue, svelte, angular),
+   backend frameworks (express, fastify, koa, hapi, nest).
+
+2. **Build / test / lint commands** — read `package.json` scripts section, any `Makefile`,
+   CI configs (`.github/workflows/`, `.gitlab-ci.yml`). Record the exact commands.
+
+3. **Project structure** — list top-level directories and key source files to understand
+   whether this is a CLI, library, API, full-stack app, or something else.
+
+4. **Existing AI config** — read `CLAUDE.md`, `.claude/settings.json` if present.
+
+5. **Commit conventions** — run `git log --no-merges -10 --format="%s"` and note the pattern
+   (Conventional Commits, Angular, freeform, etc.).
+
+6. **PRD** — check `docs/prd.md`. If found and it contains `## Functional Modules` with FM-IDs,
+   record its path. Otherwise note it as absent.
+
+## Step 2 — Reason and recommend
+
+After scanning, reason about each flag. For each one, propose 2–3 concrete options ranked by
+fit, with a brief justification. **Do not just show a value and ask "confirm or override?"** —
+the user expects analysis, not confirmation dialogs.
+
+**`--stack`**
+Name the detected language and primary framework. If the repo is a monorepo or has multiple
+stacks, ask which part agira is being set up for before continuing.
+
+**`--phases`**
+Reason about project complexity to propose a state machine:
+- Has a PRD with FM-IDs and multiple reviewers → richer machine makes sense,
+  e.g., `enriching,in_progress,reviewing,verifying,done`
+- Straightforward CLI tool or library with no design phase → leaner is better,
+  e.g., `in_progress,verifying,done`
+- Tiny script or prototype → minimal, e.g., `in_progress,done`
+Present 2 options with a clear trade-off. Format: `phase1,phase2,...`
+
+**`--models`**
+Map roles to models based on what each phase actually does:
+- Code generation, implementation → `sonnet` or `opus` depending on complexity
+- Light verification, linting, formatting checks → `haiku`
+- Architecture review or enrichment with PRD → `opus`
+Propose the specific mapping. Format: `role=model,role=model,...`
+
+**`--verification-commands`**
+From your scan, propose exact commands. Prefer commands found in CI or Makefile over
+anything you infer. If the scan found nothing, say so and ask the user directly.
+Format: `cmd1;cmd2;cmd3`
+
+**`--acceptance-testing`**
+Reason from what you detected:
+- Frontend markers (next, vite, react, vue, svelte, angular) → `ui`
+- Backend markers (express, fastify, koa, nest, Spring, FastAPI, etc.) → `api`
+- Both present → `hybrid`
+- CLI binary or library → `cli`
+- Cannot determine → ask explicitly; do not guess
+Valid values: `cli`, `api`, `ui`, `hybrid`, `none`
+
+**`--prd-path`**
+If you found `docs/prd.md` with FM-IDs, propose it. Otherwise leave blank unless the user
+mentions a requirements document.
+
+## Step 3 — Interview the user
+
+Present your findings and recommendations, one flag at a time. For each:
+1. State what the scan found (one line)
+2. State your recommendation and why (one or two lines)
+3. Offer 2–3 concrete alternatives when the choice isn't obvious
+4. Ask for a decision — not an open-ended "what would you like?"
+
+If the scan clearly determined a value with no ambiguity, confirm it in a single line and
+move on. Only dwell on decisions where multiple options are genuinely reasonable.
+
+## Step 4 — Run agira init
+
+Once all values are confirmed, call:
+
+```sh
+agira init \
+  --stack <stack> \
+  --phases <phase1,phase2,...> \
+  --models <role=model,...> \
+  --verification-commands <cmd1;cmd2;...> \
+  --acceptance-testing <cli|api|ui|hybrid|none> \
+  [--prd-path <path>]
+```
+"#
 }
 
-fn interview<R: BufRead>(reader: &mut R, mut config: Config) -> Result<Config, InitError> {
-    loop {
-        println!("Detected phase list: {}", config.state_machine.join(", "));
-        print!("Confirm phases with Enter or y, or enter comma-separated overrides: ");
-        flush_stdout_for_prompt()?;
-        let line = read_required_line(reader)?;
+fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
+    let required = [
+        ("--stack", flags.stack.as_ref()),
+        ("--phases", flags.phases.as_ref()),
+        ("--models", flags.models.as_ref()),
+        (
+            "--verification-commands",
+            flags.verification_commands.as_ref(),
+        ),
+        ("--acceptance-testing", flags.acceptance_testing.as_ref()),
+    ];
 
-        match parse_state_machine_override(&line, &config.state_machine) {
-            Ok(state_machine) => {
-                config.state_machine = state_machine;
-                break;
-            }
-            Err(message) => println!("{message}"),
-        }
-    }
-
-    loop {
-        println!("Default models: {}", format_models(&config.models));
-        print!("Confirm models with Enter or y, or enter role=model pairs: ");
-        flush_stdout_for_prompt()?;
-        let line = read_required_line(reader)?;
-
-        match parse_models_override(&line, &config.models) {
-            Ok(models) => {
-                config.models = models;
-                break;
-            }
-            Err(message) => println!("{message}"),
-        }
-    }
-
-    println!(
-        "Verification commands: {}",
-        format_commands(&config.verification.commands)
-    );
-    print!("Confirm commands with Enter or y, enter semicolon-separated commands, or none: ");
-    flush_stdout_for_prompt()?;
-    let line = read_required_line(reader)?;
-    config.verification.commands =
-        parse_verification_commands(&line, &config.verification.commands);
-
-    loop {
-        println!("Default acceptance_testing: {}", config.acceptance_testing);
-        print!("Confirm with Enter or y, or enter cli/api/ui/hybrid/none: ");
-        flush_stdout_for_prompt()?;
-        let line = read_required_line(reader)?;
-
-        match parse_acceptance_testing_override(&line, &config.acceptance_testing) {
-            Ok(acceptance_testing) => {
-                config.acceptance_testing = acceptance_testing;
-                break;
-            }
-            Err(message) => println!("{message}"),
-        }
-    }
-
-    print!("Default PRD path (blank to skip):");
-    flush_stdout_for_prompt()?;
-    let line = read_required_line(reader)?;
-    let prd_path = line.trim();
-    config.prd_path = if prd_path.is_empty() {
-        None
+    if required.iter().all(|(_, value)| value.is_none())
+        || required.iter().all(|(_, value)| value.is_some())
+    {
+        Vec::new()
     } else {
-        Some(prd_path.to_owned())
-    };
-
-    Ok(config)
-}
-
-fn flush_stdout_for_prompt() -> Result<(), InitError> {
-    io::stdout().flush().map_err(|source| InitError::Io {
-        path: PathBuf::from("<stdout>"),
-        source,
-    })
-}
-
-fn read_required_line<R: BufRead>(reader: &mut R) -> Result<String, InitError> {
-    let mut line = String::new();
-    let bytes_read = reader.read_line(&mut line).map_err(InitError::StdinRead)?;
-
-    if bytes_read == 0 {
-        return Err(InitError::InputEnded);
+        required
+            .iter()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| (*name).to_owned())
+            .collect()
     }
-
-    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
-fn should_keep_default(input: &str) -> bool {
-    matches!(input.trim(), "" | "y" | "Y")
+fn has_required_flags(flags: &InitFlags) -> bool {
+    flags.stack.is_some()
+        && flags.phases.is_some()
+        && flags.models.is_some()
+        && flags.verification_commands.is_some()
+        && flags.acceptance_testing.is_some()
 }
 
-fn parse_state_machine_override(
-    input: &str,
-    default: &[String],
-) -> Result<Vec<String>, &'static str> {
-    if should_keep_default(input) {
-        return Ok(default.to_vec());
-    }
-
+fn parse_phases_flag(input: &str) -> Result<Vec<String>, InitError> {
     let phases: Vec<String> = input
         .split(',')
         .map(str::trim)
-        .filter(|phase| !phase.is_empty())
         .map(ToOwned::to_owned)
         .collect();
 
     if phases.is_empty()
         || phases
             .iter()
-            .any(|phase| phase.chars().any(char::is_whitespace))
+            .any(|phase| phase.is_empty() || phase.chars().any(char::is_whitespace))
     {
-        Err("invalid phase list; use comma-separated phase names without whitespace")
+        Err(InitError::InvalidPhases)
     } else {
         Ok(phases)
     }
 }
 
-fn parse_models_override(
-    input: &str,
-    default: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, &'static str> {
-    if should_keep_default(input) {
-        return Ok(default.clone());
-    }
-
+fn parse_models_flag(input: &str) -> Result<BTreeMap<String, String>, InitError> {
     let mut models = BTreeMap::new();
+    let mut pairs_seen = 0;
 
-    for pair in input
-        .split(',')
-        .map(str::trim)
-        .filter(|pair| !pair.is_empty())
-    {
-        let Some((role, model)) = pair.split_once('=') else {
-            return Err("invalid models; use comma-separated role=model pairs");
-        };
+    for pair in input.split(',').map(str::trim) {
+        pairs_seen += 1;
+
+        if pair.matches('=').count() != 1 {
+            return Err(InitError::InvalidModels);
+        }
+
+        let (role, model) = pair.split_once('=').ok_or(InitError::InvalidModels)?;
         let role = role.trim();
         let model = model.trim();
 
         if role.is_empty() || model.is_empty() {
-            return Err("invalid models; role and model must be non-empty");
+            return Err(InitError::InvalidModels);
         }
 
         models.insert(role.to_owned(), model.to_owned());
     }
 
-    if models.is_empty() {
-        Err("invalid models; use comma-separated role=model pairs")
+    if pairs_seen == 0 || models.is_empty() {
+        Err(InitError::InvalidModels)
     } else {
         Ok(models)
     }
 }
 
-fn parse_verification_commands(input: &str, default: &[String]) -> Vec<String> {
+fn parse_verification_commands_flag(input: &str) -> Vec<String> {
     let trimmed = input.trim();
 
-    if should_keep_default(trimmed) {
-        default.to_vec()
-    } else if trimmed == "none" {
+    if trimmed == "none" {
         Vec::new()
     } else {
         trimmed
@@ -539,33 +605,21 @@ fn parse_verification_commands(input: &str, default: &[String]) -> Vec<String> {
     }
 }
 
-fn parse_acceptance_testing_override(input: &str, default: &str) -> Result<String, &'static str> {
-    if should_keep_default(input) {
-        return Ok(default.to_owned());
-    }
-
+fn parse_acceptance_testing_flag(input: &str) -> Result<String, InitError> {
     let value = input.trim();
+
     if ACCEPTANCE_TESTING_VALUES.contains(&value) {
         Ok(value.to_owned())
     } else {
-        Err("invalid acceptance_testing; use cli, api, ui, hybrid, or none")
+        Err(InitError::InvalidAcceptanceTesting)
     }
 }
 
-fn format_models(models: &BTreeMap<String, String>) -> String {
-    models
-        .iter()
-        .map(|(role, model)| format!("{role}={model}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_commands(commands: &[String]) -> String {
-    if commands.is_empty() {
-        "none".to_owned()
-    } else {
-        commands.join("; ")
-    }
+fn parse_prd_path_flag(input: Option<&str>) -> Option<String> {
+    input
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
@@ -587,7 +641,7 @@ fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Cursor};
+    use std::fs;
 
     use tempfile::TempDir;
 
@@ -628,42 +682,138 @@ mod tests {
     }
 
     #[test]
-    fn parse_state_machine_override() {
-        let default = default_state_machine();
+    fn slug_defaults_for_java_maven() {
+        let git_root = TempDir::new().unwrap();
+        fs::write(git_root.path().join("pom.xml"), "").unwrap();
 
-        assert_eq!(
-            super::parse_state_machine_override("a,b,c", &default).unwrap(),
-            ["a", "b", "c"]
-        );
-        assert_eq!(
-            super::parse_state_machine_override("", &default).unwrap(),
-            default
-        );
+        let config = scan_project(git_root.path(), 3, "sonnet");
+
+        assert_eq!(config.stack, "java");
+        assert_eq!(config.verification.commands, ["mvn verify"]);
+        assert_eq!(config.acceptance_testing, "api");
     }
 
     #[test]
-    fn parse_models_override() {
-        let default = default_models();
+    fn slug_defaults_for_java_gradle() {
+        let git_root = TempDir::new().unwrap();
+        fs::write(git_root.path().join("build.gradle"), "").unwrap();
 
+        let config = scan_project(git_root.path(), 3, "sonnet");
+
+        assert_eq!(config.stack, "java");
+        assert_eq!(config.verification.commands, ["./gradlew test"]);
+        assert_eq!(config.acceptance_testing, "api");
+    }
+
+    #[test]
+    fn slug_defaults_for_java_gradle_kts() {
+        let git_root = TempDir::new().unwrap();
+        fs::write(git_root.path().join("build.gradle.kts"), "").unwrap();
+
+        let config = scan_project(git_root.path(), 3, "sonnet");
+
+        assert_eq!(config.stack, "java");
+        assert_eq!(config.verification.commands, ["./gradlew test"]);
+        assert_eq!(config.acceptance_testing, "api");
+    }
+
+    #[test]
+    fn parse_phases_flag() {
         assert_eq!(
-            super::parse_models_override("implementer=opus,reviewer=sonnet", &default).unwrap(),
+            super::parse_phases_flag("enriching,in_progress,done").unwrap(),
+            ["enriching", "in_progress", "done"]
+        );
+        assert_eq!(super::parse_phases_flag("done").unwrap(), ["done"]);
+        assert!(matches!(
+            super::parse_phases_flag("in progress"),
+            Err(InitError::InvalidPhases)
+        ));
+        assert!(matches!(
+            super::parse_phases_flag(""),
+            Err(InitError::InvalidPhases)
+        ));
+    }
+
+    #[test]
+    fn parse_models_flag() {
+        assert_eq!(
+            super::parse_models_flag("implementer=opus,reviewer=sonnet").unwrap(),
             BTreeMap::from([
                 ("implementer".to_owned(), "opus".to_owned()),
                 ("reviewer".to_owned(), "sonnet".to_owned()),
             ])
         );
-        assert_eq!(super::parse_models_override("", &default).unwrap(), default);
+        assert!(matches!(
+            super::parse_models_flag("implementer"),
+            Err(InitError::InvalidModels)
+        ));
+        assert!(matches!(
+            super::parse_models_flag("=opus"),
+            Err(InitError::InvalidModels)
+        ));
+        assert!(matches!(
+            super::parse_models_flag("implementer="),
+            Err(InitError::InvalidModels)
+        ));
     }
 
     #[test]
-    fn parse_verification_commands() {
-        let default = vec!["default".to_owned()];
-
+    fn parse_verification_commands_flag() {
+        assert!(super::parse_verification_commands_flag("none").is_empty());
         assert_eq!(
-            super::parse_verification_commands("cmd1;cmd2", &default),
-            ["cmd1", "cmd2"]
+            super::parse_verification_commands_flag(" cargo test ; cargo fmt ; ; "),
+            ["cargo test", "cargo fmt"]
         );
-        assert!(super::parse_verification_commands("none", &default).is_empty());
+        assert_eq!(
+            super::parse_verification_commands_flag("cargo test"),
+            ["cargo test"]
+        );
+    }
+
+    #[test]
+    fn parse_acceptance_testing_flag() {
+        for value in ["cli", "api", "ui", "hybrid", "none"] {
+            assert_eq!(super::parse_acceptance_testing_flag(value).unwrap(), value);
+        }
+        assert!(matches!(
+            super::parse_acceptance_testing_flag("browser"),
+            Err(InitError::InvalidAcceptanceTesting)
+        ));
+    }
+
+    #[test]
+    fn detect_missing_flags() {
+        let all_present = InitFlags {
+            stack: Some("rust".to_owned()),
+            phases: Some("done".to_owned()),
+            models: Some("implementer=sonnet".to_owned()),
+            verification_commands: Some("cargo test".to_owned()),
+            acceptance_testing: Some("cli".to_owned()),
+            prd_path: None,
+        };
+        assert!(super::detect_missing_flags(&all_present).is_empty());
+
+        let partial = InitFlags {
+            stack: Some("rust".to_owned()),
+            phases: Some("done".to_owned()),
+            models: Some("implementer=sonnet".to_owned()),
+            verification_commands: None,
+            acceptance_testing: None,
+            prd_path: None,
+        };
+        assert_eq!(
+            super::detect_missing_flags(&partial),
+            ["--verification-commands", "--acceptance-testing"]
+        );
+
+        assert!(super::detect_missing_flags(&InitFlags::default()).is_empty());
+    }
+
+    #[test]
+    fn bare_invocation_prompt() {
+        let prompt = super::bare_invocation_prompt();
+
+        assert!(prompt.contains("```sh\nagira init \\\n"));
     }
 
     #[test]
@@ -698,18 +848,5 @@ mod tests {
             Some("opus")
         );
         assert!(value.get("prd_path").is_none());
-    }
-
-    #[test]
-    fn overwrite_declined_does_not_change_config() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("config.json");
-        let original = "{\"stack\":\"existing\"}\n";
-        fs::write(&path, original).unwrap();
-        let mut reader = Cursor::new("n\n");
-
-        assert!(!confirm_overwrite(&path, &mut reader).unwrap());
-
-        assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 }

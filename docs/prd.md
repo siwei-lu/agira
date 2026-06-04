@@ -31,17 +31,30 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ### FM-002: `agira init`
 **Priority:** P0
 **Dependencies:** FM-001
-**Description:** One-time project setup. Scans the target repo to detect stack, test/build/lint commands, and commit conventions. Then interviews the user (interactively via stdin/stdout) to configure the state machine, model assignments, verification commands, acceptance testing strategy, and an optional default PRD path. Writes the result to `~/.agira/<slug>/config.json`. Does NOT write any files into the target repo.
+**Description:** One-time project setup. Accepts six flags that fully specify the project configuration and writes `~/.agira/<slug>/config.json` non-interactively. When called with no flags, instead of running an interactive interview it emits a Markdown agent-prompt to stdout that instructs the calling agent to scan the repo, interview the user for each value, and re-invoke `agira init` with all flags filled in. Does NOT write any files into the target repo.
 **Constraints:**
-- Scan detects: language/runtime marker (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`, etc.), test command, lint/format command, and commit message pattern from `git log --no-merges -10 --format="%s"`
-- Interview must cover: (1) state machine — propose a default phase list based on detected stack, let user confirm or edit; (2) model per agent role — propose defaults, let user confirm; (3) verification commands — propose from scan, let user confirm/override; (4) acceptance testing strategy (`cli` / `api` / `ui` / `hybrid` / `none`); (5) default PRD path (optional, may be blank)
-- State machine is stored as an ordered array of phase name strings; the final phase is the terminal-done phase
-- If `~/.agira/<slug>/config.json` already exists, print `Config already exists. Overwrite? [y/N]` and abort on anything other than `y`/`Y`
-- In non-tty mode (stdout is not a terminal), exit 1 with: `error: agira init requires an interactive terminal`
+- Flags (all required when any flag is present; bare invocation with none is valid — see below):
+  - `--stack <name>` — one of: `rust`, `typescript`, `javascript`, `go`, `python`, `dart`, `flutter`, `unknown`
+  - `--phases <phase1,phase2,...>` — ordered comma-separated phase names; no spaces within a name; minimum one phase
+  - `--models <role=model,...>` — comma-separated `role=model` pairs (e.g., `implementer=sonnet,reviewer=sonnet,verifier=haiku`); minimum one pair
+  - `--verification-commands <cmd1;cmd2;...>` — semicolon-separated shell commands, or the literal string `none` for an empty list
+  - `--acceptance-testing <value>` — one of: `cli`, `api`, `ui`, `hybrid`, `none`
+  - `--prd-path <path>` — optional; omit to leave `prd_path` absent from config
+- When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
+- When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
+  1. Instruct the agent to scan the repo root for stack markers (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`) and derive sensible defaults
+  2. List each flag and its purpose so the agent can interview the user to confirm or override each default
+  3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1,phase2,...> ...`)
+- Partial flag sets (some but not all required flags present) exit 1 with: `error: agira init requires all flags or none; missing: --<flag> [--<flag> ...]`
+- `max_retries` and `default_model` are not flags; they are read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
+- No TTY requirement — the command is fully non-interactive in both the flag-driven and bare-invocation paths
 **Acceptance Criteria:**
-- After `agira init` in a TypeScript/Bun repo, `~/.agira/<slug>/config.json` exists and contains `stack`, `state_machine` (array), `models` (object), `verification` (object with `commands` array), `acceptance_testing` (string), and optionally `prd_path`
-- Running `agira init` a second time prompts the user to confirm overwrite; answering `n` leaves config unchanged
-- In a non-tty context (e.g., `echo "" | agira init`), exits 1 with the error message
+- `agira init --stack rust --phases enriching,in_progress,verifying,done --models implementer=sonnet,reviewer=sonnet,verifier=haiku --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with all fields and exits 0
+- `agira init --stack rust --phases enriching,in_progress,verifying,done --models implementer=sonnet,reviewer=sonnet,verifier=haiku --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and exits 0
+- `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent and a fenced `sh` block with the `agira init` command template; exits 0
+- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --models --verification-commands --acceptance-testing`
+- Re-running `agira init` with all flags when config already exists overwrites it silently; `agira status` reflects the new config
+- `agira init --stack rust ... --prd-path docs/prd.md` writes `prd_path: "docs/prd.md"` into config; omitting `--prd-path` leaves the key absent
 
 ---
 
@@ -213,6 +226,9 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 3 — 2026-06-04
+- FM-002: redesign `agira init` from interactive-TTY to flag-driven. Six required flags replace the stdin interview. Bare invocation emits a Markdown agent-prompt to stdout with a fenced command template. Silent overwrite replaces the interactive overwrite confirmation. TTY requirement removed.
+
 ### Round 2 — 2026-06-04
 - FM-010: add help descriptions to all commands/flags and add `version` subcommand + `--version` flag
 
