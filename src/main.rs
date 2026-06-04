@@ -1,10 +1,10 @@
 mod add;
 mod advance;
 mod config;
-mod config_phases;
 mod fail;
 mod global_config;
 mod init;
+mod phase;
 mod pick;
 mod project;
 mod status;
@@ -50,19 +50,21 @@ enum Commands {
         #[arg(long = "prd-path")]
         prd_path: Option<String>,
     },
-    /// Manage project configuration
-    Config {
+    /// Manage workflow phases
+    Phase {
         #[command(subcommand)]
-        command: ConfigCommands,
+        command: PhaseCommands,
     },
     /// Print version information
     Version,
 }
 
 #[derive(Subcommand)]
-enum ConfigCommands {
+enum PhaseCommands {
+    /// List current phases in the state machine
+    Get,
     /// Add, insert, or remove phases in the state machine
-    Phases {
+    Update {
         /// Phase name to add (appended at end unless --after or --before is given)
         #[arg(long)]
         add: Option<String>,
@@ -269,14 +271,27 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
-        Commands::Config { command } => match command {
-            ConfigCommands::Phases {
+        Commands::Phase { command } => match command {
+            PhaseCommands::Get => match resolve_project() {
+                Ok(project) => match phase::run_phase_get(&project) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_phase_get(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            PhaseCommands::Update {
                 add,
                 after,
                 before,
                 remove,
             } => match resolve_project() {
-                Ok(project) => match config_phases::run_config_phases(
+                Ok(project) => match phase::run_phase_update(
                     &project,
                     add.as_deref(),
                     after.as_deref(),
@@ -286,7 +301,7 @@ fn main() -> ExitCode {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
-                        exit_code_for_phases(&error)
+                        exit_code_for_phase_update(&error)
                     }
                 },
                 Err(error) => {
@@ -416,8 +431,17 @@ fn exit_code_for_add(error: &add::AddError) -> ExitCode {
     }
 }
 
-fn exit_code_for_phases(error: &config_phases::PhasesError) -> ExitCode {
-    use config_phases::PhasesError::*;
+fn exit_code_for_phase_get(error: &phase::PhaseGetError) -> ExitCode {
+    use phase::PhaseGetError::*;
+
+    match error {
+        NotFound { .. } | Load { .. } => ExitCode::from(1),
+        Read { .. } => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_phase_update(error: &phase::PhaseUpdateError) -> ExitCode {
+    use phase::PhaseUpdateError::*;
 
     match error {
         NoOperation

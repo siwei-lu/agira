@@ -35,26 +35,26 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Constraints:**
 - Flags (all required when any flag is present; bare invocation with none is valid — see below):
   - `--stack <name>` — one of: `rust`, `typescript`, `javascript`, `go`, `python`, `dart`, `flutter`, `unknown`
-  - `--phases <phase1,phase2,...>` — ordered comma-separated phase names; no spaces within a name; minimum one phase
-  - `--models <role=model,...>` — comma-separated `role=model` pairs (e.g., `implementer=sonnet,reviewer=sonnet,verifier=haiku`); minimum one pair
+  - `--phases <phase1:model1,phase2:model2,...>` — ordered comma-separated `phase:model` pairs; phase name has no spaces; model is a Claude model shortname (e.g. `opus`, `sonnet`, `haiku`); minimum one pair
   - `--verification-commands <cmd1;cmd2;...>` — semicolon-separated shell commands, or the literal string `none` for an empty list
   - `--acceptance-testing <value>` — one of: `cli`, `api`, `ui`, `hybrid`, `none`
   - `--prd-path <path>` — optional; omit to leave `prd_path` absent from config
 - When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
 - When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
   1. Instruct the agent to scan the repo root for stack markers (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`) and derive sensible defaults
-  2. List each flag and its purpose so the agent can interview the user to confirm or override each default
-  3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1,phase2,...> ...`)
+  2. List each flag and its purpose; for `--phases`, include model recommendations per phase type: enriching (design/planning) → `opus`, in_progress (implementation) → `sonnet`, verifying (mechanical checks) → `haiku`, done → `sonnet`; agent should confirm or override with the user
+  3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1:model1,phase2:model2,...> ...`)
 - Partial flag sets (some but not all required flags present) exit 1 with: `error: agira init requires all flags or none; missing: --<flag> [--<flag> ...]`
-- `max_retries` and `default_model` are not flags; they are read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
+- `max_retries` is not a flag; it is read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
 - No TTY requirement — the command is fully non-interactive in both the flag-driven and bare-invocation paths
 **Acceptance Criteria:**
-- `agira init --stack rust --phases enriching,in_progress,verifying,done --models implementer=sonnet,reviewer=sonnet,verifier=haiku --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with all fields and exits 0
-- `agira init --stack rust --phases enriching,in_progress,verifying,done --models implementer=sonnet,reviewer=sonnet,verifier=haiku --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and exits 0
-- `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent and a fenced `sh` block with the `agira init` command template; exits 0
-- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --models --verification-commands --acceptance-testing`
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:sonnet" --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with `phases` as an array of `{name, model}` objects and exits 0
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:sonnet" --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and exits 0
+- `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent including per-phase model recommendations, and a fenced `sh` block with the `agira init` command template; exits 0
+- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --verification-commands --acceptance-testing`
 - Re-running `agira init` with all flags when config already exists overwrites it silently; `agira status` reflects the new config
 - `agira init --stack rust ... --prd-path docs/prd.md` writes `prd_path: "docs/prd.md"` into config; omitting `--prd-path` leaves the key absent
+- `agira init --phases "enriching:badmodel"` exits 1 with `error: unknown model: badmodel` (valid shortnames: `opus`, `sonnet`, `haiku`)
 
 ---
 
@@ -63,7 +63,8 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Dependencies:** FM-001
 **Description:** Manages `~/.agira/<slug>/tasks.json` — the runtime source of truth for all task state. Provides validated read/write operations and enforces state machine transitions defined in `config.json`. Every state change is recorded in the task's `history` array with a timestamp and reason.
 **Constraints:**
-- Task schema: `id` (string, e.g. `task-001`), `title` (string), `description` (string), `state` (string, must match a phase in config or `"failed"`), `prd_module_id` (optional string), `dependencies` (string array), `retry_count` (u32), `max_retries` (u32, default from config or 3), `phases` (object keyed by phase name, each `{artifact: string, completed_at: ISO8601 string}`), `history` (array of `{from, to, timestamp, reason}`), `created_at` (ISO8601 string)
+- Task schema: `id` (string, e.g. `task-001`), `title` (string), `description` (string), `state` (string, must match a phase name in config or `"failed"`), `prd_module_id` (optional string), `dependencies` (string array), `retry_count` (u32), `max_retries` (u32, default from config or 3), `phases` (object keyed by phase name, each `{artifact: string, completed_at: ISO8601 string}`), `history` (array of `{from, to, timestamp, reason}`), `created_at` (ISO8601 string)
+- Config `phases` field schema: array of `{name: string, model: string}` objects in workflow order (e.g. `[{"name": "enriching", "model": "opus"}, {"name": "in_progress", "model": "sonnet"}]`); replaces the former flat `string[]` representation
 - IDs are auto-assigned as `task-001`, `task-002`, ... in insertion order, zero-padded to 3 digits
 - A task may only advance to the next phase in the configured order, or to `"failed"` from any phase
 - A task with any dependency not in the terminal-done phase cannot advance past the first phase
@@ -180,13 +181,35 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Description:** User-wide defaults stored in `~/.agira/config.toml`. Provides fallback values for any project that does not specify them in its own `config.json`.
 **Constraints:**
 - Location: `~/.agira/config.toml`; created with defaults on first run if absent
-- Supported keys: `default_max_retries` (integer, default 3), `default_model` (string, default `"sonnet"`)
+- Supported keys: `default_max_retries` (integer, default 3)
+- `default_model` is removed — model is now configured per phase in `config.json`
 - Project-level `config.json` values always override global config
 - Malformed TOML exits 1: `error: invalid global config at ~/.agira/config.toml: <parse error>`
 **Acceptance Criteria:**
 - On first run with no existing `~/.agira/config.toml`, the file is created with default values
 - Setting `default_max_retries = 5` in `config.toml` causes new projects without an explicit `max_retries` to use 5 as the default
 - A malformed `config.toml` causes any agira command to exit 1 with the parse error message
+
+---
+
+### FM-011: Orchestrator-only prompt pattern in `agira task work`
+**Priority:** P1
+**Dependencies:** FM-002, FM-003
+**Description:** The calling agent is always the orchestrator — it reads `agira task work` output and spawns a subagent to do the actual phase work. `agira task work` must structure its stdout so the orchestrator knows exactly what to delegate and to which model, without ever doing the work itself.
+**Constraints:**
+- The prompt emitted by `agira task work` is split into two logical sections separated by a visible delimiter (`--- SUBAGENT PROMPT ---` / `--- END SUBAGENT PROMPT ---`):
+  1. **Orchestrator preamble** (before the delimiter): instructs the calling agent that it is the orchestrator, must NOT perform the work itself, must spawn a generic subagent using the model specified in this phase's config (`phase.model`), pass the subagent prompt verbatim, collect the subagent's output, and call `agira task work --artifact "<subagent summary>"` when done
+  2. **Subagent prompt** (between the delimiters): the task instructions the subagent will receive — task id, title, current phase name, description, acceptance criteria (if prior enrichment exists), verification commands (if this is a verification phase), and the exact `agira task work --artifact` command the orchestrator should call after
+- The orchestrator preamble includes the model shortname from `config.phases[current].model` (e.g. `opus`, `sonnet`, `haiku`) so the calling agent knows which model to use when spawning the subagent
+- The format must be stable and machine-parseable: the delimiter lines are exact ASCII strings on their own lines
+- No ANSI escape sequences anywhere in the output
+- Exits 0 in all non-error cases; exits 1 only on config/file read errors
+**Acceptance Criteria:**
+- `agira task work` output contains the exact line `--- SUBAGENT PROMPT ---` and later `--- END SUBAGENT PROMPT ---`
+- The orchestrator preamble section contains the model shortname from the current phase's config
+- The orchestrator preamble explicitly states "do not perform this work yourself" (or equivalent unambiguous instruction)
+- The subagent prompt section contains the task title, current phase name, and the `agira task work --artifact` command
+- Output piped through `cat -v` shows no `^[` sequences
 
 ---
 
@@ -226,6 +249,12 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 4 — 2026-06-05
+- FM-002: remove `--models` flag; fold model into `--phases` as `phase:model` pairs (e.g. `enriching:opus,in_progress:sonnet`); bare invocation now recommends model per phase type; remove `default_model` from global config
+- FM-003: config `phases` field changes from `string[]` to `[{name, model}]`
+- FM-009: remove `default_model` from `~/.agira/config.toml` — model is now per-phase in project config
+- FM-011 (new): orchestrator-only prompt pattern — `agira task work` wraps task instructions in a subagent block with an explicit preamble telling the calling agent to delegate, never execute
+
 ### Round 3 — 2026-06-04
 - FM-002: redesign `agira init` from interactive-TTY to flag-driven. Six required flags replace the stdin interview. Bare invocation emits a Markdown agent-prompt to stdout with a fenced command template. Silent overwrite replaces the interactive overwrite confirmation. TTY requirement removed.
 

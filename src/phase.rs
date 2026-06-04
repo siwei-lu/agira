@@ -12,7 +12,27 @@ use crate::{
 };
 
 #[derive(Debug, Error)]
-pub enum PhasesError {
+pub enum PhaseGetError {
+    #[error("config file not found: {path}")]
+    NotFound { path: PathBuf },
+
+    #[error("failed to read {path}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to load config {path}: {source}")]
+    Load {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum PhaseUpdateError {
     #[error("at least one of --add or --remove is required")]
     NoOperation,
 
@@ -56,28 +76,38 @@ pub enum PhasesError {
     StoreError(#[from] StoreError),
 }
 
-pub fn run_config_phases(
+pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
+    let config_path = project.state_dir.join("config.json");
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_get_config_error)?;
+
+    println!("state_machine: {}", config.state_machine.join(" \u{2192} "));
+
+    Ok(())
+}
+
+pub fn run_phase_update(
     project: &Project,
     add: Option<&str>,
     after: Option<&str>,
     before: Option<&str>,
     remove: Option<&str>,
-) -> Result<(), PhasesError> {
+) -> Result<(), PhaseUpdateError> {
     if add.is_none() && remove.is_none() {
-        return Err(PhasesError::NoOperation);
+        return Err(PhaseUpdateError::NoOperation);
     }
 
     if after.is_some() && before.is_some() {
-        return Err(PhasesError::ConflictingPositionFlags);
+        return Err(PhaseUpdateError::ConflictingPositionFlags);
     }
 
     let config_path = project.state_dir.join("config.json");
-    let config =
-        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
+    let config = load_project_config(&config_path, &project.global_config)
+        .map_err(map_update_config_error)?;
 
     if let Some(after) = after {
         if !config.state_machine.contains(&after.to_owned()) {
-            return Err(PhasesError::PhaseNotFound {
+            return Err(PhaseUpdateError::PhaseNotFound {
                 name: after.to_owned(),
             });
         }
@@ -85,7 +115,7 @@ pub fn run_config_phases(
 
     if let Some(before) = before {
         if !config.state_machine.contains(&before.to_owned()) {
-            return Err(PhasesError::PhaseNotFound {
+            return Err(PhaseUpdateError::PhaseNotFound {
                 name: before.to_owned(),
             });
         }
@@ -93,7 +123,7 @@ pub fn run_config_phases(
 
     if let Some(add) = add {
         if config.state_machine.contains(&add.to_owned()) {
-            return Err(PhasesError::DuplicatePhase {
+            return Err(PhaseUpdateError::DuplicatePhase {
                 name: add.to_owned(),
             });
         }
@@ -108,7 +138,7 @@ pub fn run_config_phases(
             .map(|task| task.id.clone())
             .collect();
         if !blocking_ids.is_empty() {
-            return Err(PhasesError::PhaseBusy {
+            return Err(PhaseUpdateError::PhaseBusy {
                 name: remove.to_owned(),
                 task_ids: blocking_ids,
             });
@@ -135,36 +165,38 @@ pub fn run_config_phases(
 
     patch_state_machine(&config_path, &new_phases)?;
 
-    println!("state_machine: {}", new_phases.join(" → "));
+    println!("state_machine: {}", new_phases.join(" \u{2192} "));
 
     Ok(())
 }
 
-fn patch_state_machine(config_path: &Path, new_phases: &[String]) -> Result<(), PhasesError> {
-    let contents = fs::read_to_string(config_path).map_err(|source| PhasesError::ConfigRead {
-        path: config_path.to_path_buf(),
-        source,
-    })?;
+fn patch_state_machine(config_path: &Path, new_phases: &[String]) -> Result<(), PhaseUpdateError> {
+    let contents =
+        fs::read_to_string(config_path).map_err(|source| PhaseUpdateError::ConfigRead {
+            path: config_path.to_path_buf(),
+            source,
+        })?;
 
     let mut value: serde_json::Value =
-        serde_json::from_str(&contents).map_err(|source| PhasesError::ConfigLoad {
+        serde_json::from_str(&contents).map_err(|source| PhaseUpdateError::ConfigLoad {
             path: config_path.to_path_buf(),
             source,
         })?;
 
     value["state_machine"] = serde_json::json!(new_phases);
 
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|source| PhasesError::ConfigLoad {
-        path: config_path.to_path_buf(),
-        source,
-    })?;
+    let bytes =
+        serde_json::to_vec_pretty(&value).map_err(|source| PhaseUpdateError::ConfigLoad {
+            path: config_path.to_path_buf(),
+            source,
+        })?;
 
     let tmp_path = config_path.with_extension("json.tmp");
-    fs::write(&tmp_path, bytes).map_err(|source| PhasesError::ConfigWrite {
+    fs::write(&tmp_path, &bytes).map_err(|source| PhaseUpdateError::ConfigWrite {
         path: config_path.to_path_buf(),
         source,
     })?;
-    fs::rename(&tmp_path, config_path).map_err(|source| PhasesError::ConfigWrite {
+    fs::rename(&tmp_path, config_path).map_err(|source| PhaseUpdateError::ConfigWrite {
         path: config_path.to_path_buf(),
         source,
     })?;
@@ -172,11 +204,19 @@ fn patch_state_machine(config_path: &Path, new_phases: &[String]) -> Result<(), 
     Ok(())
 }
 
-fn map_config_error(error: ConfigError) -> PhasesError {
+fn map_get_config_error(error: ConfigError) -> PhaseGetError {
     match error {
-        ConfigError::NotFound { path } => PhasesError::ConfigNotFound { path },
-        ConfigError::Read { path, source } => PhasesError::ConfigRead { path, source },
-        ConfigError::Parse { path, source } => PhasesError::ConfigLoad { path, source },
+        ConfigError::NotFound { path } => PhaseGetError::NotFound { path },
+        ConfigError::Read { path, source } => PhaseGetError::Read { path, source },
+        ConfigError::Parse { path, source } => PhaseGetError::Load { path, source },
+    }
+}
+
+fn map_update_config_error(error: ConfigError) -> PhaseUpdateError {
+    match error {
+        ConfigError::NotFound { path } => PhaseUpdateError::ConfigNotFound { path },
+        ConfigError::Read { path, source } => PhaseUpdateError::ConfigRead { path, source },
+        ConfigError::Parse { path, source } => PhaseUpdateError::ConfigLoad { path, source },
     }
 }
 
@@ -242,76 +282,77 @@ mod tests {
         config.state_machine
     }
 
-    // Named test: insert
+    #[test]
+    fn get_returns_ok_with_valid_config() {
+        let (_temp_dir, project, _config) = setup();
+        run_phase_get(&project).unwrap();
+    }
+
+    #[test]
+    fn get_errors_when_config_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let project = Project {
+            git_root: temp_dir.path().to_path_buf(),
+            slug: "test".to_owned(),
+            state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
+        };
+        let err = run_phase_get(&project).unwrap_err();
+        assert!(matches!(err, PhaseGetError::NotFound { .. }));
+    }
+
     #[test]
     fn insert_after_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, Some("review"), Some("enriching"), None, None).unwrap();
-
+        run_phase_update(&project, Some("review"), Some("enriching"), None, None).unwrap();
         assert_eq!(
             loaded_phases(&project),
             vec!["enriching", "review", "in_progress", "done"]
         );
     }
 
-    // Named test: insert (before variant)
     #[test]
     fn insert_before_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, Some("review"), None, Some("done"), None).unwrap();
-
+        run_phase_update(&project, Some("review"), None, Some("done"), None).unwrap();
         assert_eq!(
             loaded_phases(&project),
             vec!["enriching", "in_progress", "review", "done"]
         );
     }
 
-    // Named test: insert (append-to-end variant)
     #[test]
     fn insert_appends_to_end_by_default() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, Some("deployed"), None, None, None).unwrap();
-
+        run_phase_update(&project, Some("deployed"), None, None, None).unwrap();
         assert_eq!(
             loaded_phases(&project),
             vec!["enriching", "in_progress", "done", "deployed"]
         );
     }
 
-    // Named test: remove
     #[test]
     fn remove_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, None, None, None, Some("in_progress")).unwrap();
-
+        run_phase_update(&project, None, None, None, Some("in_progress")).unwrap();
         assert_eq!(loaded_phases(&project), vec!["enriching", "done"]);
     }
 
-    // Named test: duplicate-name rejection
     #[test]
     fn duplicate_name_rejection() {
         let (_temp_dir, project, _config) = setup();
-
-        let error = run_config_phases(&project, Some("enriching"), None, None, None).unwrap_err();
-
-        assert!(matches!(error, PhasesError::DuplicatePhase { name } if name == "enriching"));
+        let error = run_phase_update(&project, Some("enriching"), None, None, None).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::DuplicatePhase { name } if name == "enriching"));
     }
 
-    // Named test: blocked-removal (with task IDs asserted)
     #[test]
     fn blocked_removal_lists_task_ids() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Blocked task", "", None, vec![]).unwrap();
-
-        let error = run_config_phases(&project, None, None, None, Some("enriching")).unwrap_err();
-
+        let error = run_phase_update(&project, None, None, None, Some("enriching")).unwrap_err();
         match error {
-            PhasesError::PhaseBusy { name, task_ids } => {
+            PhaseUpdateError::PhaseBusy { name, task_ids } => {
                 assert_eq!(name, "enriching");
                 assert_eq!(task_ids, vec!["task-001"]);
             }
@@ -322,17 +363,14 @@ mod tests {
     #[test]
     fn no_operation_returns_error() {
         let (_temp_dir, project, _config) = setup();
-
-        let error = run_config_phases(&project, None, None, None, None).unwrap_err();
-
-        assert!(matches!(error, PhasesError::NoOperation));
+        let error = run_phase_update(&project, None, None, None, None).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::NoOperation));
     }
 
     #[test]
     fn after_and_before_together_returns_error() {
         let (_temp_dir, project, _config) = setup();
-
-        let error = run_config_phases(
+        let error = run_phase_update(
             &project,
             Some("new"),
             Some("done"),
@@ -340,36 +378,29 @@ mod tests {
             None,
         )
         .unwrap_err();
-
-        assert!(matches!(error, PhasesError::ConflictingPositionFlags));
+        assert!(matches!(error, PhaseUpdateError::ConflictingPositionFlags));
     }
 
     #[test]
     fn after_nonexistent_phase_returns_error() {
         let (_temp_dir, project, _config) = setup();
-
         let error =
-            run_config_phases(&project, Some("new"), Some("nonexistent"), None, None).unwrap_err();
-
-        assert!(matches!(error, PhasesError::PhaseNotFound { name } if name == "nonexistent"));
+            run_phase_update(&project, Some("new"), Some("nonexistent"), None, None).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
     }
 
     #[test]
     fn before_nonexistent_phase_returns_error() {
         let (_temp_dir, project, _config) = setup();
-
         let error =
-            run_config_phases(&project, Some("new"), None, Some("nonexistent"), None).unwrap_err();
-
-        assert!(matches!(error, PhasesError::PhaseNotFound { name } if name == "nonexistent"));
+            run_phase_update(&project, Some("new"), None, Some("nonexistent"), None).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
     }
 
     #[test]
     fn add_and_remove_together() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, Some("review"), None, None, Some("in_progress")).unwrap();
-
+        run_phase_update(&project, Some("review"), None, None, Some("in_progress")).unwrap();
         assert_eq!(loaded_phases(&project), vec!["enriching", "done", "review"]);
     }
 
@@ -380,12 +411,11 @@ mod tests {
         let original = fs::read_to_string(&config_path).unwrap();
         let original_value: serde_json::Value = serde_json::from_str(&original).unwrap();
 
-        run_config_phases(&project, Some("review"), None, Some("done"), None).unwrap();
+        run_phase_update(&project, Some("review"), None, Some("done"), None).unwrap();
 
         let updated = fs::read_to_string(&config_path).unwrap();
         let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
 
-        // Every field except state_machine must be unchanged
         for (key, orig_val) in original_value.as_object().unwrap() {
             if key != "state_machine" {
                 assert_eq!(
@@ -400,9 +430,7 @@ mod tests {
     #[test]
     fn remove_phase_with_no_active_tasks_succeeds() {
         let (_temp_dir, project, _config) = setup();
-
-        run_config_phases(&project, None, None, None, Some("in_progress")).unwrap();
-
+        run_phase_update(&project, None, None, None, Some("in_progress")).unwrap();
         assert_eq!(loaded_phases(&project), vec!["enriching", "done"]);
     }
 
@@ -412,11 +440,9 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Task A", "", None, vec![]).unwrap();
         store.add_task("Task B", "", None, vec![]).unwrap();
-
-        let error = run_config_phases(&project, None, None, None, Some("enriching")).unwrap_err();
-
+        let error = run_phase_update(&project, None, None, None, Some("enriching")).unwrap_err();
         match error {
-            PhasesError::PhaseBusy { task_ids, .. } => {
+            PhaseUpdateError::PhaseBusy { task_ids, .. } => {
                 assert!(task_ids.contains(&"task-001".to_owned()));
                 assert!(task_ids.contains(&"task-002".to_owned()));
             }
