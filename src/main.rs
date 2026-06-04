@@ -1,22 +1,11 @@
-mod add;
-mod advance;
-mod config;
-mod fail;
-mod global_config;
-mod init;
-mod phase;
-mod pick;
-mod project;
-mod self_update;
-mod status;
-mod tasks;
-mod update;
-mod work;
+mod commands;
+mod core;
 
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use project::{ProjectError, resolve_project};
+
+use crate::core::{ProjectError, resolve_project};
 
 #[derive(Parser)]
 #[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), subcommand_value_name = "command")]
@@ -164,7 +153,7 @@ fn main() -> ExitCode {
                 filter,
             } => match resolve_project() {
                 Ok(project) => {
-                    match status::run_status(&project, json, filter.as_deref(), limit, offset) {
+                    match commands::run_status(&project, json, filter.as_deref(), limit, offset) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");
@@ -179,7 +168,7 @@ fn main() -> ExitCode {
             },
             TaskCommands::Work { prd, artifact } => match resolve_project() {
                 Ok(project) => {
-                    match work::run_work(&project, prd.as_deref(), artifact.as_deref()) {
+                    match commands::run_work(&project, prd.as_deref(), artifact.as_deref()) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");
@@ -193,7 +182,7 @@ fn main() -> ExitCode {
                 }
             },
             TaskCommands::Fail { id, reason } => match resolve_project() {
-                Ok(project) => match fail::run_fail(&project, &id, reason.as_deref()) {
+                Ok(project) => match commands::run_fail(&project, &id, reason.as_deref()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -211,7 +200,7 @@ fn main() -> ExitCode {
                 prd,
                 depends_on,
             } => match resolve_project() {
-                Ok(project) => match add::run_add(
+                Ok(project) => match commands::run_add(
                     &project,
                     &title,
                     description.as_deref(),
@@ -236,10 +225,10 @@ fn main() -> ExitCode {
                 prd,
                 depends_on,
             } => match resolve_project() {
-                Ok(project) => match update::run_update(
+                Ok(project) => match commands::run_update(
                     &project,
                     &id,
-                    update::UpdateInput {
+                    commands::UpdateInput {
                         title,
                         description,
                         prd,
@@ -265,9 +254,9 @@ fn main() -> ExitCode {
             acceptance_testing,
             prd_path,
         } => match resolve_project() {
-            Ok(project) => match init::run_init(
+            Ok(project) => match commands::run_init(
                 &project,
-                init::InitFlags {
+                commands::InitFlags {
                     stack,
                     phases,
                     verification_commands,
@@ -288,7 +277,7 @@ fn main() -> ExitCode {
         },
         Commands::Phase { command } => match command {
             PhaseCommands::Get => match resolve_project() {
-                Ok(project) => match phase::run_phase_get(&project) {
+                Ok(project) => match commands::run_phase_get(&project) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -307,7 +296,7 @@ fn main() -> ExitCode {
                 remove,
                 set_model,
             } => match resolve_project() {
-                Ok(project) => match phase::run_phase_update(
+                Ok(project) => match commands::run_phase_update(
                     &project,
                     add.as_deref(),
                     after.as_deref(),
@@ -327,7 +316,7 @@ fn main() -> ExitCode {
                 }
             },
         },
-        Commands::Update => match self_update::run_self_update() {
+        Commands::Update => match commands::run_self_update() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("error: {error}");
@@ -345,24 +334,24 @@ fn exit_code_for(error: &ProjectError) -> ExitCode {
     match error {
         ProjectError::NotInGitRepository
         | ProjectError::CreateStateDir(_, _)
-        | ProjectError::GlobalConfig(crate::global_config::GlobalConfigError::Parse { .. }) => {
+        | ProjectError::GlobalConfig(crate::core::GlobalConfigError::Parse { .. }) => {
             ExitCode::from(1)
         }
         _ => ExitCode::from(2),
     }
 }
 
-fn exit_code_for_init(error: &init::InitError) -> ExitCode {
+fn exit_code_for_init(error: &commands::InitError) -> ExitCode {
     match error {
-        init::InitError::MissingFlags { .. }
-        | init::InitError::InvalidPhases
-        | init::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
+        commands::InitError::MissingFlags { .. }
+        | commands::InitError::InvalidPhases
+        | commands::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
 }
 
-fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
-    use status::StatusError::*;
+fn exit_code_for_status(error: &commands::StatusError) -> ExitCode {
+    use commands::StatusError::*;
 
     match error {
         ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } | TaskNotFound { .. } => {
@@ -370,16 +359,16 @@ fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
         }
         ConfigRead { .. } | JsonOutput { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }
 }
 
-fn exit_code_for_work(error: &work::WorkError) -> ExitCode {
-    use work::WorkError::*;
+fn exit_code_for_work(error: &commands::WorkError) -> ExitCode {
+    use commands::WorkError::*;
 
     match error {
         NoActionableTask
@@ -389,16 +378,16 @@ fn exit_code_for_work(error: &work::WorkError) -> ExitCode {
         | InvalidConfig { .. } => ExitCode::from(1),
         Io { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }
 }
 
-fn exit_code_for_fail(error: &fail::FailError) -> ExitCode {
-    use fail::FailError::*;
+fn exit_code_for_fail(error: &commands::FailError) -> ExitCode {
+    use commands::FailError::*;
 
     match error {
         MissingReason
@@ -411,16 +400,16 @@ fn exit_code_for_fail(error: &fail::FailError) -> ExitCode {
         | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }
 }
 
-fn exit_code_for_update(error: &update::UpdateError) -> ExitCode {
-    use update::UpdateError::*;
+fn exit_code_for_update(error: &commands::UpdateError) -> ExitCode {
+    use commands::UpdateError::*;
 
     match error {
         NoFields
@@ -430,40 +419,40 @@ fn exit_code_for_update(error: &update::UpdateError) -> ExitCode {
         | ConfigLoad { .. } => ExitCode::from(1),
         ConfigRead { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }
 }
 
-fn exit_code_for_self_update(error: &self_update::SelfUpdateError) -> ExitCode {
+fn exit_code_for_self_update(error: &commands::SelfUpdateError) -> ExitCode {
     match error {
-        self_update::SelfUpdateError::UnsupportedPlatform { .. }
-        | self_update::SelfUpdateError::AssetNotFound { .. } => ExitCode::from(1),
+        commands::SelfUpdateError::UnsupportedPlatform { .. }
+        | commands::SelfUpdateError::AssetNotFound { .. } => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
 }
 
-fn exit_code_for_add(error: &add::AddError) -> ExitCode {
+fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
     match error {
-        add::AddError::UnknownDependency { .. }
-        | add::AddError::ConfigNotFound { .. }
-        | add::AddError::ConfigLoad { .. }
-        | add::AddError::InvalidConfig { .. } => ExitCode::from(1),
-        add::AddError::ConfigRead { .. } => ExitCode::from(2),
-        add::AddError::StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+        commands::AddError::UnknownDependency { .. }
+        | commands::AddError::ConfigNotFound { .. }
+        | commands::AddError::ConfigLoad { .. }
+        | commands::AddError::InvalidConfig { .. } => ExitCode::from(1),
+        commands::AddError::ConfigRead { .. } => ExitCode::from(2),
+        commands::AddError::StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }
 }
 
-fn exit_code_for_phase_get(error: &phase::PhaseGetError) -> ExitCode {
-    use phase::PhaseGetError::*;
+fn exit_code_for_phase_get(error: &commands::PhaseGetError) -> ExitCode {
+    use commands::PhaseGetError::*;
 
     match error {
         NotFound { .. } | Load { .. } => ExitCode::from(1),
@@ -471,8 +460,8 @@ fn exit_code_for_phase_get(error: &phase::PhaseGetError) -> ExitCode {
     }
 }
 
-fn exit_code_for_phase_update(error: &phase::PhaseUpdateError) -> ExitCode {
-    use phase::PhaseUpdateError::*;
+fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
+    use commands::PhaseUpdateError::*;
 
     match error {
         NoOperation
@@ -486,9 +475,9 @@ fn exit_code_for_phase_update(error: &phase::PhaseUpdateError) -> ExitCode {
         | ConfigLoad { .. } => ExitCode::from(1),
         ConfigRead { .. } | ConfigWrite { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
-            crate::tasks::StoreError::Io { .. }
-            | crate::tasks::StoreError::Serialize(_)
-            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
     }

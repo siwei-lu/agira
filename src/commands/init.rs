@@ -6,7 +6,7 @@ use std::{
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{
+use crate::core::{
     config::{Config, PhaseConfig, VerificationConfig},
     project::Project,
 };

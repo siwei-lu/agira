@@ -2,7 +2,7 @@ use std::cmp::{Ordering, Reverse};
 
 use chrono::{DateTime, FixedOffset};
 
-use crate::{
+use crate::core::{
     config::Config,
     tasks::{Task, TaskPhase},
 };
@@ -231,8 +231,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::{PhaseConfig, VerificationConfig};
-    use crate::tasks::TaskStore;
+    use crate::core::config::{PhaseConfig, VerificationConfig};
+    use crate::core::tasks::TaskStore;
 
     fn test_config() -> Config {
         Config {

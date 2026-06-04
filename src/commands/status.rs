@@ -7,7 +7,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{
+use crate::core::{
     config::{ConfigError, load_project_config},
     project::Project,
     tasks::{StoreError, Task, TaskStore},
@@ -326,7 +326,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
+    use crate::core::{
         config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},

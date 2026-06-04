@@ -7,7 +7,7 @@ use std::{
 use chrono::Utc;
 use thiserror::Error;
 
-use crate::{
+use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
     pick::{format_pick_output, select_next_task},
@@ -138,7 +138,10 @@ fn is_working_tree_dirty(git_root: &Path) -> bool {
     output.status.success() && !output.stdout.is_empty()
 }
 
-fn dirty_commit_target<'a>(tasks: &'a [Task], config: &crate::config::Config) -> Option<&'a Task> {
+fn dirty_commit_target<'a>(
+    tasks: &'a [Task],
+    config: &crate::core::config::Config,
+) -> Option<&'a Task> {
     let terminal_phase = config.terminal_phase()?;
 
     tasks
@@ -202,7 +205,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
+    use crate::core::{
         config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::TaskStore,

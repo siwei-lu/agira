@@ -6,7 +6,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::global_config::{GlobalConfig, GlobalConfigError, load_or_create};
+use crate::core::global_config::{GlobalConfig, GlobalConfigError, load_or_create};
 
 #[derive(Debug, Clone)]
 pub struct Project {

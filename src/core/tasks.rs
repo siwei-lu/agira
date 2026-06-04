@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::core::config::Config;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TaskPhase {
@@ -424,7 +424,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::{PhaseConfig, VerificationConfig};
+    use crate::core::config::{PhaseConfig, VerificationConfig};
 
     fn test_config() -> Config {
         Config {

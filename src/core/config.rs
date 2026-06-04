@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::global_config::GlobalConfig;
+use crate::core::global_config::GlobalConfig;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhaseConfig {
@@ -28,10 +28,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn phase_names(&self) -> Vec<&str> {
-        self.phases.iter().map(|p| p.name.as_str()).collect()
-    }
-
     pub fn terminal_phase(&self) -> Option<&str> {
         self.phases.last().map(|p| p.name.as_str())
     }
@@ -249,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_names_helper_returns_names() {
+    fn terminal_phase_returns_last_phase() {
         let config = Config {
             stack: "rust".to_owned(),
             phases: vec![
@@ -268,7 +264,6 @@ mod tests {
             prd_path: None,
         };
 
-        assert_eq!(config.phase_names(), vec!["enriching", "done"]);
         assert_eq!(config.terminal_phase(), Some("done"));
     }
 }
