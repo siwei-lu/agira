@@ -19,6 +19,9 @@ pub enum UpdateError {
     #[error("unknown dependency: {id}")]
     UnknownDependency { id: String },
 
+    #[error("task {id} is {state} and cannot be updated")]
+    CannotUpdate { id: String, state: String },
+
     #[error("config file not found: {path}")]
     ConfigNotFound { path: PathBuf },
 
@@ -79,6 +82,9 @@ pub fn run_update(project: &Project, id: &str, input: UpdateInput) -> Result<(),
         Err(StoreError::NotFound) => Err(UpdateError::TaskNotFound { id: id.to_owned() }),
         Err(StoreError::DependencyBlocked { blocking_id, .. }) => {
             Err(UpdateError::UnknownDependency { id: blocking_id })
+        }
+        Err(StoreError::CannotUpdateTerminal { id, state }) => {
+            Err(UpdateError::CannotUpdate { id, state })
         }
         Err(error) => Err(error.into()),
     }
@@ -357,12 +363,13 @@ mod tests {
     }
 
     #[test]
-    fn update_terminal_task_allowed() {
+    fn update_done_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Task", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
+        let before = store.get_task("task-001").unwrap().clone();
 
         let result = run_update(
             &project,
@@ -375,20 +382,24 @@ mod tests {
             },
         );
 
-        result.unwrap();
+        match result.unwrap_err() {
+            UpdateError::CannotUpdate { id, state } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(state, "done");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
         let store = test_store(&temp_dir, &config);
-        assert_eq!(
-            store.get_task("task-001").unwrap().title,
-            "Updated terminal"
-        );
+        assert_eq!(store.get_task("task-001").unwrap(), &before);
     }
 
     #[test]
-    fn update_failed_task_allowed() {
+    fn update_failed_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Task", "", None, vec![]).unwrap();
         store.fail_task("task-001", "oops").unwrap();
+        let before = store.get_task("task-001").unwrap().clone();
 
         let result = run_update(
             &project,
@@ -401,9 +412,15 @@ mod tests {
             },
         );
 
-        result.unwrap();
+        match result.unwrap_err() {
+            UpdateError::CannotUpdate { id, state } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(state, "failed");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
         let store = test_store(&temp_dir, &config);
-        assert_eq!(store.get_task("task-001").unwrap().title, "Updated failed");
+        assert_eq!(store.get_task("task-001").unwrap(), &before);
     }
 
     #[test]

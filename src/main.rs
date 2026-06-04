@@ -415,6 +415,7 @@ fn exit_code_for_update(error: &commands::UpdateError) -> ExitCode {
         NoFields
         | TaskNotFound { .. }
         | UnknownDependency { .. }
+        | CannotUpdate { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. } => ExitCode::from(1),
         ConfigRead { .. } => ExitCode::from(2),

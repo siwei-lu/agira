@@ -67,6 +67,9 @@ pub enum StoreError {
     #[error("task is already terminal")]
     AlreadyTerminal,
 
+    #[error("task {id} is {state} and cannot be updated")]
+    CannotUpdateTerminal { id: String, state: String },
+
     #[error("failed to write or read {path}")]
     Io {
         path: PathBuf,
@@ -329,6 +332,14 @@ impl TaskStore {
         prd_module_id: Option<&str>,
         depends_on: Option<&[String]>,
     ) -> Result<(), StoreError> {
+        let target_task = self.get_task(id).ok_or(StoreError::NotFound)?;
+        if target_task.state == self.terminal_phase || target_task.state == "failed" {
+            return Err(StoreError::CannotUpdateTerminal {
+                id: id.to_owned(),
+                state: target_task.state.clone(),
+            });
+        }
+
         if let Some(deps) = depends_on {
             for dep_id in deps {
                 if self.get_task(dep_id).is_none() {
@@ -601,6 +612,53 @@ mod tests {
         let error = store.retry_task("task-002", "too late").unwrap_err();
         assert!(matches!(error, StoreError::AlreadyTerminal));
         assert_eq!(store.get_task("task-002").unwrap(), &before_failed);
+    }
+
+    #[test]
+    fn update_task_rejects_done() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        let before = store.get_task("task-001").unwrap().clone();
+
+        let error = store
+            .update_task("task-001", Some("Updated"), None, None, None)
+            .unwrap_err();
+
+        match error {
+            StoreError::CannotUpdateTerminal { id, state } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(state, "done");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(store.get_task("task-001").unwrap(), &before);
+    }
+
+    #[test]
+    fn update_task_rejects_failed() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.fail_task("task-001", "failed").unwrap();
+        let before = store.get_task("task-001").unwrap().clone();
+
+        let error = store
+            .update_task("task-001", Some("Updated"), None, None, None)
+            .unwrap_err();
+
+        match error {
+            StoreError::CannotUpdateTerminal { id, state } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(state, "failed");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(store.get_task("task-001").unwrap(), &before);
     }
 
     #[test]
