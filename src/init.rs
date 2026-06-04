@@ -507,6 +507,38 @@ agira init \
   --acceptance-testing <cli|api|ui|hybrid|none> \
   [--prd-path <path>]
 ```
+
+## Step 5 — Update CLAUDE.md
+
+After running `agira init`, update `CLAUDE.md` in the repo root with the project context you
+gathered in Steps 1–3. In Step 1.4 you already read the existing file (if any); use that
+content now to reconcile rather than overwrite.
+
+**If CLAUDE.md does not exist:** create it.
+
+**If CLAUDE.md exists:** locate the block delimited by `<!-- agira-context -->` and
+`<!-- /agira-context -->`. If the block exists, replace only its contents. If it does not
+exist, append it to the end of the file.
+
+The block must follow this structure (keep it under 20 lines):
+
+```
+<!-- agira-context -->
+## Project Context (agira)
+
+**Stack:** <stack and primary framework, e.g. "Rust CLI" or "TypeScript / Next.js">
+
+**Verification commands:**
+- <cmd1>
+- <cmd2>
+
+**Commit convention:** <pattern observed in git log, e.g. "Conventional Commits (type(scope): description)"; omit section if no consistent pattern was found>
+
+**PRD:** <relative path if a PRD was confirmed; omit section otherwise>
+<!-- /agira-context -->
+```
+
+Do not alter any content outside the `<!-- agira-context -->` block.
 "#
 }
 
@@ -814,6 +846,8 @@ mod tests {
         let prompt = super::bare_invocation_prompt();
 
         assert!(prompt.contains("```sh\nagira init \\\n"));
+        assert!(prompt.contains("CLAUDE.md"));
+        assert!(prompt.contains("agira-context"));
     }
 
     #[test]
