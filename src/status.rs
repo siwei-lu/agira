@@ -14,7 +14,7 @@ use crate::{
 };
 
 const NO_TASKS_MESSAGE: &str =
-    "No tasks. Run `agira add` or `agira next --prd <path>` to get started.";
+    "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.";
 const TITLE_LIMIT: usize = 40;
 const LAST_ACTION_LIMIT: usize = 30;
 const STATE_LIMIT: usize = 13;
@@ -50,9 +50,12 @@ pub enum StatusError {
         #[source]
         source: io::Error,
     },
+
+    #[error("task not found: {id}")]
+    TaskNotFound { id: String },
 }
 
-pub fn run_status(project: &Project, json: bool) -> Result<(), StatusError> {
+pub fn run_status(project: &Project, json: bool, filter: Option<&str>) -> Result<(), StatusError> {
     if json {
         return output_raw_json(project);
     }
@@ -61,6 +64,9 @@ pub fn run_status(project: &Project, json: bool) -> Result<(), StatusError> {
     match fs::metadata(&tasks_path) {
         Ok(_) => {}
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            if let Some(id) = filter {
+                return Err(StatusError::TaskNotFound { id: id.to_owned() });
+            }
             print_status_output(NO_TASKS_MESSAGE);
             return Ok(());
         }
@@ -89,11 +95,25 @@ pub fn run_status(project: &Project, json: bool) -> Result<(), StatusError> {
     let store = TaskStore::new(&project.state_dir, &config)?;
     let tasks = store.all_tasks();
     if tasks.is_empty() {
+        if let Some(id) = filter {
+            return Err(StatusError::TaskNotFound { id: id.to_owned() });
+        }
         print_status_output(NO_TASKS_MESSAGE);
         return Ok(());
     }
 
-    print_status_output(&format_status_table(tasks, &terminal_phase));
+    if let Some(id) = filter {
+        let task = tasks
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| StatusError::TaskNotFound { id: id.to_owned() })?;
+        print_status_output(&format_status_table(
+            std::slice::from_ref(task),
+            &terminal_phase,
+        ));
+    } else {
+        print_status_output(&format_status_table(tasks, &terminal_phase));
+    }
     Ok(())
 }
 
@@ -321,12 +341,12 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
         write_empty_tasks(&project);
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira add` or `agira next --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.\n"
         );
     }
 
@@ -335,12 +355,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira add` or `agira next --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.\n"
         );
     }
 
@@ -352,7 +372,7 @@ mod tests {
             .add_task("Implement status command", "", None, vec![])
             .unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert!(output.contains("ID"));
@@ -375,7 +395,7 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert!(output.contains("✓ done"));
@@ -388,7 +408,7 @@ mod tests {
         store.add_task("Fail status", "", None, vec![]).unwrap();
         store.fail_task("task-001", "blocked").unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert!(output.contains("✗ failed"));
@@ -401,7 +421,7 @@ mod tests {
         let title = "x".repeat(50);
         store.add_task(&title, "", None, vec![]).unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         let expected = format!("{}…", "x".repeat(40));
@@ -429,7 +449,7 @@ mod tests {
         )
         .unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false));
+        let (result, output) = capture_output(|| run_status(&project, false, None));
 
         result.unwrap();
         assert!(output.find("task-001").unwrap() < output.find("task-002").unwrap());
@@ -442,7 +462,7 @@ mod tests {
         let raw = "{\n  \"tasks\": []\n}";
         fs::write(project.state_dir.join("tasks.json"), raw).unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, true));
+        let (result, output) = capture_output(|| run_status(&project, true, None));
 
         result.unwrap();
         assert_eq!(output, raw);
@@ -453,7 +473,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let (result, output) = capture_output(|| run_status(&project, true));
+        let (result, output) = capture_output(|| run_status(&project, true, None));
         let error = result.unwrap_err();
 
         assert!(matches!(error, StatusError::JsonOutput { .. }));
@@ -466,17 +486,17 @@ mod tests {
         let project = test_project(&temp_dir);
         write_empty_tasks(&project);
 
-        let error = run_status(&project, false).unwrap_err();
+        let error = run_status(&project, false, None).unwrap_err();
         assert!(matches!(error, StatusError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_status(&project, false).unwrap_err();
+        let error = run_status(&project, false, None).unwrap_err();
         assert!(matches!(error, StatusError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.state_machine.clear();
         write_config(&project, &config);
-        let error = run_status(&project, false).unwrap_err();
+        let error = run_status(&project, false, None).unwrap_err();
         match error {
             StatusError::InvalidConfig { reason, .. } => {
                 assert_eq!(reason, "state_machine must not be empty");
@@ -502,7 +522,7 @@ mod tests {
     fn json_output_exit_code_contract_is_two() {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
-        let error = run_status(&project, true).unwrap_err();
+        let error = run_status(&project, true, None).unwrap_err();
 
         let code = match error {
             StatusError::JsonOutput { .. } => ExitCode::from(2),
@@ -510,5 +530,55 @@ mod tests {
         };
 
         assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn filter_shows_only_matching_task() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("First task", "", None, vec![]).unwrap();
+        store.add_task("Second task", "", None, vec![]).unwrap();
+
+        let (result, output) = capture_output(|| run_status(&project, false, Some("task-002")));
+
+        result.unwrap();
+        assert!(output.contains("task-002"));
+        assert!(output.contains("Second task"));
+        assert!(!output.contains("task-001"));
+        assert!(!output.contains("First task"));
+    }
+
+    #[test]
+    fn filter_unknown_id_returns_task_not_found() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Some task", "", None, vec![]).unwrap();
+
+        let error = run_status(&project, false, Some("task-999")).unwrap_err();
+
+        match error {
+            StatusError::TaskNotFound { id } => assert_eq!(id, "task-999"),
+            other => panic!("expected TaskNotFound, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn filter_when_no_tasks_file_returns_task_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let project = test_project(&temp_dir);
+
+        let error = run_status(&project, false, Some("task-001")).unwrap_err();
+
+        assert!(matches!(error, StatusError::TaskNotFound { .. }));
+    }
+
+    #[test]
+    fn filter_when_empty_tasks_returns_task_not_found() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+        write_empty_tasks(&project);
+
+        let error = run_status(&project, false, Some("task-001")).unwrap_err();
+
+        assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }
 }

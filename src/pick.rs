@@ -1,80 +1,19 @@
-use std::{
-    cmp::Ordering,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::cmp::Ordering;
 
 use chrono::{DateTime, FixedOffset};
-use thiserror::Error;
 
 use crate::{
-    config::{Config, ConfigError, load_project_config},
-    project::Project,
-    tasks::{StoreError, Task, TaskPhase, TaskStore},
+    config::Config,
+    tasks::{Task, TaskPhase},
 };
 
-const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira add \"<title>\"` or provide requirements with `agira next --prd <path>`";
+const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"` or provide requirements with `agira task work --prd <path>`";
 
-#[derive(Debug, Error)]
-pub enum NextError {
-    #[error("prd file not found: {path}")]
-    PrdNotFound { path: PathBuf },
-
-    #[error("failed to read {path}")]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-
-    #[error("failed to load config {path}: {source}")]
-    ConfigLoad {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-
-    #[error(transparent)]
-    StoreError(#[from] StoreError),
-}
-
-pub fn run_next(project: &Project, prd_path: Option<&Path>) -> Result<(), NextError> {
-    let config_path = project.state_dir.join("config.json");
-    let config =
-        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    let store = TaskStore::new(&project.state_dir, &config)?;
-    let prd_content = prd_path.map(read_prd).transpose()?;
-    let output = format_next_output(&config, store.all_tasks(), prd_content.as_deref());
-
-    println!("{output}");
-    Ok(())
-}
-
-fn map_config_error(error: ConfigError) -> NextError {
-    match error {
-        ConfigError::NotFound { path } => NextError::Io {
-            path,
-            source: io::Error::new(io::ErrorKind::NotFound, "config file not found"),
-        },
-        ConfigError::Read { path, source } => NextError::Io { path, source },
-        ConfigError::Parse { path, source } => NextError::ConfigLoad { path, source },
-    }
-}
-
-fn read_prd(path: &Path) -> Result<String, NextError> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(contents),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Err(NextError::PrdNotFound {
-            path: path.to_path_buf(),
-        }),
-        Err(source) => Err(NextError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-fn format_next_output(config: &Config, tasks: &[Task], prd_content: Option<&str>) -> String {
+pub(crate) fn format_pick_output(
+    config: &Config,
+    tasks: &[Task],
+    prd_content: Option<&str>,
+) -> String {
     if tasks.is_empty() {
         return match prd_content {
             Some(prd_content) => format_decomposition_prompt(prd_content),
@@ -93,7 +32,7 @@ fn format_next_output(config: &Config, tasks: &[Task], prd_content: Option<&str>
     format_non_actionable_summary(tasks)
 }
 
-fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
+pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
     let terminal_phase = config.state_machine.last()?;
 
     all_tasks
@@ -141,7 +80,7 @@ fn is_all_done(tasks: &[Task], config: &Config) -> bool {
 
 fn format_decomposition_prompt(prd_content: &str) -> String {
     format!(
-        "# Agira PRD Decomposition\n\n## Role\nYou are the planner for this Agira project.\n\n## Objective\nBreak the requirements into small, actionable Agira tasks. Add each task with agira add.\n\n## Commands\nFor each task, run:\n`agira add \"<title>\" --description \"<description>\"`\n\n## Requirements Context\n{prd_content}"
+        "# Agira PRD Decomposition\n\n## Role\nYou are the planner for this Agira project.\n\n## Objective\nBreak the requirements into small, actionable Agira tasks. Add each task with agira task add.\n\n## Commands\nFor each task, run:\n`agira task add \"<title>\" --description \"<description>\"`\n\n## Requirements Context\n{prd_content}"
     )
 }
 
@@ -187,8 +126,8 @@ fn format_task_prompt(task: &Task, config: &Config) -> String {
     }
 
     output.push_str(&format!(
-        "\n\n## Advance State\nWhen this phase is complete, run:\n`agira done {} --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira fail {} --reason \"<reason>\"`",
-        task.id, task.id
+        "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task work --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
+        task.id
     ));
 
     output
@@ -279,7 +218,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::VerificationConfig;
+    use crate::{config::VerificationConfig, tasks::TaskStore};
 
     fn test_config() -> Config {
         let mut models = BTreeMap::new();
@@ -314,7 +253,7 @@ mod tests {
         let config = test_config();
         let store = test_store(&temp_dir, &config);
 
-        let output = format_next_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert_eq!(output, NO_TASKS_MESSAGE);
     }
@@ -324,11 +263,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let store = test_store(&temp_dir, &config);
-        let prd_text = "Build the next command from these requirements.";
+        let prd_text = "Build the pick command from these requirements.";
 
-        let output = format_next_output(&config, store.all_tasks(), Some(prd_text));
+        let output = format_pick_output(&config, store.all_tasks(), Some(prd_text));
 
-        assert!(output.contains("agira add"));
+        assert!(output.contains("agira task add"));
         assert!(output.contains(prd_text));
     }
 
@@ -383,7 +322,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement next", "", None, vec![]).unwrap();
+        store.add_task("Implement pick", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
@@ -399,7 +338,7 @@ mod tests {
         config.models.remove("in_progress");
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement next", "", None, vec![]).unwrap();
+        store.add_task("Implement pick", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
@@ -408,16 +347,16 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_contains_done_command() {
+    fn task_prompt_contains_work_command() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement next", "", None, vec![]).unwrap();
+        store.add_task("Implement work", "", None, vec![]).unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
 
-        assert!(prompt.contains("agira done task-001 --artifact"));
+        assert!(prompt.contains("agira task work --artifact"));
     }
 
     #[test]
@@ -426,9 +365,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement next", "", None, vec![]).unwrap();
+        store.add_task("Implement pick", "", None, vec![]).unwrap();
 
-        let output = format_next_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert!(!output.as_bytes().contains(&0x1B));
     }
@@ -449,7 +388,7 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let output = format_next_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert!(output.contains("# Agira Completion Summary"));
         assert!(output.contains("task-001"));

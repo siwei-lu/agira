@@ -1,13 +1,16 @@
 mod add;
+mod advance;
 mod config;
-mod done;
+mod config_phases;
 mod fail;
 mod global_config;
 mod init;
-mod next;
+mod pick;
 mod project;
 mod status;
 mod tasks;
+mod update;
+mod work;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -15,7 +18,7 @@ use clap::{Parser, Subcommand};
 use project::{ProjectError, resolve_project};
 
 #[derive(Parser)]
-#[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"))]
+#[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), subcommand_value_name = "command")]
 struct Cli {
     /// Print version
     #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
@@ -27,11 +30,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Show current task status table
-    Status {
-        /// Output raw JSON instead of the formatted table
-        #[arg(long)]
-        json: bool,
+    /// Manage project tasks
+    Task {
+        #[command(subcommand)]
+        command: TaskCommands,
     },
     /// Initialize project configuration
     Init {
@@ -48,17 +50,51 @@ enum Commands {
         #[arg(long = "prd-path")]
         prd_path: Option<String>,
     },
-    /// Print the next actionable task prompt for the AI agent
-    Next {
-        /// Path to a PRD file to inject as requirements context
+    /// Manage project configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+    /// Print version information
+    Version,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Add, insert, or remove phases in the state machine
+    Phases {
+        /// Phase name to add (appended at end unless --after or --before is given)
+        #[arg(long)]
+        add: Option<String>,
+        /// Insert the new phase after this existing phase
+        #[arg(long)]
+        after: Option<String>,
+        /// Insert the new phase before this existing phase
+        #[arg(long)]
+        before: Option<String>,
+        /// Phase name to remove (fails if any task is currently in that phase)
+        #[arg(long)]
+        remove: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCommands {
+    /// Show current task status table
+    Status {
+        /// Output raw JSON instead of the formatted table
+        #[arg(long)]
+        json: bool,
+        /// Show only this task ID
+        #[arg(value_name = "task-id")]
+        filter: Option<String>,
+    },
+    /// Print the current actionable task prompt, or advance it when --artifact is given
+    Work {
+        /// Path to a PRD file to inject as requirements context (print mode only)
         #[arg(long)]
         prd: Option<PathBuf>,
-    },
-    /// Advance a task to its next phase, recording an artifact as evidence
-    Done {
-        /// Task ID to advance (e.g. task-001)
-        id: String,
-        /// Evidence of completion for this phase
+        /// Evidence of completion for this phase; advances the current task when provided
         #[arg(long)]
         artifact: Option<String>,
     },
@@ -73,37 +109,135 @@ enum Commands {
     /// Add a new task to the project
     Add {
         /// Task title
+        #[arg(value_name = "title")]
         title: String,
         /// Optional longer description of the task
-        #[arg(long)]
+        #[arg(long, value_name = "description")]
         description: Option<String>,
         /// PRD module ID this task implements (e.g. FM-001)
-        #[arg(long)]
+        #[arg(long, value_name = "prd")]
         prd: Option<String>,
         /// Comma-separated task IDs this task depends on
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Vec<String>,
     },
-    /// Print version information
-    Version,
+    /// Update editable fields of an existing task
+    Update {
+        /// Task ID to update (e.g. task-001)
+        id: String,
+        /// New title
+        #[arg(long)]
+        title: Option<String>,
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+        /// New PRD module ID (e.g. FM-001)
+        #[arg(long)]
+        prd: Option<String>,
+        /// Replacement comma-separated dependency list
+        #[arg(long, value_delimiter = ',', value_name = "depends-on")]
+        depends_on: Option<Vec<String>>,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Status { json } => match resolve_project() {
-            Ok(project) => match status::run_status(&project, json) {
-                Ok(()) => ExitCode::SUCCESS,
+        Commands::Task { command } => match command {
+            TaskCommands::Status { json, filter } => match resolve_project() {
+                Ok(project) => match status::run_status(&project, json, filter.as_deref()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_status(&error)
+                    }
+                },
                 Err(error) => {
                     eprintln!("error: {error}");
-                    exit_code_for_status(&error)
+                    exit_code_for(&error)
                 }
             },
-            Err(error) => {
-                eprintln!("error: {error}");
-                exit_code_for(&error)
-            }
+            TaskCommands::Work { prd, artifact } => match resolve_project() {
+                Ok(project) => {
+                    match work::run_work(&project, prd.as_deref(), artifact.as_deref()) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_work(&error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Fail { id, reason } => match resolve_project() {
+                Ok(project) => match fail::run_fail(&project, &id, reason.as_deref()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_fail(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Add {
+                title,
+                description,
+                prd,
+                depends_on,
+            } => match resolve_project() {
+                Ok(project) => match add::run_add(
+                    &project,
+                    &title,
+                    description.as_deref(),
+                    prd.as_deref(),
+                    &depends_on,
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_add(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Update {
+                id,
+                title,
+                description,
+                prd,
+                depends_on,
+            } => match resolve_project() {
+                Ok(project) => match update::run_update(
+                    &project,
+                    &id,
+                    update::UpdateInput {
+                        title,
+                        description,
+                        prd,
+                        depends_on,
+                    },
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_update(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
         },
         Commands::Init {
             stack,
@@ -135,68 +269,31 @@ fn main() -> ExitCode {
                 exit_code_for(&error)
             }
         },
-        Commands::Next { prd } => match resolve_project() {
-            Ok(project) => match next::run_next(&project, prd.as_deref()) {
-                Ok(()) => ExitCode::SUCCESS,
+        Commands::Config { command } => match command {
+            ConfigCommands::Phases {
+                add,
+                after,
+                before,
+                remove,
+            } => match resolve_project() {
+                Ok(project) => match config_phases::run_config_phases(
+                    &project,
+                    add.as_deref(),
+                    after.as_deref(),
+                    before.as_deref(),
+                    remove.as_deref(),
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_phases(&error)
+                    }
+                },
                 Err(error) => {
                     eprintln!("error: {error}");
-                    exit_code_for_next(&error)
+                    exit_code_for(&error)
                 }
             },
-            Err(error) => {
-                eprintln!("error: {error}");
-                exit_code_for(&error)
-            }
-        },
-        Commands::Done { id, artifact } => match resolve_project() {
-            Ok(project) => match done::run_done(&project, &id, artifact.as_deref()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for_done(&error)
-                }
-            },
-            Err(error) => {
-                eprintln!("error: {error}");
-                exit_code_for(&error)
-            }
-        },
-        Commands::Fail { id, reason } => match resolve_project() {
-            Ok(project) => match fail::run_fail(&project, &id, reason.as_deref()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for_fail(&error)
-                }
-            },
-            Err(error) => {
-                eprintln!("error: {error}");
-                exit_code_for(&error)
-            }
-        },
-        Commands::Add {
-            title,
-            description,
-            prd,
-            depends_on,
-        } => match resolve_project() {
-            Ok(project) => match add::run_add(
-                &project,
-                &title,
-                description.as_deref(),
-                prd.as_deref(),
-                &depends_on,
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for_add(&error)
-                }
-            },
-            Err(error) => {
-                eprintln!("error: {error}");
-                exit_code_for(&error)
-            }
         },
         Commands::Version => {
             println!("agira {}", env!("CARGO_PKG_VERSION"));
@@ -230,7 +327,9 @@ fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
     use status::StatusError::*;
 
     match error {
-        ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } | TaskNotFound { .. } => {
+            ExitCode::from(1)
+        }
         ConfigRead { .. } | JsonOutput { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::tasks::StoreError::Io { .. }
@@ -241,33 +340,16 @@ fn exit_code_for_status(error: &status::StatusError) -> ExitCode {
     }
 }
 
-fn exit_code_for_next(error: &next::NextError) -> ExitCode {
-    match error {
-        next::NextError::PrdNotFound { .. } | next::NextError::ConfigLoad { .. } => {
-            ExitCode::from(1)
-        }
-        next::NextError::Io { .. }
-        | next::NextError::StoreError(crate::tasks::StoreError::Io { .. })
-        | next::NextError::StoreError(crate::tasks::StoreError::Serialize(_))
-        | next::NextError::StoreError(crate::tasks::StoreError::Deserialize(_)) => {
-            ExitCode::from(2)
-        }
-        next::NextError::StoreError(_) => ExitCode::from(1),
-    }
-}
-
-fn exit_code_for_done(error: &done::DoneError) -> ExitCode {
-    use done::DoneError::*;
+fn exit_code_for_work(error: &work::WorkError) -> ExitCode {
+    use work::WorkError::*;
 
     match error {
-        MissingArtifact
+        NoActionableTask
         | EmptyArtifact
-        | TaskNotFound { .. }
-        | AlreadyTerminal { .. }
-        | ConfigNotFound { .. }
+        | PrdNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
-        ConfigRead { .. } => ExitCode::from(2),
+        Io { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::tasks::StoreError::Io { .. }
             | crate::tasks::StoreError::Serialize(_)
@@ -299,6 +381,25 @@ fn exit_code_for_fail(error: &fail::FailError) -> ExitCode {
     }
 }
 
+fn exit_code_for_update(error: &update::UpdateError) -> ExitCode {
+    use update::UpdateError::*;
+
+    match error {
+        NoFields
+        | TaskNotFound { .. }
+        | UnknownDependency { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
 fn exit_code_for_add(error: &add::AddError) -> ExitCode {
     match error {
         add::AddError::UnknownDependency { .. }
@@ -307,6 +408,27 @@ fn exit_code_for_add(error: &add::AddError) -> ExitCode {
         | add::AddError::InvalidConfig { .. } => ExitCode::from(1),
         add::AddError::ConfigRead { .. } => ExitCode::from(2),
         add::AddError::StoreError(store_error) => match store_error {
+            crate::tasks::StoreError::Io { .. }
+            | crate::tasks::StoreError::Serialize(_)
+            | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_phases(error: &config_phases::PhasesError) -> ExitCode {
+    use config_phases::PhasesError::*;
+
+    match error {
+        NoOperation
+        | ConflictingPositionFlags
+        | PhaseNotFound { .. }
+        | DuplicatePhase { .. }
+        | PhaseBusy { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. } => ExitCode::from(1),
+        ConfigRead { .. } | ConfigWrite { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
             crate::tasks::StoreError::Io { .. }
             | crate::tasks::StoreError::Serialize(_)
             | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),

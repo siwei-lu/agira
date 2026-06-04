@@ -322,6 +322,48 @@ impl TaskStore {
         self.save(tasks_file)
     }
 
+    pub fn update_task(
+        &mut self,
+        id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        prd_module_id: Option<&str>,
+        depends_on: Option<&[String]>,
+    ) -> Result<(), StoreError> {
+        if let Some(deps) = depends_on {
+            for dep_id in deps {
+                if self.get_task(dep_id).is_none() {
+                    return Err(StoreError::DependencyBlocked {
+                        task_id: id.to_owned(),
+                        blocking_id: dep_id.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut tasks_file = self.tasks_file.clone();
+        let task = tasks_file
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id)
+            .ok_or(StoreError::NotFound)?;
+
+        if let Some(t) = title {
+            task.title = t.to_owned();
+        }
+        if let Some(d) = description {
+            task.description = d.to_owned();
+        }
+        if let Some(p) = prd_module_id {
+            task.prd_module_id = Some(p.to_owned());
+        }
+        if let Some(deps) = depends_on {
+            task.dependencies = deps.to_vec();
+        }
+
+        self.save(tasks_file)
+    }
+
     pub fn retry_task(&mut self, id: &str, reason: &str) -> Result<(u32, u32), StoreError> {
         let mut tasks_file = self.tasks_file.clone();
         let task_index = tasks_file
