@@ -7,6 +7,7 @@ mod init;
 mod phase;
 mod pick;
 mod project;
+mod self_update;
 mod status;
 mod tasks;
 mod update;
@@ -53,6 +54,8 @@ enum Commands {
         #[command(subcommand)]
         command: PhaseCommands,
     },
+    /// Update agira to the latest GitHub release
+    Update,
     /// Print version information
     Version,
 }
@@ -311,6 +314,13 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Update => match self_update::run_self_update() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for_self_update(&error)
+            }
+        },
         Commands::Version => {
             println!("agira {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -412,6 +422,14 @@ fn exit_code_for_update(error: &update::UpdateError) -> ExitCode {
             | crate::tasks::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
+    }
+}
+
+fn exit_code_for_self_update(error: &self_update::SelfUpdateError) -> ExitCode {
+    match error {
+        self_update::SelfUpdateError::UnsupportedPlatform { .. }
+        | self_update::SelfUpdateError::AssetNotFound { .. } => ExitCode::from(1),
+        _ => ExitCode::from(2),
     }
 }
 
