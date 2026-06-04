@@ -193,7 +193,29 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - Encrypting or access-controlling `~/.agira/` contents
 - Migration tooling from the old TypeScript Agira
 
+### FM-010: Help Descriptions and Version Command
+**Priority:** P1
+**Dependencies:** FM-001
+**Description:** Add descriptive help text to all CLI subcommands and their flags so `agira --help` and `agira <cmd> --help` are useful to AI agents and humans alike. Add a `version` subcommand and enable clap's built-in `--version` / `-V` flag, both printing `agira <semver>` baked in from `Cargo.toml` at compile time.
+**Constraints:**
+- Every subcommand has a one-line `about` description shown in `agira --help`
+- Every flag/arg has a one-line `help` description shown in `agira <cmd> --help`
+- `agira version` prints `agira <semver>` to stdout and exits 0
+- `agira --version` and `agira -V` print the same string (clap built-in format: `agira <semver>`)
+- Version is embedded at compile time via `env!("CARGO_PKG_VERSION")`; it always matches `Cargo.toml`
+**Acceptance Criteria:**
+- `agira --help` lists all subcommands each with a non-empty description
+- `agira next --help` shows a description for `--prd`
+- `agira version` prints `agira 0.1.0` (current version) to stdout and exits 0
+- `agira --version` prints the same version string and exits 0
+- `agira -V` prints the same version string and exits 0
+
+---
+
 ## Changelog
+### Round 2 — 2026-06-04
+- FM-010: add help descriptions to all commands/flags and add `version` subcommand + `--version` flag
+
 ### Round 1 — 2026-06-03
 - Full rewrite of PRD for Rust CLI. Replaces prior TypeScript/Bun protocol library.
 - Core model: state stored in `~/.agira/<slug>/`, prompts emitted to stdout, agents drive workflow via `agira next` / `agira done` / `agira fail`
