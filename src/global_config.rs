@@ -6,31 +6,24 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const DEFAULT_CONFIG_TOML: &str = "default_max_retries = 3\ndefault_model = \"sonnet\"\n";
+const DEFAULT_CONFIG_TOML: &str = "default_max_retries = 3\n";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct GlobalConfig {
     #[serde(default = "default_max_retries")]
     pub default_max_retries: u32,
-    #[serde(default = "default_model")]
-    pub default_model: String,
 }
 
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             default_max_retries: default_max_retries(),
-            default_model: default_model(),
         }
     }
 }
 
 fn default_max_retries() -> u32 {
     3
-}
-
-fn default_model() -> String {
-    "sonnet".to_owned()
 }
 
 #[derive(Debug, Error)]
@@ -97,7 +90,6 @@ mod tests {
         let config = load_or_create(agira_root.path()).unwrap();
 
         assert_eq!(config.default_max_retries, 3);
-        assert_eq!(config.default_model, "sonnet");
         assert_eq!(
             fs::read_to_string(agira_root.path().join("config.toml")).unwrap(),
             DEFAULT_CONFIG_TOML
@@ -109,6 +101,20 @@ mod tests {
         let agira_root = TempDir::new().unwrap();
         fs::write(
             agira_root.path().join("config.toml"),
+            "default_max_retries = 5\n",
+        )
+        .unwrap();
+
+        let config = load_or_create(agira_root.path()).unwrap();
+
+        assert_eq!(config.default_max_retries, 5);
+    }
+
+    #[test]
+    fn old_config_with_default_model_ignored() {
+        let agira_root = TempDir::new().unwrap();
+        fs::write(
+            agira_root.path().join("config.toml"),
             "default_max_retries = 5\ndefault_model = \"opus\"\n",
         )
         .unwrap();
@@ -116,7 +122,6 @@ mod tests {
         let config = load_or_create(agira_root.path()).unwrap();
 
         assert_eq!(config.default_max_retries, 5);
-        assert_eq!(config.default_model, "opus");
     }
 
     #[test]
@@ -147,6 +152,5 @@ mod tests {
         let config = load_or_create(agira_root.path()).unwrap();
 
         assert_eq!(config.default_max_retries, 7);
-        assert_eq!(config.default_model, "sonnet");
     }
 }

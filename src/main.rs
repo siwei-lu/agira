@@ -41,8 +41,6 @@ enum Commands {
         stack: Option<String>,
         #[arg(long)]
         phases: Option<String>,
-        #[arg(long)]
-        models: Option<String>,
         #[arg(long = "verification-commands")]
         verification_commands: Option<String>,
         #[arg(long = "acceptance-testing")]
@@ -65,7 +63,7 @@ enum PhaseCommands {
     Get,
     /// Add, insert, or remove phases in the state machine
     Update {
-        /// Phase name to add (appended at end unless --after or --before is given)
+        /// Phase to add in phase:model format (e.g. review:opus); appended at end unless --after or --before
         #[arg(long)]
         add: Option<String>,
         /// Insert the new phase after this existing phase
@@ -77,6 +75,9 @@ enum PhaseCommands {
         /// Phase name to remove (fails if any task is currently in that phase)
         #[arg(long)]
         remove: Option<String>,
+        /// Change the model of an existing phase: --set-model <phase> <model>
+        #[arg(long, num_args = 2, value_names = ["phase", "model"])]
+        set_model: Option<Vec<String>>,
     },
 }
 
@@ -244,7 +245,6 @@ fn main() -> ExitCode {
         Commands::Init {
             stack,
             phases,
-            models,
             verification_commands,
             acceptance_testing,
             prd_path,
@@ -254,7 +254,6 @@ fn main() -> ExitCode {
                 init::InitFlags {
                     stack,
                     phases,
-                    models,
                     verification_commands,
                     acceptance_testing,
                     prd_path,
@@ -290,6 +289,7 @@ fn main() -> ExitCode {
                 after,
                 before,
                 remove,
+                set_model,
             } => match resolve_project() {
                 Ok(project) => match phase::run_phase_update(
                     &project,
@@ -297,6 +297,7 @@ fn main() -> ExitCode {
                     after.as_deref(),
                     before.as_deref(),
                     remove.as_deref(),
+                    set_model.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -332,7 +333,6 @@ fn exit_code_for_init(error: &init::InitError) -> ExitCode {
     match error {
         init::InitError::MissingFlags { .. }
         | init::InitError::InvalidPhases
-        | init::InitError::InvalidModels
         | init::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
@@ -446,6 +446,8 @@ fn exit_code_for_phase_update(error: &phase::PhaseUpdateError) -> ExitCode {
     match error {
         NoOperation
         | ConflictingPositionFlags
+        | InvalidAddFormat
+        | UnknownModel { .. }
         | PhaseNotFound { .. }
         | DuplicatePhase { .. }
         | PhaseBusy { .. }

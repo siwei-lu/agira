@@ -13,6 +13,7 @@ pub(crate) fn format_pick_output(
     config: &Config,
     tasks: &[Task],
     prd_content: Option<&str>,
+    just_done: Option<(&str, &str)>,
 ) -> String {
     if tasks.is_empty() {
         return match prd_content {
@@ -26,14 +27,14 @@ pub(crate) fn format_pick_output(
     }
 
     if let Some(task) = select_next_task(tasks, config) {
-        return format_task_prompt(task, config);
+        return format_task_prompt(task, config, just_done);
     }
 
     format_non_actionable_summary(tasks)
 }
 
 pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
-    let terminal_phase = config.state_machine.last()?;
+    let terminal_phase = config.terminal_phase()?;
 
     all_tasks
         .iter()
@@ -49,15 +50,12 @@ pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Op
 }
 
 fn phase_index(phase: &str, config: &Config) -> Option<usize> {
-    config
-        .state_machine
-        .iter()
-        .position(|candidate| candidate == phase)
+    config.phases.iter().position(|p| p.name == phase)
 }
 
 fn is_actionable(task: &Task, config: &Config) -> bool {
-    config.state_machine.last().is_some_and(|terminal_phase| {
-        task.state != *terminal_phase && phase_index(&task.state, config).is_some()
+    config.terminal_phase().is_some_and(|terminal| {
+        task.state != terminal && phase_index(&task.state, config).is_some()
     })
 }
 
@@ -73,9 +71,8 @@ fn deps_satisfied(task: &Task, all_tasks: &[Task], terminal_phase: &str) -> bool
 fn is_all_done(tasks: &[Task], config: &Config) -> bool {
     !tasks.is_empty()
         && config
-            .state_machine
-            .last()
-            .is_some_and(|terminal_phase| tasks.iter().all(|task| task.state == *terminal_phase))
+            .terminal_phase()
+            .is_some_and(|terminal| tasks.iter().all(|task| task.state == terminal))
 }
 
 fn format_decomposition_prompt(prd_content: &str) -> String {
@@ -84,30 +81,36 @@ fn format_decomposition_prompt(prd_content: &str) -> String {
     )
 }
 
-fn format_task_prompt(task: &Task, config: &Config) -> String {
-    let role = config
-        .models
-        .get(&task.state)
-        .unwrap_or(&config.default_model);
-    let description = if task.description.is_empty() {
-        "No description provided."
-    } else {
-        task.description.as_str()
-    };
-    let mut output = format!(
+fn format_task_prompt(task: &Task, config: &Config, just_done: Option<(&str, &str)>) -> String {
+    let model = config
+        .phases
+        .iter()
+        .find(|p| p.name == task.state)
+        .map(|p| p.model.as_str())
+        .unwrap_or("sonnet");
+
+    let mut subagent = format!(
         "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}\n- Agent role: {}\n\n## Description\n{}",
-        task.id, task.title, task.state, role, description
+        task.id,
+        task.title,
+        task.state,
+        model,
+        if task.description.is_empty() {
+            "No description provided."
+        } else {
+            task.description.as_str()
+        }
     );
 
     if !task.phases.is_empty() {
-        output.push_str("\n\n## Acceptance Criteria");
+        subagent.push_str("\n\n## Acceptance Criteria");
         for (phase_name, phase) in prior_phases(task, config) {
             let artifact = if phase.artifact.is_empty() {
                 "<empty>"
             } else {
                 phase.artifact.as_str()
             };
-            output.push_str(&format!(
+            subagent.push_str(&format!(
                 "\n- Phase: {phase_name}\n  Completed at: {}\n  Artifact: {artifact}",
                 phase.completed_at
             ));
@@ -115,22 +118,34 @@ fn format_task_prompt(task: &Task, config: &Config) -> String {
     }
 
     if is_verification_phase(&task.state, config) {
-        output.push_str("\n\n## Verification Commands");
+        subagent.push_str("\n\n## Verification Commands");
         if config.verification.commands.is_empty() {
-            output.push_str("\nNo verification commands configured.");
+            subagent.push_str("\nNo verification commands configured.");
         } else {
             for command in &config.verification.commands {
-                output.push_str(&format!("\n- `{command}`"));
+                subagent.push_str(&format!("\n- `{command}`"));
             }
         }
     }
 
-    output.push_str(&format!(
+    subagent.push_str(&format!(
         "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task work --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
         task.id
     ));
 
-    output
+    let steps = if let Some((done_id, done_title)) = just_done {
+        format!(
+            "1. Commit all changes from {done_id} \"{done_title}\" with a descriptive commit message.\n2. Spawn a subagent using model `{model}`.\n3. Pass the content between the delimiters below as the subagent's prompt.\n4. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
+        )
+    } else {
+        format!(
+            "1. Spawn a subagent using model `{model}`.\n2. Pass the content between the delimiters below as the subagent's prompt.\n3. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
+        )
+    };
+
+    format!(
+        "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform the work yourself.\n\n{steps}\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
+    )
 }
 
 fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
@@ -139,13 +154,13 @@ fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a Tas
     };
 
     config
-        .state_machine
+        .phases
         .iter()
         .take(current_index)
-        .filter_map(|phase_name| {
+        .filter_map(|p| {
             task.phases
-                .get(phase_name)
-                .map(|phase| (phase_name.as_str(), phase))
+                .get(&p.name)
+                .map(|phase| (p.name.as_str(), phase))
         })
         .collect()
 }
@@ -213,32 +228,36 @@ fn task_id_number(id: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{config::VerificationConfig, tasks::TaskStore};
+    use crate::config::{PhaseConfig, VerificationConfig};
+    use crate::tasks::TaskStore;
 
     fn test_config() -> Config {
-        let mut models = BTreeMap::new();
-        models.insert("enriching".to_owned(), "enricher".to_owned());
-        models.insert("in_progress".to_owned(), "implementer".to_owned());
-        models.insert("verifying".to_owned(), "verifier".to_owned());
-
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec![
-                "enriching".to_owned(),
-                "in_progress".to_owned(),
-                "verifying".to_owned(),
-                "done".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "verifying".to_owned(),
+                    model: "haiku".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
-            models,
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -253,7 +272,7 @@ mod tests {
         let config = test_config();
         let store = test_store(&temp_dir, &config);
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, None);
 
         assert_eq!(output, NO_TASKS_MESSAGE);
     }
@@ -265,7 +284,7 @@ mod tests {
         let store = test_store(&temp_dir, &config);
         let prd_text = "Build the pick command from these requirements.";
 
-        let output = format_pick_output(&config, store.all_tasks(), Some(prd_text));
+        let output = format_pick_output(&config, store.all_tasks(), Some(prd_text), None);
 
         assert!(output.contains("agira task add"));
         assert!(output.contains(prd_text));
@@ -317,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_contains_role() {
+    fn task_prompt_has_orchestrator_preamble_and_delimiters() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
@@ -325,25 +344,28 @@ mod tests {
         store.add_task("Implement pick", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        assert!(prompt.contains("- Agent role: implementer"));
+        assert!(prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
+        assert!(prompt.contains("--- END SUBAGENT PROMPT ---"));
+        assert!(prompt.contains("# Agira Task Prompt"));
+        assert!(prompt.contains("- Agent role: sonnet"));
     }
 
     #[test]
-    fn task_prompt_uses_default_model_without_phase_model() {
+    fn task_prompt_uses_sonnet_fallback_for_unknown_phase() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
-        config.default_model = "opus".to_owned();
-        config.models.remove("in_progress");
-        let mut store = test_store(&temp_dir, &config);
+        config.phases.retain(|p| p.name != "in_progress");
+        let mut store = test_store(&temp_dir, &test_config());
 
         store.add_task("Implement pick", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        assert!(prompt.contains("- Agent role: opus"));
+        assert!(prompt.contains("- Agent role: sonnet"));
     }
 
     #[test]
@@ -354,9 +376,45 @@ mod tests {
 
         store.add_task("Implement work", "", None, vec![]).unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config);
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
         assert!(prompt.contains("agira task work --artifact"));
+    }
+
+    #[test]
+    fn task_prompt_without_just_done_has_three_steps() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Next task", "", None, vec![]).unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("1. Spawn a subagent"));
+        assert!(prompt.contains("2. Pass the content"));
+        assert!(prompt.contains("3. Once the subagent finishes"));
+        assert!(!prompt.contains("Commit all changes"));
+    }
+
+    #[test]
+    fn task_prompt_with_just_done_includes_commit_step() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Next task", "", None, vec![]).unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            Some(("task-000", "Previous Task")),
+        );
+
+        assert!(prompt.contains("1. Commit all changes from task-000 \"Previous Task\""));
+        assert!(prompt.contains("2. Spawn a subagent"));
+        assert!(prompt.contains("3. Pass the content"));
+        assert!(prompt.contains("4. Once the subagent finishes"));
     }
 
     #[test]
@@ -367,7 +425,7 @@ mod tests {
 
         store.add_task("Implement pick", "", None, vec![]).unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, None);
 
         assert!(!output.as_bytes().contains(&0x1B));
     }
@@ -388,7 +446,7 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, None);
 
         assert!(output.contains("# Agira Completion Summary"));
         assert!(output.contains("task-001"));

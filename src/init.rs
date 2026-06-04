@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -8,11 +7,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    config::{Config, VerificationConfig},
+    config::{Config, PhaseConfig, VerificationConfig},
     project::Project,
 };
 
-const DEFAULT_STATE_MACHINE: [&str; 4] = ["enriching", "in_progress", "verifying", "done"];
 const ACCEPTANCE_TESTING_VALUES: [&str; 5] = ["cli", "api", "ui", "hybrid", "none"];
 
 #[derive(Debug, Error)]
@@ -23,11 +21,10 @@ pub enum InitError {
     )]
     MissingFlags { missing: Vec<String> },
 
-    #[error("invalid phases: comma-separated phase names required, no spaces within a name")]
+    #[error(
+        "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:sonnet)"
+    )]
     InvalidPhases,
-
-    #[error("invalid models: use comma-separated role=model pairs")]
-    InvalidModels,
 
     #[error("invalid acceptance-testing: use cli, api, ui, hybrid, or none")]
     InvalidAcceptanceTesting,
@@ -47,7 +44,6 @@ pub enum InitError {
 pub struct InitFlags {
     pub stack: Option<String>,
     pub phases: Option<String>,
-    pub models: Option<String>,
     pub verification_commands: Option<String>,
     pub acceptance_testing: Option<String>,
     pub prd_path: Option<String>,
@@ -61,11 +57,7 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     }
 
     if !has_required_flags(&flags) {
-        let _defaults = scan_project(
-            &project.git_root,
-            project.global_config.default_max_retries,
-            &project.global_config.default_model,
-        );
+        let _defaults = scan_project(&project.git_root, project.global_config.default_max_retries);
         print!("{}", bare_invocation_prompt());
         return Ok(());
     }
@@ -79,8 +71,7 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
 
     let config = Config {
         stack: stack.to_owned(),
-        state_machine: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
-        models: parse_models_flag(flags.models.as_deref().unwrap_or_default())?,
+        phases: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
         verification: VerificationConfig {
             commands: parse_verification_commands_flag(
                 flags.verification_commands.as_deref().unwrap_or_default(),
@@ -90,7 +81,6 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
             flags.acceptance_testing.as_deref().unwrap_or_default(),
         )?,
         max_retries: project.global_config.default_max_retries,
-        default_model: project.global_config.default_model.clone(),
         prd_path: parse_prd_path_flag(flags.prd_path.as_deref()),
     };
 
@@ -98,7 +88,7 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     write_config(&config_path, &config)
 }
 
-fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
+fn scan_project(git_root: &Path, max_retries: u32) -> Config {
     if git_root.join("Cargo.toml").exists() {
         return config_for_stack(
             "rust",
@@ -109,12 +99,11 @@ fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Confi
             ],
             "cli",
             max_retries,
-            default_model,
         );
     }
 
     if git_root.join("package.json").exists() {
-        return scan_package_json_project(git_root, max_retries, default_model);
+        return scan_package_json_project(git_root, max_retries);
     }
 
     if git_root.join("go.mod").exists() {
@@ -127,7 +116,6 @@ fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Confi
             ],
             "api",
             max_retries,
-            default_model,
         );
     }
 
@@ -141,18 +129,11 @@ fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Confi
             ],
             "api",
             max_retries,
-            default_model,
         );
     }
 
     if git_root.join("pom.xml").exists() {
-        return config_for_stack(
-            "java",
-            vec!["mvn verify".to_owned()],
-            "api",
-            max_retries,
-            default_model,
-        );
+        return config_for_stack("java", vec!["mvn verify".to_owned()], "api", max_retries);
     }
 
     if git_root.join("build.gradle").exists() || git_root.join("build.gradle.kts").exists() {
@@ -161,18 +142,17 @@ fn scan_project(git_root: &Path, max_retries: u32, default_model: &str) -> Confi
             vec!["./gradlew test".to_owned()],
             "api",
             max_retries,
-            default_model,
         );
     }
 
     if git_root.join("pubspec.yaml").exists() {
-        return scan_pubspec_project(git_root, max_retries, default_model);
+        return scan_pubspec_project(git_root, max_retries);
     }
 
-    config_for_stack("unknown", Vec::new(), "none", max_retries, default_model)
+    config_for_stack("unknown", Vec::new(), "none", max_retries)
 }
 
-fn scan_package_json_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
+fn scan_package_json_project(git_root: &Path, max_retries: u32) -> Config {
     let package_json = read_package_json(&git_root.join("package.json"));
     let package_manager = detect_package_manager(git_root, package_json.as_ref());
     let stack = if is_typescript_project(git_root, package_json.as_ref()) {
@@ -183,16 +163,10 @@ fn scan_package_json_project(git_root: &Path, max_retries: u32, default_model: &
     let commands = package_commands(package_manager, package_json.as_ref());
     let acceptance_testing = package_acceptance_testing(package_json.as_ref());
 
-    config_for_stack(
-        stack,
-        commands,
-        &acceptance_testing,
-        max_retries,
-        default_model,
-    )
+    config_for_stack(stack, commands, &acceptance_testing, max_retries)
 }
 
-fn scan_pubspec_project(git_root: &Path, max_retries: u32, default_model: &str) -> Config {
+fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
     let contents = fs::read_to_string(git_root.join("pubspec.yaml")).unwrap_or_default();
 
     if contents.contains("flutter:") || contents.contains("sdk: flutter") {
@@ -205,7 +179,6 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32, default_model: &str) 
             ],
             "ui",
             max_retries,
-            default_model,
         )
     } else {
         config_for_stack(
@@ -217,7 +190,6 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32, default_model: &str) 
             ],
             "cli",
             max_retries,
-            default_model,
         )
     }
 }
@@ -227,33 +199,36 @@ fn config_for_stack(
     commands: Vec<String>,
     acceptance_testing: &str,
     max_retries: u32,
-    default_model: &str,
 ) -> Config {
     Config {
         stack: stack.to_owned(),
-        state_machine: default_state_machine(),
-        models: default_models(),
+        phases: default_phases(),
         verification: VerificationConfig { commands },
         acceptance_testing: acceptance_testing.to_owned(),
         max_retries,
-        default_model: default_model.to_owned(),
         prd_path: None,
     }
 }
 
-fn default_state_machine() -> Vec<String> {
-    DEFAULT_STATE_MACHINE
-        .iter()
-        .map(|phase| (*phase).to_owned())
-        .collect()
-}
-
-fn default_models() -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("implementer".to_owned(), "sonnet".to_owned()),
-        ("reviewer".to_owned(), "sonnet".to_owned()),
-        ("verifier".to_owned(), "haiku".to_owned()),
-    ])
+fn default_phases() -> Vec<PhaseConfig> {
+    vec![
+        PhaseConfig {
+            name: "enriching".to_owned(),
+            model: "opus".to_owned(),
+        },
+        PhaseConfig {
+            name: "in_progress".to_owned(),
+            model: "sonnet".to_owned(),
+        },
+        PhaseConfig {
+            name: "verifying".to_owned(),
+            model: "haiku".to_owned(),
+        },
+        PhaseConfig {
+            name: "done".to_owned(),
+            model: "haiku".to_owned(),
+        },
+    ]
 }
 
 fn read_package_json(path: &Path) -> Option<Value> {
@@ -450,20 +425,17 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-Reason about project complexity to propose a state machine:
-- Has a PRD with FM-IDs and multiple reviewers → richer machine makes sense,
-  e.g., `enriching,in_progress,reviewing,verifying,done`
-- Straightforward CLI tool or library with no design phase → leaner is better,
-  e.g., `in_progress,verifying,done`
-- Tiny script or prototype → minimal, e.g., `in_progress,done`
-Present 2 options with a clear trade-off. Format: `phase1,phase2,...`
+Reason about project complexity to propose a state machine. Each phase carries its model:
+- Design / enrichment phases → `opus` (reasoning-heavy, architecture decisions)
+- Implementation phases → `sonnet` (code generation, good cost/quality balance)
+- Verification / linting phases → `haiku` (fast, cheap, mechanical checks)
 
-**`--models`**
-Map roles to models based on what each phase actually does:
-- Code generation, implementation → `sonnet` or `opus` depending on complexity
-- Light verification, linting, formatting checks → `haiku`
-- Architecture review or enrichment with PRD → `opus`
-Propose the specific mapping. Format: `role=model,role=model,...`
+Examples:
+- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku,done:haiku`
+- CLI tool or library: `in_progress:sonnet,verifying:haiku,done:haiku`
+- Prototype: `in_progress:sonnet,done:sonnet`
+
+Present 2 options with a clear trade-off. Format: `phase:model,phase:model,...`
 
 **`--verification-commands`**
 From your scan, propose exact commands. Prefer commands found in CI or Makefile over
@@ -501,8 +473,7 @@ Once all values are confirmed, call:
 ```sh
 agira init \
   --stack <stack> \
-  --phases <phase1,phase2,...> \
-  --models <role=model,...> \
+  --phases <phase:model,...> \
   --verification-commands <cmd1;cmd2;...> \
   --acceptance-testing <cli|api|ui|hybrid|none> \
   [--prd-path <path>]
@@ -537,7 +508,6 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
     let required = [
         ("--stack", flags.stack.as_ref()),
         ("--phases", flags.phases.as_ref()),
-        ("--models", flags.models.as_ref()),
         (
             "--verification-commands",
             flags.verification_commands.as_ref(),
@@ -561,56 +531,46 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
 fn has_required_flags(flags: &InitFlags) -> bool {
     flags.stack.is_some()
         && flags.phases.is_some()
-        && flags.models.is_some()
         && flags.verification_commands.is_some()
         && flags.acceptance_testing.is_some()
 }
 
-fn parse_phases_flag(input: &str) -> Result<Vec<String>, InitError> {
-    let phases: Vec<String> = input
+fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
+    let phases: Result<Vec<PhaseConfig>, InitError> = input
         .split(',')
         .map(str::trim)
-        .map(ToOwned::to_owned)
+        .map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return Err(InitError::InvalidPhases);
+            }
+            match pair.split_once(':') {
+                Some((name, model)) => {
+                    let name = name.trim();
+                    let model = model.trim();
+                    if name.is_empty()
+                        || model.is_empty()
+                        || name.chars().any(char::is_whitespace)
+                        || model.chars().any(char::is_whitespace)
+                    {
+                        Err(InitError::InvalidPhases)
+                    } else {
+                        Ok(PhaseConfig {
+                            name: name.to_owned(),
+                            model: model.to_owned(),
+                        })
+                    }
+                }
+                None => Err(InitError::InvalidPhases),
+            }
+        })
         .collect();
 
-    if phases.is_empty()
-        || phases
-            .iter()
-            .any(|phase| phase.is_empty() || phase.chars().any(char::is_whitespace))
-    {
-        Err(InitError::InvalidPhases)
-    } else {
-        Ok(phases)
+    let phases = phases?;
+    if phases.is_empty() {
+        return Err(InitError::InvalidPhases);
     }
-}
-
-fn parse_models_flag(input: &str) -> Result<BTreeMap<String, String>, InitError> {
-    let mut models = BTreeMap::new();
-    let mut pairs_seen = 0;
-
-    for pair in input.split(',').map(str::trim) {
-        pairs_seen += 1;
-
-        if pair.matches('=').count() != 1 {
-            return Err(InitError::InvalidModels);
-        }
-
-        let (role, model) = pair.split_once('=').ok_or(InitError::InvalidModels)?;
-        let role = role.trim();
-        let model = model.trim();
-
-        if role.is_empty() || model.is_empty() {
-            return Err(InitError::InvalidModels);
-        }
-
-        models.insert(role.to_owned(), model.to_owned());
-    }
-
-    if pairs_seen == 0 || models.is_empty() {
-        Err(InitError::InvalidModels)
-    } else {
-        Ok(models)
-    }
+    Ok(phases)
 }
 
 fn parse_verification_commands_flag(input: &str) -> Vec<String> {
@@ -675,7 +635,7 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("Cargo.toml"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 5, "opus");
+        let config = scan_project(git_root.path(), 5);
 
         assert_eq!(config.stack, "rust");
         assert_eq!(
@@ -688,20 +648,20 @@ mod tests {
         );
         assert_eq!(config.acceptance_testing, "cli");
         assert_eq!(config.max_retries, 5);
-        assert_eq!(config.default_model, "opus");
+        assert_eq!(config.phases[0].name, "enriching");
+        assert_eq!(config.phases[0].model, "opus");
     }
 
     #[test]
     fn slug_defaults_for_unknown() {
         let git_root = TempDir::new().unwrap();
 
-        let config = scan_project(git_root.path(), 4, "haiku");
+        let config = scan_project(git_root.path(), 4);
 
         assert_eq!(config.stack, "unknown");
         assert!(config.verification.commands.is_empty());
         assert_eq!(config.acceptance_testing, "none");
         assert_eq!(config.max_retries, 4);
-        assert_eq!(config.default_model, "haiku");
     }
 
     #[test]
@@ -709,7 +669,7 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("pom.xml"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3, "sonnet");
+        let config = scan_project(git_root.path(), 3);
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["mvn verify"]);
@@ -721,7 +681,7 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("build.gradle"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3, "sonnet");
+        let config = scan_project(git_root.path(), 3);
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["./gradlew test"]);
@@ -733,7 +693,7 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("build.gradle.kts"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3, "sonnet");
+        let config = scan_project(git_root.path(), 3);
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["./gradlew test"]);
@@ -742,41 +702,39 @@ mod tests {
 
     #[test]
     fn parse_phases_flag() {
-        assert_eq!(
-            super::parse_phases_flag("enriching,in_progress,done").unwrap(),
-            ["enriching", "in_progress", "done"]
-        );
-        assert_eq!(super::parse_phases_flag("done").unwrap(), ["done"]);
+        let phases =
+            super::parse_phases_flag("enriching:opus,in_progress:sonnet,done:haiku").unwrap();
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].name, "enriching");
+        assert_eq!(phases[0].model, "opus");
+        assert_eq!(phases[1].name, "in_progress");
+        assert_eq!(phases[1].model, "sonnet");
+        assert_eq!(phases[2].name, "done");
+        assert_eq!(phases[2].model, "haiku");
+
+        let single = super::parse_phases_flag("done:haiku").unwrap();
+        assert_eq!(single[0].name, "done");
+        assert_eq!(single[0].model, "haiku");
+
         assert!(matches!(
-            super::parse_phases_flag("in progress"),
+            super::parse_phases_flag("in progress:sonnet"),
             Err(InitError::InvalidPhases)
         ));
         assert!(matches!(
             super::parse_phases_flag(""),
             Err(InitError::InvalidPhases)
         ));
-    }
-
-    #[test]
-    fn parse_models_flag() {
-        assert_eq!(
-            super::parse_models_flag("implementer=opus,reviewer=sonnet").unwrap(),
-            BTreeMap::from([
-                ("implementer".to_owned(), "opus".to_owned()),
-                ("reviewer".to_owned(), "sonnet".to_owned()),
-            ])
-        );
         assert!(matches!(
-            super::parse_models_flag("implementer"),
-            Err(InitError::InvalidModels)
+            super::parse_phases_flag("enriching"),
+            Err(InitError::InvalidPhases)
         ));
         assert!(matches!(
-            super::parse_models_flag("=opus"),
-            Err(InitError::InvalidModels)
+            super::parse_phases_flag(":sonnet"),
+            Err(InitError::InvalidPhases)
         ));
         assert!(matches!(
-            super::parse_models_flag("implementer="),
-            Err(InitError::InvalidModels)
+            super::parse_phases_flag("enriching:"),
+            Err(InitError::InvalidPhases)
         ));
     }
 
@@ -808,8 +766,7 @@ mod tests {
     fn detect_missing_flags() {
         let all_present = InitFlags {
             stack: Some("rust".to_owned()),
-            phases: Some("done".to_owned()),
-            models: Some("implementer=sonnet".to_owned()),
+            phases: Some("done:haiku".to_owned()),
             verification_commands: Some("cargo test".to_owned()),
             acceptance_testing: Some("cli".to_owned()),
             prd_path: None,
@@ -818,8 +775,7 @@ mod tests {
 
         let partial = InitFlags {
             stack: Some("rust".to_owned()),
-            phases: Some("done".to_owned()),
-            models: Some("implementer=sonnet".to_owned()),
+            phases: Some("done:haiku".to_owned()),
             verification_commands: None,
             acceptance_testing: None,
             prd_path: None,
@@ -840,6 +796,8 @@ mod tests {
         assert!(prompt.contains("CLAUDE.md"));
         assert!(prompt.contains("Write the whole file, not just an appended block."));
         assert!(!prompt.contains("agira-context"));
+        assert!(prompt.contains("phase:model"));
+        assert!(!prompt.contains("--models"));
     }
 
     #[test]
@@ -855,7 +813,6 @@ mod tests {
             ],
             "cli",
             5,
-            "opus",
         );
 
         write_config(&path, &config).unwrap();
@@ -864,15 +821,13 @@ mod tests {
         let value: Value = serde_json::from_str(&contents).unwrap();
 
         assert!(value.get("stack").is_some());
-        assert!(value.get("state_machine").is_some());
-        assert!(value.get("models").is_some());
+        assert!(value.get("phases").is_some());
+        assert!(value.get("state_machine").is_none());
+        assert!(value.get("models").is_none());
         assert!(value.get("verification").is_some());
         assert!(value.get("acceptance_testing").is_some());
         assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));
-        assert_eq!(
-            value.get("default_model").and_then(Value::as_str),
-            Some("opus")
-        );
+        assert!(value.get("default_model").is_none());
         assert!(value.get("prd_path").is_none());
     }
 }

@@ -82,15 +82,13 @@ pub fn run_status(project: &Project, json: bool, filter: Option<&str>) -> Result
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    let terminal_phase =
-        config
-            .state_machine
-            .last()
-            .cloned()
-            .ok_or_else(|| StatusError::InvalidConfig {
-                path: config_path,
-                reason: "state_machine must not be empty".to_owned(),
-            })?;
+    let terminal_phase = config
+        .terminal_phase()
+        .ok_or_else(|| StatusError::InvalidConfig {
+            path: config_path,
+            reason: "phases must not be empty".to_owned(),
+        })?
+        .to_owned();
 
     let store = TaskStore::new(&project.state_dir, &config)?;
     let tasks = store.all_tasks();
@@ -262,13 +260,13 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, process::ExitCode};
+    use std::{fs, process::ExitCode};
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
-        config::{Config, VerificationConfig},
+        config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},
     };
@@ -276,16 +274,23 @@ mod tests {
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec![
-                "enriching".to_owned(),
-                "in_progress".to_owned(),
-                "done".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
-            models: BTreeMap::new(),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -494,12 +499,12 @@ mod tests {
         assert!(matches!(error, StatusError::ConfigLoad { .. }));
 
         let mut config = test_config();
-        config.state_machine.clear();
+        config.phases.clear();
         write_config(&project, &config);
         let error = run_status(&project, false, None).unwrap_err();
         match error {
             StatusError::InvalidConfig { reason, .. } => {
-                assert_eq!(reason, "state_machine must not be empty");
+                assert_eq!(reason, "phases must not be empty");
             }
             other => panic!("unexpected error: {other}"),
         }

@@ -111,13 +111,13 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
-        config::{Config, VerificationConfig},
+        config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::TaskStore,
     };
@@ -125,16 +125,23 @@ mod tests {
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec![
-                "enriching".to_owned(),
-                "in_progress".to_owned(),
-                "done".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
             max_retries: 3,
-            models: BTreeMap::new(),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }

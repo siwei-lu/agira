@@ -59,7 +59,8 @@ pub fn run_work(
     match artifact {
         None => {
             let store = TaskStore::new(&project.state_dir, &config)?;
-            let output = format_pick_output(&config, store.all_tasks(), prd_content.as_deref());
+            let output =
+                format_pick_output(&config, store.all_tasks(), prd_content.as_deref(), None);
             print_work_output(&output);
         }
         Some(artifact) => {
@@ -67,15 +68,13 @@ pub fn run_work(
                 return Err(WorkError::EmptyArtifact);
             }
 
-            let terminal_phase =
-                config
-                    .state_machine
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| WorkError::InvalidConfig {
-                        path: config_path.clone(),
-                        reason: "state_machine must not be empty".to_owned(),
-                    })?;
+            let terminal_phase = config
+                .terminal_phase()
+                .ok_or_else(|| WorkError::InvalidConfig {
+                    path: config_path.clone(),
+                    reason: "phases must not be empty".to_owned(),
+                })?
+                .to_owned();
 
             let mut store = TaskStore::new(&project.state_dir, &config)?;
 
@@ -95,7 +94,12 @@ pub fn run_work(
                 print_work_output(&format!("{task_id} done ✓"));
                 let convention = read_recent_commits(&project.git_root);
                 print_work_output(&commit_prompt(&task_id, &task_title, convention.as_deref()));
-                let next_output = format_pick_output(&config, store.all_tasks(), None);
+                let next_output = format_pick_output(
+                    &config,
+                    store.all_tasks(),
+                    None,
+                    Some((&task_id, &task_title)),
+                );
                 print_work_output(&next_output);
             } else {
                 print_work_output(&format!("{task_id} → {resulting_state}"));
@@ -149,30 +153,37 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
-        config::{Config, VerificationConfig},
+        config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::TaskStore,
     };
 
     fn test_config() -> Config {
         Config {
-            state_machine: vec![
-                "enriching".to_owned(),
-                "in_progress".to_owned(),
-                "done".to_owned(),
+            stack: "rust".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
             max_retries: 3,
-            models: BTreeMap::new(),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
-            stack: "rust".to_owned(),
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }

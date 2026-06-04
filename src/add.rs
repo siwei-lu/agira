@@ -47,10 +47,10 @@ pub fn run_add(
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    if config.state_machine.is_empty() {
+    if config.phases.is_empty() {
         return Err(AddError::InvalidConfig {
             path: config_path,
-            reason: "state_machine must not be empty".to_owned(),
+            reason: "phases must not be empty".to_owned(),
         });
     }
 
@@ -117,14 +117,14 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use chrono::DateTime;
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
-        config::{Config, VerificationConfig},
+        config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},
     };
@@ -132,12 +132,19 @@ mod tests {
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec!["enriching".to_owned(), "done".to_owned()],
-            models: BTreeMap::new(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
+            ],
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -161,8 +168,7 @@ mod tests {
             project.state_dir.join("config.json"),
             r#"{
   "stack": "rust",
-  "state_machine": ["enriching", "done"],
-  "models": {},
+  "phases": [{"name":"enriching","model":"opus"},{"name":"done","model":"haiku"}],
   "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
@@ -216,7 +222,7 @@ mod tests {
         assert_eq!(task.title, "Implement login endpoint");
         assert_eq!(task.description, "");
         assert_eq!(task.prd_module_id, None);
-        assert_eq!(task.state, config.state_machine[0]);
+        assert_eq!(task.state, config.phases[0].name);
         assert!(task.dependencies.is_empty());
         assert_eq!(task.retry_count, 0);
         assert_eq!(task.max_retries, config.max_retries);
@@ -327,13 +333,13 @@ mod tests {
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
-        config.state_machine.clear();
+        config.phases.clear();
         write_config(&project, &config);
         let error = run_add(&project, "Invalid config", None, None, &[]).unwrap_err();
 
         match error {
             AddError::InvalidConfig { reason, .. } => {
-                assert_eq!(reason, "state_machine must not be empty");
+                assert_eq!(reason, "phases must not be empty");
             }
             other => panic!("unexpected error: {other}"),
         }

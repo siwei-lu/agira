@@ -92,7 +92,7 @@ pub struct TaskStore {
 impl TaskStore {
     pub fn new(state_dir: impl AsRef<Path>, config: &Config) -> Result<Self, StoreError> {
         let tasks_path = state_dir.as_ref().join("tasks.json");
-        let state_machine = config.state_machine.clone();
+        let state_machine: Vec<String> = config.phases.iter().map(|p| p.name.clone()).collect();
         let terminal_phase =
             state_machine
                 .last()
@@ -417,28 +417,35 @@ impl TaskStore {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use chrono::DateTime;
     use serde_json::Value;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::VerificationConfig;
+    use crate::config::{PhaseConfig, VerificationConfig};
 
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec![
-                "pending".to_owned(),
-                "enriching".to_owned(),
-                "done".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
-            models: BTreeMap::new(),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }

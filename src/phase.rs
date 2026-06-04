@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    config::{ConfigError, load_project_config},
+    config::{ConfigError, PhaseConfig, load_project_config},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -31,13 +31,23 @@ pub enum PhaseGetError {
     },
 }
 
+const VALID_MODELS: &[&str] = &["opus", "sonnet", "haiku"];
+
 #[derive(Debug, Error)]
 pub enum PhaseUpdateError {
-    #[error("at least one of --add or --remove is required")]
+    #[error("at least one of --add, --remove, or --set-model is required")]
     NoOperation,
 
     #[error("--after and --before cannot be used together")]
     ConflictingPositionFlags,
+
+    #[error(
+        "invalid --add format: use phase:model (e.g. review:opus); valid models: opus, sonnet, haiku"
+    )]
+    InvalidAddFormat,
+
+    #[error("unknown model: {model}; valid models: opus, sonnet, haiku")]
+    UnknownModel { model: String },
 
     #[error("phase not found: {name}")]
     PhaseNotFound { name: String },
@@ -81,7 +91,12 @@ pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_get_config_error)?;
 
-    println!("state_machine: {}", config.state_machine.join(" \u{2192} "));
+    let display: Vec<String> = config
+        .phases
+        .iter()
+        .map(|p| format!("{}:{}", p.name, p.model))
+        .collect();
+    println!("phases: {}", display.join(" \u{2192} "));
 
     Ok(())
 }
@@ -92,8 +107,9 @@ pub fn run_phase_update(
     after: Option<&str>,
     before: Option<&str>,
     remove: Option<&str>,
+    set_model: Option<&[String]>,
 ) -> Result<(), PhaseUpdateError> {
-    if add.is_none() && remove.is_none() {
+    if add.is_none() && remove.is_none() && set_model.is_none() {
         return Err(PhaseUpdateError::NoOperation);
     }
 
@@ -101,12 +117,23 @@ pub fn run_phase_update(
         return Err(PhaseUpdateError::ConflictingPositionFlags);
     }
 
+    let new_phase = if let Some(add_arg) = add {
+        let (name, model) = parse_phase_model_arg(add_arg)?;
+        validate_model(model)?;
+        Some(PhaseConfig {
+            name: name.to_owned(),
+            model: model.to_owned(),
+        })
+    } else {
+        None
+    };
+
     let config_path = project.state_dir.join("config.json");
     let config = load_project_config(&config_path, &project.global_config)
         .map_err(map_update_config_error)?;
 
     if let Some(after) = after {
-        if !config.state_machine.contains(&after.to_owned()) {
+        if !config.phases.iter().any(|p| p.name == after) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: after.to_owned(),
             });
@@ -114,17 +141,17 @@ pub fn run_phase_update(
     }
 
     if let Some(before) = before {
-        if !config.state_machine.contains(&before.to_owned()) {
+        if !config.phases.iter().any(|p| p.name == before) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: before.to_owned(),
             });
         }
     }
 
-    if let Some(add) = add {
-        if config.state_machine.contains(&add.to_owned()) {
+    if let Some(ref p) = new_phase {
+        if config.phases.iter().any(|existing| existing.name == p.name) {
             return Err(PhaseUpdateError::DuplicatePhase {
-                name: add.to_owned(),
+                name: p.name.clone(),
             });
         }
     }
@@ -145,32 +172,78 @@ pub fn run_phase_update(
         }
     }
 
-    let mut new_phases = config.state_machine.clone();
-
-    if let Some(remove) = remove {
-        new_phases.retain(|phase| phase != remove);
-    }
-
-    if let Some(add) = add {
-        if let Some(after) = after {
-            let pos = new_phases.iter().position(|p| p == after).unwrap();
-            new_phases.insert(pos + 1, add.to_owned());
-        } else if let Some(before) = before {
-            let pos = new_phases.iter().position(|p| p == before).unwrap();
-            new_phases.insert(pos, add.to_owned());
-        } else {
-            new_phases.push(add.to_owned());
+    if let Some(sm) = set_model {
+        let (phase_name, model_name) = (&sm[0], &sm[1]);
+        validate_model(model_name)?;
+        if !config.phases.iter().any(|p| &p.name == phase_name) {
+            return Err(PhaseUpdateError::PhaseNotFound {
+                name: phase_name.clone(),
+            });
         }
     }
 
-    patch_state_machine(&config_path, &new_phases)?;
+    let mut new_phases = config.phases.clone();
 
-    println!("state_machine: {}", new_phases.join(" \u{2192} "));
+    if let Some(remove) = remove {
+        new_phases.retain(|p| p.name != remove);
+    }
+
+    if let Some(phase) = new_phase {
+        if let Some(after) = after {
+            let pos = new_phases.iter().position(|p| p.name == after).unwrap();
+            new_phases.insert(pos + 1, phase);
+        } else if let Some(before) = before {
+            let pos = new_phases.iter().position(|p| p.name == before).unwrap();
+            new_phases.insert(pos, phase);
+        } else {
+            new_phases.push(phase);
+        }
+    }
+
+    if let Some(sm) = set_model {
+        let (phase_name, model_name) = (&sm[0], &sm[1]);
+        for p in &mut new_phases {
+            if &p.name == phase_name {
+                p.model = model_name.clone();
+                break;
+            }
+        }
+    }
+
+    patch_phases(&config_path, &new_phases)?;
+
+    let display: Vec<String> = new_phases
+        .iter()
+        .map(|p| format!("{}:{}", p.name, p.model))
+        .collect();
+    println!("phases: {}", display.join(" \u{2192} "));
 
     Ok(())
 }
 
-fn patch_state_machine(config_path: &Path, new_phases: &[String]) -> Result<(), PhaseUpdateError> {
+fn parse_phase_model_arg(input: &str) -> Result<(&str, &str), PhaseUpdateError> {
+    input
+        .split_once(':')
+        .filter(|(name, model)| {
+            !name.is_empty()
+                && !model.is_empty()
+                && !name.chars().any(char::is_whitespace)
+                && !model.chars().any(char::is_whitespace)
+        })
+        .ok_or(PhaseUpdateError::InvalidAddFormat)
+}
+
+fn validate_model(model: &str) -> Result<(), PhaseUpdateError> {
+    if VALID_MODELS.contains(&model) {
+        Ok(())
+    } else {
+        Err(PhaseUpdateError::UnknownModel {
+            model: model.to_owned(),
+        })
+    }
+}
+
+fn patch_phases(config_path: &Path, new_phases: &[PhaseConfig]) -> Result<(), PhaseUpdateError> {
     let contents =
         fs::read_to_string(config_path).map_err(|source| PhaseUpdateError::ConfigRead {
             path: config_path.to_path_buf(),
@@ -183,7 +256,12 @@ fn patch_state_machine(config_path: &Path, new_phases: &[String]) -> Result<(), 
             source,
         })?;
 
-    value["state_machine"] = serde_json::json!(new_phases);
+    value["phases"] = serde_json::json!(new_phases);
+    // Remove old keys if present (migration)
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("state_machine");
+        obj.remove("models");
+    }
 
     let bytes =
         serde_json::to_vec_pretty(&value).map_err(|source| PhaseUpdateError::ConfigLoad {
@@ -222,13 +300,13 @@ fn map_update_config_error(error: ConfigError) -> PhaseUpdateError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
-        config::{Config, VerificationConfig},
+        config::{Config, PhaseConfig, VerificationConfig},
         global_config::GlobalConfig,
         tasks::TaskStore,
     };
@@ -236,16 +314,23 @@ mod tests {
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
-            state_machine: vec![
-                "enriching".to_owned(),
-                "in_progress".to_owned(),
-                "done".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: "opus".to_owned(),
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: "haiku".to_owned(),
+                },
             ],
-            models: BTreeMap::new(),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
-            default_model: "sonnet".to_owned(),
             prd_path: None,
         }
     }
@@ -276,10 +361,10 @@ mod tests {
         (temp_dir, project, config)
     }
 
-    fn loaded_phases(project: &Project) -> Vec<String> {
+    fn loaded_phases(project: &Project) -> Vec<PhaseConfig> {
         let config_path = project.state_dir.join("config.json");
         let config = load_project_config(&config_path, &GlobalConfig::default()).unwrap();
-        config.state_machine
+        config.phases
     }
 
     #[test]
@@ -304,44 +389,86 @@ mod tests {
     #[test]
     fn insert_after_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, Some("review"), Some("enriching"), None, None).unwrap();
-        assert_eq!(
-            loaded_phases(&project),
-            vec!["enriching", "review", "in_progress", "done"]
-        );
+        run_phase_update(
+            &project,
+            Some("review:sonnet"),
+            Some("enriching"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases[0].name, "enriching");
+        assert_eq!(phases[1].name, "review");
+        assert_eq!(phases[1].model, "sonnet");
+        assert_eq!(phases[2].name, "in_progress");
+        assert_eq!(phases[3].name, "done");
     }
 
     #[test]
     fn insert_before_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, Some("review"), None, Some("done"), None).unwrap();
-        assert_eq!(
-            loaded_phases(&project),
-            vec!["enriching", "in_progress", "review", "done"]
-        );
+        run_phase_update(
+            &project,
+            Some("review:sonnet"),
+            None,
+            Some("done"),
+            None,
+            None,
+        )
+        .unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases[2].name, "review");
+        assert_eq!(phases[2].model, "sonnet");
+        assert_eq!(phases[3].name, "done");
     }
 
     #[test]
     fn insert_appends_to_end_by_default() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, Some("deployed"), None, None, None).unwrap();
-        assert_eq!(
-            loaded_phases(&project),
-            vec!["enriching", "in_progress", "done", "deployed"]
-        );
+        run_phase_update(&project, Some("deployed:haiku"), None, None, None, None).unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.last().unwrap().name, "deployed");
+        assert_eq!(phases.last().unwrap().model, "haiku");
+    }
+
+    #[test]
+    fn invalid_add_format_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        for bad_input in ["review", ":sonnet", "review:", "review sonnet"] {
+            let error =
+                run_phase_update(&project, Some(bad_input), None, None, None, None).unwrap_err();
+            assert!(
+                matches!(error, PhaseUpdateError::InvalidAddFormat),
+                "expected InvalidAddFormat for input '{bad_input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_model_in_add_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error =
+            run_phase_update(&project, Some("review:gpt4"), None, None, None, None).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::UnknownModel { model } if model == "gpt4"));
     }
 
     #[test]
     fn remove_existing_phase() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, None, None, None, Some("in_progress")).unwrap();
-        assert_eq!(loaded_phases(&project), vec!["enriching", "done"]);
+        run_phase_update(&project, None, None, None, Some("in_progress"), None).unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "enriching");
+        assert_eq!(phases[1].name, "done");
     }
 
     #[test]
     fn duplicate_name_rejection() {
         let (_temp_dir, project, _config) = setup();
-        let error = run_phase_update(&project, Some("enriching"), None, None, None).unwrap_err();
+        let error = run_phase_update(&project, Some("enriching:sonnet"), None, None, None, None)
+            .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::DuplicatePhase { name } if name == "enriching"));
     }
 
@@ -350,7 +477,8 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Blocked task", "", None, vec![]).unwrap();
-        let error = run_phase_update(&project, None, None, None, Some("enriching")).unwrap_err();
+        let error =
+            run_phase_update(&project, None, None, None, Some("enriching"), None).unwrap_err();
         match error {
             PhaseUpdateError::PhaseBusy { name, task_ids } => {
                 assert_eq!(name, "enriching");
@@ -363,7 +491,7 @@ mod tests {
     #[test]
     fn no_operation_returns_error() {
         let (_temp_dir, project, _config) = setup();
-        let error = run_phase_update(&project, None, None, None, None).unwrap_err();
+        let error = run_phase_update(&project, None, None, None, None, None).unwrap_err();
         assert!(matches!(error, PhaseUpdateError::NoOperation));
     }
 
@@ -372,9 +500,10 @@ mod tests {
         let (_temp_dir, project, _config) = setup();
         let error = run_phase_update(
             &project,
-            Some("new"),
+            Some("new:sonnet"),
             Some("done"),
             Some("in_progress"),
+            None,
             None,
         )
         .unwrap_err();
@@ -384,40 +513,99 @@ mod tests {
     #[test]
     fn after_nonexistent_phase_returns_error() {
         let (_temp_dir, project, _config) = setup();
-        let error =
-            run_phase_update(&project, Some("new"), Some("nonexistent"), None, None).unwrap_err();
+        let error = run_phase_update(
+            &project,
+            Some("new:sonnet"),
+            Some("nonexistent"),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
     }
 
     #[test]
     fn before_nonexistent_phase_returns_error() {
         let (_temp_dir, project, _config) = setup();
-        let error =
-            run_phase_update(&project, Some("new"), None, Some("nonexistent"), None).unwrap_err();
+        let error = run_phase_update(
+            &project,
+            Some("new:sonnet"),
+            None,
+            Some("nonexistent"),
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
     }
 
     #[test]
     fn add_and_remove_together() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, Some("review"), None, None, Some("in_progress")).unwrap();
-        assert_eq!(loaded_phases(&project), vec!["enriching", "done", "review"]);
+        run_phase_update(
+            &project,
+            Some("review:sonnet"),
+            None,
+            None,
+            Some("in_progress"),
+            None,
+        )
+        .unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.len(), 3);
+        assert!(!phases.iter().any(|p| p.name == "in_progress"));
+        assert!(phases.iter().any(|p| p.name == "review"));
     }
 
     #[test]
-    fn write_only_patches_state_machine_field() {
+    fn set_model_changes_existing_phase_model() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["enriching".to_owned(), "haiku".to_owned()];
+        run_phase_update(&project, None, None, None, None, Some(&args)).unwrap();
+        let phases = loaded_phases(&project);
+        let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
+        assert_eq!(enriching.model, "haiku");
+    }
+
+    #[test]
+    fn set_model_unknown_phase_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["nonexistent".to_owned(), "haiku".to_owned()];
+        let error = run_phase_update(&project, None, None, None, None, Some(&args)).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_model_unknown_model_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["enriching".to_owned(), "gpt4".to_owned()];
+        let error = run_phase_update(&project, None, None, None, None, Some(&args)).unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::UnknownModel { model } if model == "gpt4"));
+    }
+
+    #[test]
+    fn write_only_patches_phases_field() {
         let (_temp_dir, project, _config) = setup();
         let config_path = project.state_dir.join("config.json");
         let original = fs::read_to_string(&config_path).unwrap();
         let original_value: serde_json::Value = serde_json::from_str(&original).unwrap();
 
-        run_phase_update(&project, Some("review"), None, Some("done"), None).unwrap();
+        run_phase_update(
+            &project,
+            Some("review:sonnet"),
+            None,
+            Some("done"),
+            None,
+            None,
+        )
+        .unwrap();
 
         let updated = fs::read_to_string(&config_path).unwrap();
         let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
 
         for (key, orig_val) in original_value.as_object().unwrap() {
-            if key != "state_machine" {
+            if key != "phases" {
                 assert_eq!(
                     updated_value.get(key),
                     Some(orig_val),
@@ -430,8 +618,9 @@ mod tests {
     #[test]
     fn remove_phase_with_no_active_tasks_succeeds() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, None, None, None, Some("in_progress")).unwrap();
-        assert_eq!(loaded_phases(&project), vec!["enriching", "done"]);
+        run_phase_update(&project, None, None, None, Some("in_progress"), None).unwrap();
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.len(), 2);
     }
 
     #[test]
@@ -440,7 +629,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Task A", "", None, vec![]).unwrap();
         store.add_task("Task B", "", None, vec![]).unwrap();
-        let error = run_phase_update(&project, None, None, None, Some("enriching")).unwrap_err();
+        let error =
+            run_phase_update(&project, None, None, None, Some("enriching"), None).unwrap_err();
         match error {
             PhaseUpdateError::PhaseBusy { task_ids, .. } => {
                 assert!(task_ids.contains(&"task-001".to_owned()));
