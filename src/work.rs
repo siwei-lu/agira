@@ -1,6 +1,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use chrono::Utc;
@@ -11,8 +12,11 @@ use crate::{
     config::{ConfigError, load_project_config},
     pick::{format_pick_output, select_next_task},
     project::Project,
-    tasks::{StoreError, TaskStore},
+    tasks::{StoreError, Task, TaskStore},
 };
+
+const DIRTY_WORKING_TREE_MESSAGE: &str =
+    "Working tree is dirty — commit your changes, then run `agira task work` again.";
 
 #[derive(Debug, Error)]
 pub enum WorkError {
@@ -59,6 +63,17 @@ pub fn run_work(
     match artifact {
         None => {
             let store = TaskStore::new(&project.state_dir, &config)?;
+            if is_working_tree_dirty(&project.git_root) {
+                let convention = read_recent_commits(&project.git_root);
+                let (task_id, task_title) = dirty_commit_target(store.all_tasks(), &config)
+                    .map(|task| (task.id.as_str(), task.title.as_str()))
+                    .unwrap_or(("uncommitted", "Uncommitted changes"));
+
+                print_work_output(&commit_prompt(task_id, task_title, convention.as_deref()));
+                print_work_output(DIRTY_WORKING_TREE_MESSAGE);
+                return Ok(());
+            }
+
             let output =
                 format_pick_output(&config, store.all_tasks(), prd_content.as_deref(), None);
             print_work_output(&output);
@@ -110,6 +125,35 @@ pub fn run_work(
     Ok(())
 }
 
+fn is_working_tree_dirty(git_root: &Path) -> bool {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(git_root)
+        .args(["status", "--porcelain"])
+        .output()
+    else {
+        return false;
+    };
+
+    output.status.success() && !output.stdout.is_empty()
+}
+
+fn dirty_commit_target<'a>(tasks: &'a [Task], config: &crate::config::Config) -> Option<&'a Task> {
+    let terminal_phase = config.terminal_phase()?;
+
+    tasks
+        .iter()
+        .filter(|task| task.state == terminal_phase)
+        .max_by(|left, right| latest_history_timestamp(left).cmp(latest_history_timestamp(right)))
+}
+
+fn latest_history_timestamp(task: &Task) -> &str {
+    task.history
+        .last()
+        .map(|entry| entry.timestamp.as_str())
+        .unwrap_or(task.created_at.as_str())
+}
+
 fn read_prd(path: &Path) -> Result<String, WorkError> {
     match fs::read_to_string(path) {
         Ok(contents) => Ok(contents),
@@ -153,7 +197,7 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, process::Command};
 
     use tempfile::TempDir;
 
@@ -214,6 +258,27 @@ mod tests {
         (temp_dir, project, config)
     }
 
+    fn setup_with_git_repo() -> (TempDir, TempDir, Project, Config) {
+        let git_dir = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(git_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let state_dir = TempDir::new().unwrap();
+        let project = Project {
+            git_root: git_dir.path().to_path_buf(),
+            slug: "test".to_owned(),
+            state_dir: state_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
+        };
+        let config = test_config();
+        write_config(&project, &config);
+        (git_dir, state_dir, project, config)
+    }
+
     fn capture_output<F>(run: F) -> (Result<(), WorkError>, String)
     where
         F: FnOnce() -> Result<(), WorkError>,
@@ -239,6 +304,62 @@ mod tests {
         result.unwrap();
         assert!(output.contains("# Agira Task Prompt"));
         assert!(output.contains("My task"));
+    }
+
+    #[test]
+    fn no_artifact_dirty_tree_blocks_next_task_prompt() {
+        let (git_dir, state_dir, project, config) = setup_with_git_repo();
+        let mut store = test_store(&state_dir, &config);
+        store.add_task("Done task", "", None, vec![]).unwrap();
+        store
+            .add_task("Next task", "", None, vec!["task-001".to_owned()])
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        fs::write(git_dir.path().join("dirty.txt"), "dirty").unwrap();
+
+        let (result, output) = capture_output(|| run_work(&project, None, None));
+
+        result.unwrap();
+        assert!(output.contains("# Commit"));
+        assert!(output.contains("Task task-001 \"Done task\" is complete"));
+        assert!(output.contains("feat(task-001): Done task"));
+        assert!(output.contains(DIRTY_WORKING_TREE_MESSAGE));
+        assert!(!output.contains("# Agira Task Prompt"));
+        assert!(!output.contains("Next task"));
+        assert!(output.ends_with(&format!("{DIRTY_WORKING_TREE_MESSAGE}\n")));
+    }
+
+    #[test]
+    fn no_artifact_clean_tree_proceeds_normally() {
+        let (_git_dir, state_dir, project, config) = setup_with_git_repo();
+        let mut store = test_store(&state_dir, &config);
+        store
+            .add_task("Clean tree task", "description", None, vec![])
+            .unwrap();
+
+        let (result, output) = capture_output(|| run_work(&project, None, None));
+
+        result.unwrap();
+        assert!(output.contains("# Agira Task Prompt"));
+        assert!(output.contains("Clean tree task"));
+        assert!(!output.contains(DIRTY_WORKING_TREE_MESSAGE));
+    }
+
+    #[test]
+    fn no_artifact_git_failure_skips_dirty_check() {
+        let (temp_dir, project, config) = setup();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Non-git task", "description", None, vec![])
+            .unwrap();
+
+        let (result, output) = capture_output(|| run_work(&project, None, None));
+
+        result.unwrap();
+        assert!(output.contains("# Agira Task Prompt"));
+        assert!(output.contains("Non-git task"));
+        assert!(!output.contains(DIRTY_WORKING_TREE_MESSAGE));
     }
 
     #[test]
