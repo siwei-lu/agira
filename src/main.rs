@@ -91,6 +91,12 @@ enum TaskCommands {
         /// Output raw JSON instead of the formatted table
         #[arg(long)]
         json: bool,
+        /// Number of tasks to show, or 0 to show all
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Number of tasks to skip from the latest-first list
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Show only this task ID
         #[arg(value_name = "task-id")]
         filter: Option<String>,
@@ -151,14 +157,21 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Task { command } => match command {
-            TaskCommands::Status { json, filter } => match resolve_project() {
-                Ok(project) => match status::run_status(&project, json, filter.as_deref()) {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(error) => {
-                        eprintln!("error: {error}");
-                        exit_code_for_status(&error)
+            TaskCommands::Status {
+                json,
+                limit,
+                offset,
+                filter,
+            } => match resolve_project() {
+                Ok(project) => {
+                    match status::run_status(&project, json, filter.as_deref(), limit, offset) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_status(&error)
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for(&error)
