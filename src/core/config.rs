@@ -76,7 +76,7 @@ struct ProjectConfigFile {
     verification: VerificationConfig,
     acceptance_testing: String,
     max_retries: Option<u32>,
-    // Ignored: default_model removed from project config
+    // Legacy fallback used only for old-format migration.
     #[serde(default)]
     default_model: Option<String>,
     prd_path: Option<String>,

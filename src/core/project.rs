@@ -11,7 +11,6 @@ use crate::core::global_config::{GlobalConfig, GlobalConfigError, load_or_create
 #[derive(Debug, Clone)]
 pub struct Project {
     pub git_root: PathBuf,
-    #[allow(dead_code)]
     pub slug: String,
     pub state_dir: PathBuf,
     pub global_config: GlobalConfig,
@@ -80,12 +79,18 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
         }
     };
 
-    Ok(Project {
+    let project = Project {
         git_root,
         slug,
         state_dir,
         global_config,
-    })
+    };
+    debug_assert_eq!(
+        project.state_dir.file_name().and_then(|name| name.to_str()),
+        Some(project.slug.as_str())
+    );
+
+    Ok(project)
 }
 
 enum CandidateResolution {

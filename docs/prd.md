@@ -1,7 +1,7 @@
 # PRD: Agira CLI
 
 ## Overview
-Agira is a Rust CLI tool that orchestrates AI-assisted software development workflows. It stores all project state in `~/.agira/<project-id>/` — never inside the target repo — and drives a structured multi-phase workflow (enrich → implement → verify → done) by outputting role-specific prompts to stdout. Both humans and AI agents (Claude Code, Codex) interact through the same CLI surface. The agent reads a prompt from `agira next`, does the work, then calls `agira done` or `agira fail` to advance state.
+Agira is a Rust CLI tool that orchestrates AI-assisted software development workflows. It stores all project state in `~/.agira/<project-id>/` — never inside the target repo — and drives a structured multi-phase workflow (enrich → implement → verify → done) by outputting role-specific prompts to stdout. Both humans and AI agents (Claude Code, Codex) interact through the same CLI surface. The agent reads a prompt from `agira task work`, does the work, then calls `agira task work --artifact` or `agira task fail` to advance state.
 
 ## Tech Decisions
 - **Frontend:** N/A (CLI only)
@@ -42,17 +42,17 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
 - When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
   1. Instruct the agent to scan the repo root for stack markers (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`) and derive sensible defaults
-  2. List each flag and its purpose; for `--phases`, include model recommendations per phase type: enriching (design/planning) → `opus`, in_progress (implementation) → `sonnet`, verifying (mechanical checks) → `haiku`, done → `sonnet`; agent should confirm or override with the user
+  2. List each flag and its purpose; for `--phases`, include model recommendations per phase type: enriching (design/planning) → `opus`, in_progress (implementation) → `sonnet`, verifying (mechanical checks) → `haiku`, done → `haiku`; agent should confirm or override with the user
   3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1:model1,phase2:model2,...> ...`)
 - Partial flag sets (some but not all required flags present) exit 1 with: `error: agira init requires all flags or none; missing: --<flag> [--<flag> ...]`
 - `max_retries` is not a flag; it is read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
 - No TTY requirement — the command is fully non-interactive in both the flag-driven and bare-invocation paths
 **Acceptance Criteria:**
-- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:sonnet" --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with `phases` as an array of `{name, model}` objects and exits 0
-- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:sonnet" --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and exits 0
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:haiku" --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with `phases` as an array of `{name, model}` objects and exits 0
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku,done:haiku" --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and exits 0
 - `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent including per-phase model recommendations, and a fenced `sh` block with the `agira init` command template; exits 0
 - `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --verification-commands --acceptance-testing`
-- Re-running `agira init` with all flags when config already exists overwrites it silently; `agira status` reflects the new config
+- Re-running `agira init` with all flags when config already exists overwrites it silently; `agira task status` reflects the new config
 - `agira init --stack rust ... --prd-path docs/prd.md` writes `prd_path: "docs/prd.md"` into config; omitting `--prd-path` leaves the key absent
 - `agira init --phases "enriching:badmodel"` exits 1 with `error: unknown model: badmodel` (valid shortnames: `opus`, `sonnet`, `haiku`)
 
@@ -74,14 +74,14 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - All writes to `tasks.json` use atomic replacement: write to `tasks.json.tmp` in the same directory, then `rename()` into place. This guarantees crash-safety — a process killed mid-write leaves the previous `tasks.json` intact
 **Acceptance Criteria:**
 - Adding a task writes it to `tasks.json` with `state` equal to the first configured phase and `retry_count: 0`
-- Attempting to call `agira done` on a task that would skip a phase exits 1 with: `error: invalid transition: <current> → <requested>` (only the sequential next phase is valid)
-- A task with a dependency in `"failed"` state is reported as blocked by `agira next` and cannot be advanced
+- Attempting to call `agira task work --artifact` on a task that would skip a phase exits 1 with: `error: invalid transition: <current> → <requested>` (only the sequential next phase is valid)
+- A task with a dependency in `"failed"` state is reported as blocked by `agira task work` and cannot be advanced
 - After any state change, the last entry in `history` reflects the transition with a non-null ISO8601 timestamp
 - Killing the process during a write (e.g., `kill -9`) leaves `tasks.json` either fully updated or fully unchanged — never a partial/corrupt file
 
 ---
 
-### FM-004: `agira next`
+### FM-004: `agira task work`
 **Priority:** P0
 **Dependencies:** FM-003
 **Description:** The main driver. Reads current task state, selects the highest-priority actionable task, and writes a complete, self-contained role prompt to stdout. The prompt tells the AI agent exactly what role to play, what the task requires, what success looks like, and which command to call when done. Pure stdout output — no user interaction.
@@ -89,40 +89,39 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - Accepts optional flag `--prd <path>` (absolute or CWD-relative); if given, reads the file and injects its content verbatim into the prompt as a `## Requirements Context` section
 - Priority: tasks with satisfied dependencies in the earliest non-terminal phase come first; within the same phase, lower task number wins (task-001 before task-002)
 - If all tasks are in terminal-done state, outputs a completion summary listing all tasks with their IDs, titles, and final artifacts, then exits 0
-- If no tasks exist and `--prd` is given, outputs a decomposition prompt instructing the agent to break the PRD into tasks using `agira add`
-- If no tasks exist and `--prd` is absent, prints to stdout: `No tasks found. Add tasks with \`agira add "<title>"\` or provide requirements with \`agira next --prd <path>\``
+- If no tasks exist and `--prd` is given, outputs a decomposition prompt instructing the agent to break the PRD into tasks using `agira task add`
+- If no tasks exist and `--prd` is absent, prints to stdout: `No tasks found. Add tasks with \`agira task add "<title>"\` or provide requirements with \`agira task work --prd <path>\``
 - The prompt must include: task id and title, current phase name and agent role (from config), task description, acceptance criteria if the `phases` object has prior enrichment data, the verification commands if the current phase is a verification phase, and the exact command(s) to call to advance state
 - Output contains no ANSI escape sequences (verified by piping through `cat -v`)
 - Exits 0 in all non-error cases; exits 1 only on config/file read errors
 **Acceptance Criteria:**
-- `agira next` with no tasks and no `--prd` prints the no-tasks message and exits 0
-- `agira next --prd docs/prd.md` with no tasks prints a decomposition prompt that contains text from the PRD file
-- `agira next` with one task in phase 2 prints a prompt naming the agent role configured for phase 2, the task description, and a line containing `agira done task-001 --artifact`
-- `agira next` output piped through `cat -v` shows no `^[` sequences (no ANSI codes)
+- `agira task work` with no tasks and no `--prd` prints the no-tasks message and exits 0
+- `agira task work --prd docs/prd.md` with no tasks prints a decomposition prompt that contains text from the PRD file
+- `agira task work` with one task in phase 2 prints a prompt naming the agent role configured for phase 2, the task description, and a line containing `agira task work --artifact`
+- `agira task work` output piped through `cat -v` shows no `^[` sequences (no ANSI codes)
 
 ---
 
-### FM-005: `agira done <id> --artifact <evidence>`
+### FM-005: `agira task work --artifact <evidence>`
 **Priority:** P0
 **Dependencies:** FM-003
-**Description:** Advances a task from its current phase to the next phase in the configured state machine. Records the provided artifact as evidence for the completed phase. When called on the final configured phase, transitions the task to terminal-done state. `--artifact` is required and must be non-empty.
+**Description:** Advances the current actionable task from its current phase to the next phase in the configured state machine. Records the provided artifact as evidence for the completed phase. When called on the final configured phase, transitions the task to terminal-done state. `--artifact` must be non-empty when provided.
 **Constraints:**
-- `--artifact` is a required flag; omitting it exits 1 on stderr: `error: --artifact is required`
+- Omitting `--artifact` prints the current actionable task prompt instead of advancing state
 - Empty string artifact exits 1 on stderr: `error: artifact must not be empty`
 - The artifact is stored in `phases[<current_phase>].artifact` and `phases[<current_phase>].completed_at`
 - On non-terminal advance, prints to stdout: `task-001 → <next_phase>`
 - On terminal-done transition, prints to stdout: `task-001 done ✓`
-- If the task does not exist, exits 1: `error: task <id> not found`
-- If the task is already in terminal-done or `failed` state, exits 1: `error: task <id> is already <state>`
+- If no actionable task exists, exits 1: `error: no actionable task — all tasks are done or blocked`
 **Acceptance Criteria:**
-- `agira done task-001 --artifact "tests pass"` on a task in a non-final phase advances it to the next phase, stores the artifact, and `agira status` shows the updated state
-- `agira done task-001 --artifact "tests pass"` on a task in the final phase transitions it to terminal-done; `agira status` marks it with `✓`
-- `agira done task-001` without `--artifact` exits 1 with the error on stderr
-- `agira done task-999 --artifact "x"` on a nonexistent task exits 1 with the not-found message on stderr
+- `agira task work --artifact "tests pass"` on a task in a non-final phase advances it to the next phase, stores the artifact, and `agira task status` shows the updated state
+- `agira task work --artifact "tests pass"` on a task in the final phase transitions it to terminal-done; `agira task status` marks it with `✓`
+- `agira task work` without `--artifact` prints the current task prompt instead of advancing
+- `agira task work --artifact "x"` with no actionable task exits 1 with the no-actionable-task message on stderr
 
 ---
 
-### FM-006: `agira fail <id> --reason <reason>`
+### FM-006: `agira task fail <id> --reason <reason>`
 **Priority:** P0
 **Dependencies:** FM-003
 **Description:** Records a failure for a task's current phase. If `retry_count < max_retries`, resets the task back to the first configured phase and increments `retry_count`. If `retry_count >= max_retries`, transitions to terminal `"failed"` state. `--reason` is required and must be non-empty.
@@ -131,47 +130,50 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - Empty string reason exits 1: `error: reason must not be empty`
 - On retry: `retry_count` increments, task state resets to first phase, history entry reason: `"retry <n>/<max>: <reason>"`; prints: `task-001 retrying (<n>/<max>): <reason>`
 - On terminal fail: state set to `"failed"`, history entry reason: `"failed (max retries): <reason>"`; prints: `task-001 failed — max retries reached`
-- Calling `agira done` or `agira fail` on a terminal-failed task exits 1: `error: task <id> is already failed`
+- Calling `agira task fail` on a terminal-failed task exits 1: `error: task <id> is already failed`
+- Calling `agira task work --artifact` when no actionable task remains exits 1: `error: no actionable task — all tasks are done or blocked`
 **Acceptance Criteria:**
-- `agira fail task-001 --reason "compilation error"` on a task with `retry_count: 0` and `max_retries: 3` resets it to the first phase with `retry_count: 1`; `agira status` shows updated state and count
-- `agira fail task-001 --reason "still broken"` on a task with `retry_count: 2` and `max_retries: 3` sets `state` to `"failed"`
-- `agira fail task-001` without `--reason` exits 1 with the required error message
-- Calling `agira done task-001 --artifact "x"` on a terminal-failed task exits 1 with the already-state error
+- `agira task fail task-001 --reason "compilation error"` on a task with `retry_count: 0` and `max_retries: 3` resets it to the first phase with `retry_count: 1`; `agira task status` shows updated state and count
+- `agira task fail task-001 --reason "still broken"` on a task with `retry_count: 2` and `max_retries: 3` sets `state` to `"failed"`
+- `agira task fail task-001` without `--reason` exits 1 with the required error message
+- Calling `agira task work --artifact "x"` when no actionable task remains exits 1 with the no-actionable-task error
 
 ---
 
-### FM-007: `agira add`
+### FM-007: `agira task add`
 **Priority:** P1
 **Dependencies:** FM-003
-**Description:** Adds a new task to `tasks.json`. Used by the agent after receiving a decomposition prompt from `agira next --prd`, or by humans adding tasks manually.
+**Description:** Adds a new task to `tasks.json`. Used by the agent after receiving a decomposition prompt from `agira task work --prd`, or by humans adding tasks manually.
 **Constraints:**
-- Synopsis: `agira add "<title>" [--description "<desc>"] [--prd <module-id>] [--depends-on <id>[,<id>...]]`
+- Synopsis: `agira task add "<title>" [--description "<desc>"] [--prd <module-id>] [--depends-on <id>[,<id>...]]`
 - `<title>` is a required positional argument
 - IDs are auto-assigned as the next sequential `task-NNN`; if the last task is `task-005`, the new one is `task-006`
 - `--depends-on` accepts comma-separated existing task IDs; exits 1 if any listed ID does not exist: `error: unknown dependency: <id>`
 - Prints to stdout: `added task-006: <title>`
 **Acceptance Criteria:**
-- `agira add "Implement login endpoint"` creates a task with the next sequential ID in the first configured phase; `agira status` shows it
-- `agira add "Deploy" --depends-on task-001,task-002` creates the task with `dependencies: ["task-001", "task-002"]`
-- `agira add "Blocked" --depends-on task-999` exits 1 with: `error: unknown dependency: task-999`
-- Running `agira status` after `agira add` shows the new task in the first phase
+- `agira task add "Implement login endpoint"` creates a task with the next sequential ID in the first configured phase; `agira task status` shows it
+- `agira task add "Deploy" --depends-on task-001,task-002` creates the task with `dependencies: ["task-001", "task-002"]`
+- `agira task add "Blocked" --depends-on task-999` exits 1 with: `error: unknown dependency: task-999`
+- Running `agira task status` after `agira task add` shows the new task in the first phase
 
 ---
 
-### FM-008: `agira status`
+### FM-008: `agira task status`
 **Priority:** P1
 **Dependencies:** FM-003
 **Description:** Prints a human-readable table of all tasks with their current state, retry count, and the reason from the most recent history entry. Intended for human inspection.
 **Constraints:**
 - Columns: `ID`, `Title` (truncated at 40 chars with `…`), `State`, `Retries`, `Last Action`
-- Rows sorted by task ID ascending
+- Rows sorted by task ID descending
+- `--limit <n>` limits the latest-first table after sorting; default is `20`; `--limit 0` shows all tasks
+- `--offset <n>` skips tasks from the latest-first sorted list before applying `--limit`; default is `0`
 - Terminal-done tasks show `✓` prefix on state; terminal-failed tasks show `✗` prefix
-- If no tasks exist, prints: `No tasks. Run \`agira add\` or \`agira next --prd <path>\` to get started.`
-- `--json` flag outputs the raw contents of `tasks.json`
+- If no tasks exist, prints: `No tasks. Run \`agira task add\` or \`agira task work --prd <path>\` to get started.`
+- `--json` flag outputs the raw contents of `tasks.json` and bypasses pagination
 **Acceptance Criteria:**
-- `agira status` in a project with 3 tasks prints a table with exactly 3 rows and correct states
-- `agira status --json` outputs valid JSON parseable by `jq .`
-- `agira status` in a project with no tasks prints the no-tasks message and exits 0
+- `agira task status` in a project with 3 tasks prints a table with exactly 3 rows and correct states
+- `agira task status --json` outputs valid JSON parseable by `jq .`
+- `agira task status` in a project with no tasks prints the no-tasks message and exits 0
 
 ---
 
@@ -241,7 +243,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - Version is embedded at compile time via `env!("CARGO_PKG_VERSION")`; it always matches `Cargo.toml`
 **Acceptance Criteria:**
 - `agira --help` lists all subcommands each with a non-empty description
-- `agira next --help` shows a description for `--prd`
+- `agira task work --help` shows a description for `--prd`
 - `agira version` prints `agira 0.1.0` (current version) to stdout and exits 0
 - `agira --version` prints the same version string and exits 0
 - `agira -V` prints the same version string and exits 0
@@ -263,8 +265,8 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 
 ### Round 1 — 2026-06-03
 - Full rewrite of PRD for Rust CLI. Replaces prior TypeScript/Bun protocol library.
-- Core model: state stored in `~/.agira/<slug>/`, prompts emitted to stdout, agents drive workflow via `agira next` / `agira done` / `agira fail`
-- `agira done` requires `--artifact`, `agira fail` requires `--reason`; both are enforced at the CLI layer
-- PRD path is a runtime flag (`--prd`), not hardcoded; can be passed on any `agira next` invocation
+- Core model: state stored in `~/.agira/<slug>/`, prompts emitted to stdout, agents drive workflow via `agira task work` / `agira task work --artifact` / `agira task fail`
+- `agira task work --artifact` requires a non-empty artifact, `agira task fail` requires `--reason`; both are enforced at the CLI layer
+- PRD path is a runtime flag (`--prd`), not hardcoded; can be passed on any `agira task work` invocation
 - `agira init` is interactive-only; no files written to the target repo
 - Storage format confirmed as JSON (not SQLite): scale is small, no concurrent writers, human-inspectability is a first-class concern; crash-safety achieved via atomic rename (write to `.tmp`, then `rename()`) rather than WAL

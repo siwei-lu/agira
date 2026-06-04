@@ -14,7 +14,7 @@ use crate::core::{
 };
 
 const NO_TASKS_MESSAGE: &str =
-    "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.";
+    "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.";
 const TITLE_LIMIT: usize = 40;
 const LAST_ACTION_LIMIT: usize = 30;
 const STATE_LIMIT: usize = 13;
@@ -168,7 +168,7 @@ fn output_task_json(project: &Project, id: &str) -> Result<(), StatusError> {
         .iter()
         .find(|task| task.id == id)
         .ok_or_else(|| StatusError::TaskNotFound { id: id.to_owned() })?;
-    let json_str = serde_json::to_string_pretty(task).unwrap();
+    let json_str = serde_json::to_string_pretty(task).map_err(StoreError::Serialize)?;
 
     write_status_output(&json_str, &tasks_path)
 }
@@ -428,7 +428,7 @@ mod tests {
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.\n"
         );
     }
 
@@ -442,7 +442,7 @@ mod tests {
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira task add` or `agira task pick --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.\n"
         );
     }
 

@@ -19,19 +19,22 @@
 agira/
 ├── src/
 │   ├── main.rs          — CLI entry point, subcommand routing, exit codes
-│   ├── project.rs       — git root resolution, slug derivation, state dir creation
-│   ├── config.rs        — config.json schema + reader
-│   ├── config_phases.rs — `agira config phases` subcommand
-│   ├── tasks.rs         — tasks.json schema, atomic read/write, state machine transitions
-│   ├── init.rs          — `agira init` (bare agent-prompt path + flag-driven write path)
-│   ├── add.rs           — `agira task add`
-│   ├── advance.rs       — shared phase-advance logic
-│   ├── fail.rs          — `agira task fail`
-│   ├── pick.rs          — next actionable task selection
-│   ├── status.rs        — `agira task status`
-│   ├── update.rs        — `agira task update`
-│   ├── work.rs          — `agira task work` (print prompt / advance with --artifact)
-│   └── global_config.rs — ~/.agira/config.toml reader
+│   ├── core/
+│   │   ├── advance.rs       — shared phase-advance output helpers
+│   │   ├── config.rs        — config.json schema + reader/migration
+│   │   ├── global_config.rs — ~/.agira/config.toml reader
+│   │   ├── pick.rs          — next actionable task selection and prompt formatting
+│   │   ├── project.rs       — git root resolution, slug derivation, state dir creation
+│   │   └── tasks.rs         — tasks.json schema, atomic read/write, state machine transitions
+│   └── commands/
+│       ├── init.rs        — `agira init` (bare agent-prompt path + flag-driven write path)
+│       ├── add.rs         — `agira task add`
+│       ├── fail.rs        — `agira task fail`
+│       ├── phase.rs       — `agira phase get` / `agira phase update`
+│       ├── self_update.rs — `agira update`
+│       ├── status.rs      — `agira task status`
+│       ├── update.rs      — `agira task update`
+│       └── work.rs        — `agira task work` (print prompt / advance with --artifact)
 ├── docs/
 │   ├── prd.md           — requirements; FM-IDs used to tag tasks
 │   └── conventions.md   — project taste decisions (error style, output format, etc.)
@@ -93,8 +96,9 @@ agira task work --artifact ... # advance current task with evidence
 agira task add "title" --description "..." --prd FM-001 --depends-on task-001,task-002
 agira task update task-001 --title "new title"
 agira task fail task-001 --reason "..."
-agira config phases --add <phase> --after <existing>
-agira config phases --remove <phase>
+agira phase get
+agira phase update --add <phase:model> --after <existing>
+agira phase update --remove <phase>
 agira -v                       # version
 ```
 

@@ -169,7 +169,6 @@ impl TaskStore {
                     to: String::new(),
                 })?;
         let created_at = Utc::now().to_rfc3339();
-        let history_timestamp = Utc::now().to_rfc3339();
         let task = Task {
             id,
             title: title.to_owned(),
@@ -183,7 +182,7 @@ impl TaskStore {
             history: vec![HistoryEntry {
                 from: None,
                 to: first_phase,
-                timestamp: history_timestamp,
+                timestamp: created_at.clone(),
                 reason: "task created".to_owned(),
             }],
             created_at,
