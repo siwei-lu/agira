@@ -57,6 +57,9 @@ pub enum StatusError {
 
 pub fn run_status(project: &Project, json: bool, filter: Option<&str>) -> Result<(), StatusError> {
     if json {
+        if let Some(id) = filter {
+            return output_task_json(project, id);
+        }
         return output_raw_json(project);
     }
 
@@ -123,6 +126,36 @@ fn output_raw_json(project: &Project) -> Result<(), StatusError> {
     })?;
 
     write_status_output(&contents, &path)
+}
+
+fn output_task_json(project: &Project, id: &str) -> Result<(), StatusError> {
+    let tasks_path = project.state_dir.join("tasks.json");
+    match fs::metadata(&tasks_path) {
+        Ok(_) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(StatusError::TaskNotFound { id: id.to_owned() });
+        }
+        Err(source) => {
+            return Err(StoreError::Io {
+                path: tasks_path,
+                source,
+            }
+            .into());
+        }
+    }
+
+    let config_path = project.state_dir.join("config.json");
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
+    let store = TaskStore::new(&project.state_dir, &config)?;
+    let task = store
+        .all_tasks()
+        .iter()
+        .find(|task| task.id == id)
+        .ok_or_else(|| StatusError::TaskNotFound { id: id.to_owned() })?;
+    let json_str = serde_json::to_string_pretty(task).unwrap();
+
+    write_status_output(&json_str, &tasks_path)
 }
 
 fn map_config_error(error: ConfigError) -> StatusError {
@@ -535,6 +568,48 @@ mod tests {
         };
 
         assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn json_with_filter_outputs_single_task_object() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("First task", "", None, vec![]).unwrap();
+        store.add_task("Second task", "", None, vec![]).unwrap();
+
+        let (result, output) = capture_output(|| run_status(&project, true, Some("task-001")));
+
+        result.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(value.is_object());
+        assert_eq!(value["id"], "task-001");
+        assert_eq!(value["title"], "First task");
+        assert!(!output.contains("task-002"));
+        assert!(!output.contains("Second task"));
+    }
+
+    #[test]
+    fn json_with_filter_task_not_found() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Some task", "", None, vec![]).unwrap();
+
+        let error = run_status(&project, true, Some("task-999")).unwrap_err();
+
+        match error {
+            StatusError::TaskNotFound { id } => assert_eq!(id, "task-999"),
+            other => panic!("expected TaskNotFound, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn json_with_filter_no_tasks_file_returns_task_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let project = test_project(&temp_dir);
+
+        let error = run_status(&project, true, Some("task-001")).unwrap_err();
+
+        assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }
 
     #[test]
