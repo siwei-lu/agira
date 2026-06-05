@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -63,10 +64,11 @@ pub fn run_fail(project: &Project, id: &str, reason: Option<&str>) -> Result<(),
         .to_owned();
 
     let mut store = TaskStore::new(&project.state_dir, &config)?;
-    fail_task_flow(&mut store, &terminal_phase, id, reason)
+    fail_task_flow(project, &mut store, &terminal_phase, id, reason)
 }
 
 fn fail_task_flow(
+    project: &Project,
     store: &mut TaskStore,
     terminal_phase: &str,
     id: &str,
@@ -76,6 +78,7 @@ fn fail_task_flow(
         .get_task(id)
         .ok_or_else(|| FailError::TaskNotFound { id: id.to_owned() })?;
     let current_state = task.state.clone();
+    let task_title = task.title.clone();
     let retry_count = task.retry_count;
     let max_retries = task.max_retries;
 
@@ -96,6 +99,8 @@ fn fail_task_flow(
             Ok(result) => result,
             Err(error) => return Err(map_store_error(error, store, id)),
         };
+        let to_phase = store.get_task(id).unwrap().state.clone();
+        dispatch_task_hooks(project, id, &task_title, &current_state, &to_phase, "");
         print_fail_output(&format!(
             "{id} retrying ({new_retry_count}/{max_retries}): {reason}"
         ));
@@ -104,10 +109,33 @@ fn fail_task_flow(
         if let Err(error) = store.fail_task(id, &failure_reason) {
             return Err(map_store_error(error, store, id));
         }
+        dispatch_task_hooks(project, id, &task_title, &current_state, "failed", "");
         print_fail_output(&format!("{id} failed — max retries reached"));
     }
 
     Ok(())
+}
+
+fn dispatch_task_hooks(
+    project: &Project,
+    task_id: &str,
+    task_title: &str,
+    from_phase: &str,
+    to_phase: &str,
+    artifact: &str,
+) {
+    let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
+    dispatch_hooks(
+        &hooks,
+        &HookContext {
+            task_id,
+            task_title,
+            project_slug: &project.slug,
+            from_phase,
+            to_phase,
+            artifact,
+        },
+    );
 }
 
 fn validate_reason(reason: Option<&str>) -> Result<&str, FailError> {

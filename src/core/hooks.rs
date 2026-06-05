@@ -1,6 +1,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,15 @@ pub struct HookEntry {
 pub struct HookConfig {
     #[serde(default)]
     pub hooks: Vec<HookEntry>,
+}
+
+pub struct HookContext<'a> {
+    pub task_id: &'a str,
+    pub task_title: &'a str,
+    pub project_slug: &'a str,
+    pub from_phase: &'a str,
+    pub to_phase: &'a str,
+    pub artifact: &'a str,
 }
 
 #[derive(Debug, Error)]
@@ -51,7 +61,8 @@ pub fn load_hooks(path: &Path) -> Result<HookConfig, HookConfigError> {
     })
 }
 
-pub fn collect_hooks(
+#[cfg(test)]
+fn collect_hooks(
     agira_root: &Path,
     project_slug: &str,
     to_phase: &str,
@@ -59,10 +70,36 @@ pub fn collect_hooks(
     let global_hooks = load_hooks(&agira_root.join("config.toml"))?;
     let project_hooks = load_hooks(&agira_root.join(project_slug).join("hooks.toml"))?;
 
-    Ok(matching_hooks(&global_hooks, to_phase)
-        .chain(matching_hooks(&project_hooks, to_phase))
+    Ok(hooks_for_phase(&global_hooks, &project_hooks, to_phase))
+}
+
+pub fn hooks_for_phase(
+    global_hooks: &HookConfig,
+    project_hooks: &HookConfig,
+    to_phase: &str,
+) -> Vec<HookEntry> {
+    matching_hooks(global_hooks, to_phase)
+        .chain(matching_hooks(project_hooks, to_phase))
         .cloned()
-        .collect())
+        .collect()
+}
+
+pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext<'_>) {
+    for hook in hooks {
+        if let Err(error) = Command::new("sh")
+            .arg("-c")
+            .arg(&hook.run)
+            .env("AGIRA_TASK_ID", ctx.task_id)
+            .env("AGIRA_TASK_TITLE", ctx.task_title)
+            .env("AGIRA_PROJECT_SLUG", ctx.project_slug)
+            .env("AGIRA_FROM_PHASE", ctx.from_phase)
+            .env("AGIRA_TO_PHASE", ctx.to_phase)
+            .env("AGIRA_ARTIFACT", ctx.artifact)
+            .spawn()
+        {
+            eprintln!("warning: hook spawn failed: {error}");
+        }
+    }
 }
 
 fn matching_hooks<'a>(

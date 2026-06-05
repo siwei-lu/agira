@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
+    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
     pick::{format_pick_output, select_next_task},
     project::Project,
     tasks::{StoreError, Task, TaskStore},
@@ -100,10 +101,26 @@ pub fn run_work(
             };
 
             let completed_at = Utc::now().to_rfc3339();
-            store.record_phase_artifact(&task_id, artifact, completed_at)?;
+            let from_phase = store.record_phase_artifact(&task_id, artifact, completed_at)?;
             store.next_phase(&task_id)?;
 
             let resulting_state = store.get_task(&task_id).unwrap().state.clone();
+            let hooks = hooks_for_phase(
+                &project.global_hooks,
+                &project.project_hooks,
+                &resulting_state,
+            );
+            dispatch_hooks(
+                &hooks,
+                &HookContext {
+                    task_id: &task_id,
+                    task_title: &task_title,
+                    project_slug: &project.slug,
+                    from_phase: &from_phase,
+                    to_phase: &resulting_state,
+                    artifact,
+                },
+            );
 
             if resulting_state == terminal_phase {
                 print_work_output(&format!("{task_id} done ✓"));
