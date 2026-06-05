@@ -1,15 +1,18 @@
 use std::{
     env, fs, io,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
 use thiserror::Error;
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/siwei-lu/agira/releases/latest";
+const DOWNLOAD_BUFFER_SIZE: usize = 8 * 1024;
+const PROGRESS_BAR_WIDTH: usize = 20;
+const UNKNOWN_TOTAL_BAR: &str = "????????????????????";
 
 #[derive(Debug, Error)]
 pub enum SelfUpdateError {
@@ -54,6 +57,9 @@ pub enum SelfUpdateError {
         #[source]
         source: io::Error,
     },
+
+    #[error("failed to write download progress: {0}")]
+    WriteProgress(#[source] io::Error),
 
     #[error("failed to set executable permissions on {path}: {source}")]
     SetPermissions {
@@ -174,10 +180,24 @@ fn download_asset(
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(SelfUpdateError::DownloadAsset)?;
+    let total_bytes = response.content_length();
 
-    io::copy(&mut response, &mut file).map_err(|source| SelfUpdateError::WriteTemp {
-        path: path.to_path_buf(),
-        source,
+    let stdout = io::stdout();
+    let mut progress_output = stdout.lock();
+    let started_at = Instant::now();
+    copy_with_download_progress(
+        &mut response,
+        &mut file,
+        total_bytes,
+        &mut progress_output,
+        || started_at.elapsed(),
+    )
+    .map_err(|error| match error {
+        DownloadCopyError::Data(source) => SelfUpdateError::WriteTemp {
+            path: path.to_path_buf(),
+            source,
+        },
+        DownloadCopyError::Progress(source) => SelfUpdateError::WriteProgress(source),
     })?;
     file.flush().map_err(|source| SelfUpdateError::WriteTemp {
         path: path.to_path_buf(),
@@ -243,6 +263,183 @@ fn find_asset<'a>(release: &'a GithubRelease, asset_name: &str) -> Option<&'a Gi
     release.assets.iter().find(|asset| asset.name == asset_name)
 }
 
+#[derive(Debug)]
+enum DownloadCopyError {
+    Data(io::Error),
+    Progress(io::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProgressMarker {
+    KnownBarSegments(usize),
+    UnknownTotalBucket(u64),
+}
+
+struct DownloadProgressReporter<'a, W, E>
+where
+    W: Write,
+    E: FnMut() -> Duration,
+{
+    output: &'a mut W,
+    total_bytes: Option<u64>,
+    elapsed: E,
+    last_marker: Option<ProgressMarker>,
+    last_downloaded: Option<u64>,
+}
+
+impl<'a, W, E> DownloadProgressReporter<'a, W, E>
+where
+    W: Write,
+    E: FnMut() -> Duration,
+{
+    fn new(output: &'a mut W, total_bytes: Option<u64>, elapsed: E) -> Self {
+        Self {
+            output,
+            total_bytes,
+            elapsed,
+            last_marker: None,
+            last_downloaded: None,
+        }
+    }
+
+    fn start(&mut self) -> Result<(), DownloadCopyError> {
+        self.render(0)
+    }
+
+    fn record(&mut self, downloaded: u64) -> Result<(), DownloadCopyError> {
+        let marker = progress_marker(downloaded, self.total_bytes);
+
+        if self.last_marker != Some(marker) {
+            self.render(downloaded)?;
+        }
+
+        Ok(())
+    }
+
+    fn finish(&mut self, downloaded: u64) -> Result<(), DownloadCopyError> {
+        if self.last_downloaded != Some(downloaded) {
+            self.render(downloaded)?;
+        }
+
+        Ok(())
+    }
+
+    fn render(&mut self, downloaded: u64) -> Result<(), DownloadCopyError> {
+        let elapsed = (self.elapsed)();
+        writeln!(
+            self.output,
+            "{}",
+            format_download_progress(downloaded, self.total_bytes, elapsed)
+        )
+        .map_err(DownloadCopyError::Progress)?;
+        self.last_marker = Some(progress_marker(downloaded, self.total_bytes));
+        self.last_downloaded = Some(downloaded);
+        Ok(())
+    }
+}
+
+fn copy_with_download_progress<R, W, P, E>(
+    reader: &mut R,
+    writer: &mut W,
+    total_bytes: Option<u64>,
+    progress_output: &mut P,
+    elapsed: E,
+) -> Result<u64, DownloadCopyError>
+where
+    R: Read,
+    W: Write,
+    P: Write,
+    E: FnMut() -> Duration,
+{
+    let mut reporter = DownloadProgressReporter::new(progress_output, total_bytes, elapsed);
+    reporter.start()?;
+
+    let mut downloaded = 0;
+    let mut buffer = [0; DOWNLOAD_BUFFER_SIZE];
+    loop {
+        let bytes_read = reader.read(&mut buffer).map_err(DownloadCopyError::Data)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        writer
+            .write_all(&buffer[..bytes_read])
+            .map_err(DownloadCopyError::Data)?;
+        downloaded += bytes_read as u64;
+        reporter.record(downloaded)?;
+    }
+
+    reporter.finish(downloaded)?;
+    Ok(downloaded)
+}
+
+fn progress_marker(downloaded: u64, total_bytes: Option<u64>) -> ProgressMarker {
+    match total_bytes {
+        Some(total) => {
+            ProgressMarker::KnownBarSegments(filled_progress_segments(downloaded, total))
+        }
+        None => ProgressMarker::UnknownTotalBucket(downloaded / (1024 * 1024)),
+    }
+}
+
+fn format_download_progress(
+    downloaded: u64,
+    total_bytes: Option<u64>,
+    elapsed: Duration,
+) -> String {
+    let bar = progress_bar(downloaded, total_bytes);
+    let total_display = total_bytes
+        .map(|total| format!("{total} B"))
+        .unwrap_or_else(|| "unknown".to_owned());
+    let percentage = match total_bytes {
+        Some(total) => format!("{}%", progress_percentage(downloaded, total)),
+        None => "--%".to_owned(),
+    };
+    let speed = download_speed(downloaded, elapsed);
+
+    format!("download [{bar}] {downloaded} B / {total_display} ({percentage}) {speed} B/s")
+}
+
+fn progress_bar(downloaded: u64, total_bytes: Option<u64>) -> String {
+    match total_bytes {
+        Some(total) => {
+            let filled = filled_progress_segments(downloaded, total);
+            format!(
+                "{}{}",
+                "#".repeat(filled),
+                "-".repeat(PROGRESS_BAR_WIDTH - filled)
+            )
+        }
+        None => UNKNOWN_TOTAL_BAR.to_owned(),
+    }
+}
+
+fn filled_progress_segments(downloaded: u64, total: u64) -> usize {
+    if total == 0 {
+        return PROGRESS_BAR_WIDTH;
+    }
+
+    ((downloaded as u128 * PROGRESS_BAR_WIDTH as u128) / total as u128)
+        .min(PROGRESS_BAR_WIDTH as u128) as usize
+}
+
+fn progress_percentage(downloaded: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 100;
+    }
+
+    ((downloaded as u128 * 100) / total as u128).min(100) as u64
+}
+
+fn download_speed(downloaded: u64, elapsed: Duration) -> u64 {
+    let elapsed_millis = elapsed.as_millis();
+    if elapsed_millis == 0 {
+        return 0;
+    }
+
+    ((downloaded as u128 * 1000) / elapsed_millis) as u64
+}
+
 fn already_up_to_date_message(version: &str) -> String {
     format!("agira is already up to date (v{version})")
 }
@@ -253,6 +450,8 @@ fn updated_message(version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -344,5 +543,56 @@ mod tests {
     #[test]
     fn updated_message_formats_exactly() {
         assert_eq!(updated_message("0.4.2"), "updated to v0.4.2");
+    }
+
+    #[test]
+    fn download_progress_formats_bytes_percentage_bar_and_speed() {
+        assert_eq!(
+            format_download_progress(1024, Some(2048), Duration::from_secs(2)),
+            "download [##########----------] 1024 B / 2048 B (50%) 512 B/s"
+        );
+    }
+
+    #[test]
+    fn download_progress_handles_unknown_total_without_ansi_sequences() {
+        let output = format_download_progress(1536, None, Duration::from_secs(1));
+
+        assert_eq!(
+            output,
+            "download [????????????????????] 1536 B / unknown (--%) 1536 B/s"
+        );
+        assert!(!output.contains('\x1b'));
+        assert!(!output.contains('\r'));
+    }
+
+    #[test]
+    fn copy_with_download_progress_reports_start_intermediate_and_finish() {
+        let body = vec![7; DOWNLOAD_BUFFER_SIZE * 2];
+        let mut reader = io::Cursor::new(body.clone());
+        let mut writer = Vec::new();
+        let mut progress = Vec::new();
+
+        let copied = copy_with_download_progress(
+            &mut reader,
+            &mut writer,
+            Some(body.len() as u64),
+            &mut progress,
+            || Duration::from_secs(2),
+        )
+        .unwrap();
+
+        let progress = String::from_utf8(progress).unwrap();
+        assert_eq!(copied, body.len() as u64);
+        assert_eq!(writer, body);
+        assert!(progress.contains("download [--------------------] 0 B / 16384 B (0%) 0 B/s\n"));
+        assert!(
+            progress.contains("download [##########----------] 8192 B / 16384 B (50%) 4096 B/s\n")
+        );
+        assert!(
+            progress
+                .contains("download [####################] 16384 B / 16384 B (100%) 8192 B/s\n")
+        );
+        assert!(!progress.contains('\x1b'));
+        assert!(!progress.contains('\r'));
     }
 }
