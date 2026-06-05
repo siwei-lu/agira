@@ -27,15 +27,15 @@ enum Commands {
     },
     /// Initialize project configuration
     Init {
-        #[arg(long)]
+        #[arg(long, value_name = "stack")]
         stack: Option<String>,
-        #[arg(long)]
+        #[arg(long, value_name = "phases")]
         phases: Option<String>,
-        #[arg(long = "verification-commands")]
+        #[arg(long = "verification-commands", value_name = "verification-commands")]
         verification_commands: Option<String>,
-        #[arg(long = "acceptance-testing")]
+        #[arg(long = "acceptance-testing", value_name = "acceptance-testing")]
         acceptance_testing: Option<String>,
-        #[arg(long = "prd-path")]
+        #[arg(long = "prd-path", value_name = "prd-path")]
         prd_path: Option<String>,
     },
     /// Manage workflow phases
@@ -70,16 +70,16 @@ enum PhaseCommands {
     /// Add, insert, or remove phases in the state machine
     Update {
         /// Phase to add in phase:model format (e.g. review:opus); appended at end unless --after or --before
-        #[arg(long)]
+        #[arg(long, value_name = "add")]
         add: Option<String>,
         /// Insert the new phase after this existing phase
-        #[arg(long)]
+        #[arg(long, value_name = "after")]
         after: Option<String>,
         /// Insert the new phase before this existing phase
-        #[arg(long)]
+        #[arg(long, value_name = "before")]
         before: Option<String>,
         /// Phase name to remove (fails if any task is currently in that phase)
-        #[arg(long)]
+        #[arg(long, value_name = "remove")]
         remove: Option<String>,
         /// Change the model of an existing phase: --set-model <phase> <model>
         #[arg(long, num_args = 2, value_names = ["phase", "model"])]
@@ -106,6 +106,7 @@ enum HookCommands {
         #[arg(long = "global")]
         global: bool,
         /// Hook event name: *, task_added, failed, or a configured phase
+        #[arg(value_name = "event")]
         event: String,
         /// Shell command to run for the hook
         #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -117,6 +118,7 @@ enum HookCommands {
         #[arg(long = "global")]
         global: bool,
         /// Hook event name: *, task_added, failed, or a configured phase
+        #[arg(value_name = "event")]
         event: String,
     },
 }
@@ -129,10 +131,10 @@ enum TaskCommands {
         #[arg(long)]
         json: bool,
         /// Number of tasks to show, or 0 to show all
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, value_name = "limit")]
         limit: usize,
         /// Number of tasks to skip from the latest-first list
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 0, value_name = "offset")]
         offset: usize,
         /// Show only this task ID
         #[arg(value_name = "task-id")]
@@ -141,31 +143,34 @@ enum TaskCommands {
     /// Print the current actionable task prompt, or advance it when --artifact is given
     Todo {
         /// Path to a PRD file to inject as requirements context (print mode only)
-        #[arg(long)]
+        #[arg(long, value_name = "prd")]
         prd: Option<PathBuf>,
         /// Evidence of completion for this phase; advances the current task when provided
-        #[arg(long)]
+        #[arg(long, value_name = "artifact")]
         artifact: Option<String>,
     },
     /// Record a task failure and retry or terminate based on retry count
     Fail {
         /// Task ID to fail (e.g. task-001)
+        #[arg(value_name = "id")]
         id: String,
         /// Reason for the failure
-        #[arg(long)]
+        #[arg(long, value_name = "reason")]
         reason: Option<String>,
     },
     /// Mark a task as blocked
     Block {
         /// Task ID to block (e.g. task-001)
+        #[arg(value_name = "id")]
         id: String,
         /// Reason the task is blocked
-        #[arg(long)]
+        #[arg(long, value_name = "reason")]
         reason: Option<String>,
     },
     /// Resume a blocked task
     Unblock {
         /// Task ID to unblock (e.g. task-001)
+        #[arg(value_name = "id")]
         id: String,
     },
     /// Add a new task to the project
@@ -186,15 +191,16 @@ enum TaskCommands {
     /// Update editable fields of an existing task
     Update {
         /// Task ID to update (e.g. task-001)
+        #[arg(value_name = "id")]
         id: String,
         /// New title
-        #[arg(long)]
+        #[arg(long, value_name = "title")]
         title: Option<String>,
         /// New description
-        #[arg(long)]
+        #[arg(long, value_name = "description")]
         description: Option<String>,
         /// New PRD module ID (e.g. FM-001)
-        #[arg(long)]
+        #[arg(long, value_name = "prd")]
         prd: Option<String>,
         /// Replacement comma-separated dependency list
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]

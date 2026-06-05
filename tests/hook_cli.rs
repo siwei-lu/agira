@@ -166,6 +166,44 @@ fn hook_remove_global_removes_only_user_hooks_for_event() {
 }
 
 #[test]
+fn hook_update_global_replaces_matching_event_command() {
+    let (home, _workspace, repo) = setup_repo();
+
+    run_ok(agira(home.path(), &repo).args([
+        "hook",
+        "add",
+        "--global",
+        "task_added",
+        "hermes",
+        "chat",
+        "--quiet",
+        "-q",
+        "/todo $(pwd)",
+    ]));
+    run_ok(agira(home.path(), &repo).args([
+        "hook",
+        "update",
+        "--global",
+        "task_added",
+        "hermes",
+        "chat",
+        "--quiet",
+        "-q",
+        "/todo $AGIRA_PROJECT_PATH",
+    ]));
+
+    let global_config = fs::read_to_string(global_config_path(home.path())).unwrap();
+    assert!(global_config.contains("default_max_retries = 3"));
+    assert!(global_config.contains("on = \"task_added\""));
+    assert!(global_config.contains("run = 'hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\"'"));
+    assert!(!global_config.contains("$(pwd)"));
+
+    let output = run_ok(agira(home.path(), &repo).args(["hook", "list"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("global  task_added  hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\""));
+}
+
+#[test]
 fn hook_add_unknown_phase_exits_nonzero_with_unknown_hook_event() {
     let (home, _workspace, repo) = setup_repo();
 
