@@ -5,6 +5,7 @@ mod hook;
 mod init;
 mod phase;
 mod project;
+mod remove;
 mod self_update;
 mod status;
 mod todo;
@@ -18,6 +19,7 @@ pub use hook::{HookError, run_hook_add, run_hook_list, run_hook_remove, run_hook
 pub use init::{InitError, InitFlags, run_init};
 pub use phase::{PhaseGetError, PhaseUpdateError, run_phase_get, run_phase_update};
 pub use project::{ProjectListError, run_project_list};
+pub use remove::{RemoveError, run_remove};
 pub use self_update::{SelfUpdateError, run_self_update};
 pub use status::{StatusError, run_status};
 pub use todo::{TodoError, run_todo};

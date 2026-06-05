@@ -226,6 +226,12 @@ enum TaskCommands {
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Option<Vec<String>>,
     },
+    /// Remove a pending task from the project
+    Remove {
+        /// Task ID to remove (e.g. task-001)
+        #[arg(value_name = "id")]
+        id: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -354,6 +360,19 @@ fn main() -> ExitCode {
                     Err(error) => {
                         eprintln!("error: {error}");
                         exit_code_for_update(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Remove { id } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_remove(&project, &id) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_remove(&error)
                     }
                 },
                 Err(error) => {
@@ -717,6 +736,24 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } | ConfigWrite { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_remove(error: &commands::RemoveError) -> ExitCode {
+    use commands::RemoveError::*;
+
+    match error {
+        TaskNotFound { .. }
+        | NotPending { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }
             | crate::core::StoreError::Serialize(_)

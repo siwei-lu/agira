@@ -80,6 +80,9 @@ pub enum StoreError {
     #[error("task {id} is {state} and cannot be updated")]
     CannotUpdateTerminal { id: String, state: String },
 
+    #[error("task {id} is not in the pending phase")]
+    NotInPendingPhase { id: String },
+
     #[error("unknown phase: {phase}")]
     UnknownPhase { phase: String },
 
@@ -166,7 +169,18 @@ impl TaskStore {
         dependencies: Vec<String>,
         phase_override: Option<&str>,
     ) -> Result<Task, StoreError> {
-        let id = format!("task-{:03}", self.tasks_file.tasks.len() + 1);
+        let next_num = self
+            .tasks_file
+            .tasks
+            .iter()
+            .filter_map(|t| {
+                t.id.strip_prefix("task-")
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let id = format!("task-{next_num:03}");
 
         for dependency_id in &dependencies {
             if self.get_task(dependency_id).is_none() {
@@ -471,6 +485,25 @@ impl TaskStore {
             task.dependencies = deps.to_vec();
         }
 
+        self.save(tasks_file)
+    }
+
+    pub fn remove_task(&mut self, id: &str) -> Result<(), StoreError> {
+        let task = self.get_task(id).ok_or(StoreError::NotFound)?;
+        let pending_phase =
+            self.state_machine
+                .first()
+                .ok_or_else(|| StoreError::InvalidTransition {
+                    from: task.state.clone(),
+                    to: String::new(),
+                })?;
+
+        if task.state != *pending_phase {
+            return Err(StoreError::NotInPendingPhase { id: id.to_owned() });
+        }
+
+        let mut tasks_file = self.tasks_file.clone();
+        tasks_file.tasks.retain(|t| t.id != id);
         self.save(tasks_file)
     }
 
@@ -960,6 +993,85 @@ mod tests {
     }
 
     #[test]
+    fn remove_task_removes_pending_task_and_saves() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store.add_task("Second", "", None, vec![], None).unwrap();
+
+        store.remove_task("task-001").unwrap();
+
+        assert!(store.get_task("task-001").is_none());
+        assert_eq!(store.all_tasks().len(), 1);
+        assert_eq!(store.all_tasks()[0].id, "task-002");
+
+        let reloaded = test_store(&temp_dir);
+        assert!(reloaded.get_task("task-001").is_none());
+        assert_eq!(reloaded.all_tasks().len(), 1);
+        assert_eq!(reloaded.all_tasks()[0].id, "task-002");
+    }
+
+    #[test]
+    fn remove_unknown_task_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let error = store.remove_task("task-999").unwrap_err();
+
+        assert!(matches!(error, StoreError::NotFound));
+    }
+
+    #[test]
+    fn remove_task_rejects_non_pending_states() {
+        fn assert_rejected_after<F>(make_non_pending: F, expected_state: &str)
+        where
+            F: FnOnce(&mut TaskStore),
+        {
+            let temp_dir = TempDir::new().unwrap();
+            let mut store = test_store(&temp_dir);
+            store.add_task("First", "", None, vec![], None).unwrap();
+            make_non_pending(&mut store);
+            let before = store.get_task("task-001").unwrap().clone();
+
+            let error = store.remove_task("task-001").unwrap_err();
+
+            assert!(matches!(
+                error,
+                StoreError::NotInPendingPhase { ref id } if id == "task-001"
+            ));
+            assert_eq!(store.get_task("task-001").unwrap(), &before);
+            assert_eq!(store.get_task("task-001").unwrap().state, expected_state);
+        }
+
+        assert_rejected_after(
+            |store| {
+                store.next_phase("task-001").unwrap();
+            },
+            "enriching",
+        );
+        assert_rejected_after(
+            |store| {
+                store.block_task("task-001", "waiting").unwrap();
+            },
+            "blocked",
+        );
+        assert_rejected_after(
+            |store| {
+                store.fail_task("task-001", "failed").unwrap();
+            },
+            "failed",
+        );
+        assert_rejected_after(
+            |store| {
+                store.next_phase("task-001").unwrap();
+                store.next_phase("task-001").unwrap();
+            },
+            "done",
+        );
+    }
+
+    #[test]
     fn atomic_write_leaves_valid_json() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
@@ -1015,5 +1127,19 @@ mod tests {
         ));
         assert_eq!(error.to_string(), "unknown phase: nonexistent");
         assert!(!temp_dir.path().join("tasks.json").exists());
+    }
+
+    #[test]
+    fn add_after_remove_does_not_reuse_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store.add_task("Second", "", None, vec![], None).unwrap();
+        store.add_task("Third", "", None, vec![], None).unwrap();
+        store.remove_task("task-002").unwrap();
+
+        let task = store.add_task("Fourth", "", None, vec![], None).unwrap();
+        assert_eq!(task.id, "task-004");
     }
 }
