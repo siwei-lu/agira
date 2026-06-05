@@ -8,6 +8,8 @@ use crate::core::{
 };
 
 const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"` or provide requirements with `agira task work --prd <path>`";
+const BLOCKED_STATE: &str = "blocked";
+const FAILED_STATE: &str = "failed";
 
 pub(crate) fn format_pick_output(
     config: &Config,
@@ -54,9 +56,15 @@ fn phase_index(phase: &str, config: &Config) -> Option<usize> {
 }
 
 fn is_actionable(task: &Task, config: &Config) -> bool {
-    config.terminal_phase().is_some_and(|terminal| {
-        task.state != terminal && phase_index(&task.state, config).is_some()
-    })
+    let Some(terminal) = config.terminal_phase() else {
+        return false;
+    };
+
+    !is_non_actionable_state(&task.state, terminal) && phase_index(&task.state, config).is_some()
+}
+
+fn is_non_actionable_state(state: &str, terminal_phase: &str) -> bool {
+    state == BLOCKED_STATE || state == FAILED_STATE || state == terminal_phase
 }
 
 fn deps_satisfied(task: &Task, all_tasks: &[Task], terminal_phase: &str) -> bool {
@@ -210,8 +218,7 @@ fn compare_completed_at(left: &str, right: &str) -> Ordering {
 }
 
 fn format_non_actionable_summary(tasks: &[Task]) -> String {
-    let mut output =
-        "# Agira Task Summary\n\nNo actionable tasks found.\n\n## Non-actionable Tasks".to_owned();
+    let mut output = "# Agira Task Summary\n\nNo actionable tasks found. All remaining tasks are blocked or complete.\n\n## Non-actionable Tasks".to_owned();
     for task in tasks {
         output.push_str(&format!("\n- {}: {} ({})", task.id, task.title, task.state));
     }
@@ -332,6 +339,73 @@ mod tests {
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
         assert_eq!(selected.id, "task-001");
+    }
+
+    #[test]
+    fn select_skips_blocked_state_even_if_configured_as_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.phases.insert(
+            1,
+            PhaseConfig {
+                name: "blocked".to_owned(),
+                model: "haiku".to_owned(),
+            },
+        );
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Blocked current task", "", None, vec![])
+            .unwrap();
+        store
+            .add_task("Next actionable task", "", None, vec![])
+            .unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let selected = select_next_task(store.all_tasks(), &config).unwrap();
+
+        assert_eq!(selected.id, "task-002");
+    }
+
+    #[test]
+    fn select_skips_failed_state_even_if_configured_as_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.phases.insert(
+            1,
+            PhaseConfig {
+                name: "failed".to_owned(),
+                model: "haiku".to_owned(),
+            },
+        );
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Failed current task", "", None, vec![])
+            .unwrap();
+        store
+            .add_task("Next actionable task", "", None, vec![])
+            .unwrap();
+        store.fail_task("task-001", "broken").unwrap();
+
+        let selected = select_next_task(store.all_tasks(), &config).unwrap();
+
+        assert_eq!(selected.id, "task-002");
+    }
+
+    #[test]
+    fn non_actionable_summary_explains_remaining_tasks_are_blocked_or_complete() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let output = format_pick_output(&config, store.all_tasks(), None, None);
+
+        assert!(output.contains("All remaining tasks are blocked or complete."));
+        assert!(output.contains("task-001: Blocked task (blocked)"));
     }
 
     #[test]

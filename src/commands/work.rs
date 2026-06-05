@@ -21,7 +21,7 @@ const DIRTY_WORKING_TREE_MESSAGE: &str =
 
 #[derive(Debug, Error)]
 pub enum WorkError {
-    #[error("no actionable task — all tasks are done or blocked")]
+    #[error("no actionable task — all remaining tasks are blocked or complete")]
     NoActionableTask,
 
     #[error("artifact must not be empty")]
@@ -331,6 +331,34 @@ mod tests {
     }
 
     #[test]
+    fn no_artifact_skips_blocked_current_task() {
+        let (temp_dir, project, mut config) = setup();
+        config.phases.insert(
+            1,
+            PhaseConfig {
+                name: "blocked".to_owned(),
+                model: "haiku".to_owned(),
+            },
+        );
+        write_config(&project, &config);
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Blocked current task", "blocked description", None, vec![])
+            .unwrap();
+        store
+            .add_task("Next actionable task", "next description", None, vec![])
+            .unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let (result, output) = capture_output(|| run_work(&project, None, None));
+
+        result.unwrap();
+        assert!(output.contains("# Agira Task Prompt"));
+        assert!(output.contains("Next actionable task"));
+        assert!(!output.contains("Blocked current task"));
+    }
+
+    #[test]
     fn no_artifact_dirty_tree_blocks_next_task_prompt() {
         let (git_dir, state_dir, project, config) = setup_with_git_repo();
         let mut store = test_store(&state_dir, &config);
@@ -471,6 +499,10 @@ mod tests {
 
         let error = run_work(&project, None, Some("artifact")).unwrap_err();
 
+        assert_eq!(
+            error.to_string(),
+            "no actionable task — all remaining tasks are blocked or complete"
+        );
         assert!(matches!(error, WorkError::NoActionableTask));
     }
 
