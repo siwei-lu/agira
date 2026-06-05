@@ -83,6 +83,19 @@ fn project_help_uses_lowercase_command_placeholder() {
 }
 
 #[test]
+fn skill_help_uses_lowercase_command_placeholder() {
+    let out = help_stdout(&["skill"]);
+    assert!(
+        out.contains("<command>"),
+        "expected lowercase <command> in 'agira skill --help', got:\n{out}"
+    );
+    assert!(
+        !out.contains("<COMMAND>"),
+        "found uppercase <COMMAND> in 'agira skill --help'"
+    );
+}
+
+#[test]
 fn config_help_lists_valid_keys() {
     let out = help_stdout(&["config"]);
     assert!(

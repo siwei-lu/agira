@@ -8,6 +8,7 @@ mod phase;
 mod project;
 mod remove;
 mod self_update;
+mod skill;
 mod status;
 mod todo;
 mod unblock;
@@ -25,6 +26,7 @@ pub use phase::{
 pub use project::{ProjectListError, run_project_list};
 pub use remove::{RemoveError, run_remove};
 pub use self_update::{SelfUpdateError, run_self_update};
+pub use skill::{SkillError, run_skill_install, run_skill_uninstall};
 pub use status::{StatusError, run_status};
 pub use todo::{TodoError, run_todo};
 pub use unblock::{UnblockError, run_unblock};

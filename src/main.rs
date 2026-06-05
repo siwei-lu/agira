@@ -69,6 +69,12 @@ enum Commands {
         #[command(subcommand)]
         command: ProjectCommands,
     },
+    /// Print prompts to install or uninstall an agira task-add personal skill
+    #[command(subcommand_value_name = "command")]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
     /// Update agira to the latest GitHub release
     Update,
     /// Print version information
@@ -106,6 +112,14 @@ enum PhaseCommands {
 enum ProjectCommands {
     /// List initialized projects and their state directories
     List,
+}
+
+#[derive(Subcommand)]
+enum SkillCommands {
+    /// Print a prompt asking an agent to write the agira task-add personal skill
+    Install,
+    /// Print a prompt asking an agent to delete the agira task-add personal skill
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -581,6 +595,19 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Skill { command } => {
+            let result = match command {
+                SkillCommands::Install => commands::run_skill_install(),
+                SkillCommands::Uninstall => commands::run_skill_uninstall(),
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_skill(&error)
+                }
+            }
+        }
         Commands::Update => match commands::run_self_update() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -740,6 +767,11 @@ fn exit_code_for_update(error: &commands::UpdateError) -> ExitCode {
             _ => ExitCode::from(1),
         },
     }
+}
+
+fn exit_code_for_skill(error: &commands::SkillError) -> ExitCode {
+    // SkillError is currently uninhabited; this match is exhaustive and never runs.
+    match *error {}
 }
 
 fn exit_code_for_self_update(error: &commands::SelfUpdateError) -> ExitCode {
