@@ -26,6 +26,28 @@ fn run_ok(command: &mut Command) {
     );
 }
 
+fn setup_repo(name: &str) -> (TempDir, TempDir, std::path::PathBuf) {
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join(name);
+    fs::create_dir(&repo).unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+
+    run_ok(agira(home.path(), &repo).args([
+        "init",
+        "--stack",
+        "rust",
+        "--phases",
+        "enriching:sonnet,done:sonnet",
+        "--verification-commands",
+        "none",
+        "--acceptance-testing",
+        "cli",
+    ]));
+
+    (home, workspace, repo)
+}
+
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -106,4 +128,29 @@ run = {hook_command:?}
             "artifact value"
         ]
     );
+}
+
+#[test]
+fn global_hook_registered_by_cli_fires_on_matching_task_transition() {
+    let (home, _workspace, repo) = setup_repo("Global Hook Repo");
+    let hook_output = home.path().join("cli-global-hook-output.txt");
+    let hook_path = shell_quote(&hook_output);
+
+    run_ok(agira(home.path(), &repo).args([
+        "hook",
+        "add",
+        "--global",
+        "done",
+        "printf",
+        "global-hook-fired",
+        ">",
+        &hook_path,
+    ]));
+    run_ok(agira(home.path(), &repo).args(["task", "add", "CLI global hook task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "work", "--artifact", "complete"]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("global hook registered by CLI did not write output within 2s");
+
+    assert_eq!(contents, "global-hook-fired");
 }
