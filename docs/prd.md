@@ -215,6 +215,53 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 
 ---
 
+### FM-012: Hook Configuration Schema
+**Priority:** P1
+**Dependencies:** FM-001, FM-009
+**Description:** Task 状态变更时触发的 shell hook 配置规范。分两层：全局 hook 写在 `~/.agira/config.toml` 的 `[[hooks]]` 数组中，对所有项目生效；per-project hook 写在 `~/.agira/<slug>/hooks.toml`，仅对当前项目生效。两者格式相同。
+**Constraints:**
+- 每条 hook 是 TOML `[[hooks]]` 条目，两个必填字段：
+  - `on` — 字符串：具体 phase 名（如 `"done"`、`"verifying"`）、`"failed"`，或 `"*"`（任意转换都触发）
+  - `run` — 非空 shell 命令字符串，通过 `sh -c "<run>"` 执行
+- 全局 hook：`~/.agira/config.toml` 的 `[[hooks]]` 段
+- Per-project hook：`~/.agira/<slug>/hooks.toml`（文件不存在 = 无项目级 hook，不报错）
+- `on` 值与任何 phase 都不匹配时静默忽略（不报错、不警告）
+- hooks 配置 TOML 解析失败时退出 1：`error: invalid hooks config at <path>: <parse error>`
+**Acceptance Criteria:**
+- `~/.agira/config.toml` 中加入 `[[hooks]] on = "done" run = "echo done"` 后，所有项目的 done 转换都会触发该 hook
+- `~/.agira/<slug>/hooks.toml` 中加入 `[[hooks]] on = "*" run = "echo changed"` 后，该项目每次状态变更都触发
+- `~/.agira/<slug>/hooks.toml` 不存在时，任何命令均不报错、正常运行
+- hooks 段 TOML 格式错误时，任何命令退出 1 并输出解析错误
+
+---
+
+### FM-013: Hook Execution
+**Priority:** P1
+**Dependencies:** FM-012, FM-003
+**Description:** Task 状态写入磁盘后，agira 收集所有匹配的 hook（全局 + per-project），依次以 `sh -c` 启动 detached 子进程。Fire-and-forget：agira 不等待、不检查 exit code，立即返回。
+**Constraints:**
+- Hook 触发时机：`tasks.json` 原子 rename 成功**之后**
+- 匹配规则：`on == "*"` 或 `on == <to_phase>`（目标 phase 名，含 `"done"` 和 `"failed"`）
+- 执行顺序：全局 hook 按文件顺序先执行，然后是 per-project hook
+- 每个子进程注入以下环境变量（叠加到父进程 env 上）：
+  - `AGIRA_TASK_ID` — 如 `task-001`
+  - `AGIRA_TASK_TITLE` — task 标题
+  - `AGIRA_PROJECT_SLUG` — 项目 slug
+  - `AGIRA_FROM_PHASE` — 变更前 phase 名
+  - `AGIRA_TO_PHASE` — 变更后 phase 名
+  - `AGIRA_ARTIFACT` — `--artifact` 传入的字符串；若不适用则为空字符串
+- 子进程完全 detached（等价于 `nohup sh -c "..." &disown`），与 agira 进程生命周期无关
+- Hook 子进程的 stdout/stderr 不影响 agira 自身输出
+- `sh` 启动失败时向 stderr 输出单行警告，不影响 agira exit code
+**Acceptance Criteria:**
+- 全局配置 `[[hooks]] on = "done" run = "touch /tmp/agira-hook-fired"` 后，任意项目的 task advance 到 done，`/tmp/agira-hook-fired` 被创建
+- Hook 子进程中 `AGIRA_TO_PHASE=done`、`AGIRA_TASK_ID=task-001` 等变量可正确读取
+- phase 不匹配的 hook 不触发（如 `on = "done"` 的 hook 在 `in_progress → verifying` 时不触发）
+- `on = "*"` 的 hook 在 `failed` 转换时也触发
+- agira 打印输出后立即退出 0，不等待 hook 子进程
+
+---
+
 ## Non-Functional Requirements
 - All agira subcommands resolve project and load config in under 100ms (no network I/O on the hot path)
 - `tasks.json` and `config.json` are pretty-printed, human-readable JSON (2-space indent)
@@ -251,6 +298,10 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 5 — 2026-06-05
+- FM-012 (new): hook configuration schema — global (`~/.agira/config.toml`) and per-project (`~/.agira/<slug>/hooks.toml`) TOML `[[hooks]]` tables with `on` and `run` fields
+- FM-013 (new): hook execution — fire-and-forget detached `sh -c` subprocess after atomic write, with `AGIRA_TASK_ID/TITLE/PROJECT_SLUG/FROM_PHASE/TO_PHASE/ARTIFACT` env vars; global hooks first then per-project
+
 ### Round 4 — 2026-06-05
 - FM-002: remove `--models` flag; fold model into `--phases` as `phase:model` pairs (e.g. `enriching:opus,in_progress:sonnet`); bare invocation now recommends model per phase type; remove `default_model` from global config
 - FM-003: config `phases` field changes from `string[]` to `[{name, model}]`
