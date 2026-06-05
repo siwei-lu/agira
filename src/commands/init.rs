@@ -217,23 +217,23 @@ fn default_phases() -> Vec<PhaseConfig> {
     vec![
         PhaseConfig {
             name: INITIAL_PHASE_NAME.to_owned(),
-            model: "sonnet".to_owned(),
+            model: None,
         },
         PhaseConfig {
             name: "enriching".to_owned(),
-            model: "opus".to_owned(),
+            model: Some("opus".to_owned()),
         },
         PhaseConfig {
             name: "in_progress".to_owned(),
-            model: "sonnet".to_owned(),
+            model: Some("sonnet".to_owned()),
         },
         PhaseConfig {
             name: "verifying".to_owned(),
-            model: "haiku".to_owned(),
+            model: Some("haiku".to_owned()),
         },
         PhaseConfig {
             name: TERMINAL_PHASE_NAME.to_owned(),
-            model: "haiku".to_owned(),
+            model: None,
         },
     ]
 }
@@ -596,7 +596,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                     } else {
                         Ok(PhaseConfig {
                             name: name.to_owned(),
-                            model: model.to_owned(),
+                            model: Some(model.to_owned()),
                         })
                     }
                 }
@@ -688,9 +688,9 @@ mod tests {
         assert_eq!(config.acceptance_testing, "cli");
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, "sonnet");
+        assert_eq!(config.phases[0].model, None);
         assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, "opus");
+        assert_eq!(config.phases[1].model, Some("opus".to_owned()));
     }
 
     #[test]
@@ -747,20 +747,20 @@ mod tests {
             super::parse_phases_flag("enriching:opus,in_progress:sonnet,done:haiku").unwrap();
         assert_eq!(phases.len(), 4);
         assert_eq!(phases[0].name, "pending");
-        assert_eq!(phases[0].model, "sonnet");
+        assert_eq!(phases[0].model, None);
         assert_eq!(phases[1].name, "enriching");
-        assert_eq!(phases[1].model, "opus");
+        assert_eq!(phases[1].model, Some("opus".to_owned()));
         assert_eq!(phases[2].name, "in_progress");
-        assert_eq!(phases[2].model, "sonnet");
+        assert_eq!(phases[2].model, Some("sonnet".to_owned()));
         assert_eq!(phases[3].name, "done");
-        assert_eq!(phases[3].model, "haiku");
+        assert_eq!(phases[3].model, None);
 
         let single = super::parse_phases_flag("done:haiku").unwrap();
         assert_eq!(single.len(), 2);
         assert_eq!(single[0].name, "pending");
-        assert_eq!(single[0].model, "sonnet");
+        assert_eq!(single[0].model, None);
         assert_eq!(single[1].name, "done");
-        assert_eq!(single[1].model, "haiku");
+        assert_eq!(single[1].model, None);
 
         let without_mandatory =
             super::parse_phases_flag("enriching:opus,in_progress:sonnet").unwrap();

@@ -90,25 +90,27 @@ fn format_decomposition_prompt(prd_content: &str) -> String {
 }
 
 fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &str)>) -> String {
-    let model = config
+    let model: Option<&str> = config
         .phases
         .iter()
         .find(|p| p.name == task.state)
-        .map(|p| p.model.as_str())
-        .unwrap_or("sonnet");
+        .and_then(|p| p.model.as_deref());
 
     let mut subagent = format!(
-        "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}\n- Agent role: {}\n\n## Description\n{}",
-        task.id,
-        task.title,
-        task.state,
-        model,
+        "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
+        task.id, task.title, task.state,
+    );
+    if let Some(m) = model {
+        subagent.push_str(&format!("\n- Agent role: {m}"));
+    }
+    subagent.push_str(&format!(
+        "\n\n## Description\n{}",
         if task.description.is_empty() {
             "No description provided."
         } else {
             task.description.as_str()
         }
-    );
+    ));
 
     if !task.phases.is_empty() {
         subagent.push_str("\n\n## Acceptance Criteria");
@@ -150,13 +152,20 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
         task.id
     ));
 
-    let steps = format!(
-        "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Spawn a subagent using model `{model}` with that problem statement and the delimited prompt below."
-    );
+    // Orchestrator wrapper: only present when the phase has a model (i.e. AI-driven).
+    if let Some(model) = model {
+        let steps = format!(
+            "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Spawn a subagent using model `{model}` with that problem statement and the delimited prompt below."
+        );
 
-    format!(
-        "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
-    )
+        format!(
+            "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
+        )
+    } else {
+        // No model configured (pending/done and similar transition phases): return subagent
+        // prompt directly without orchestrator wrapper.
+        subagent
+    }
 }
 
 fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
@@ -250,23 +259,23 @@ mod tests {
             phases: vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
-                    model: "opus".to_owned(),
+                    model: Some("opus".to_owned()),
                 },
                 PhaseConfig {
                     name: "in_progress".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: Some("sonnet".to_owned()),
                 },
                 PhaseConfig {
                     name: "verifying".to_owned(),
-                    model: "haiku".to_owned(),
+                    model: Some("haiku".to_owned()),
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
-                    model: "haiku".to_owned(),
+                    model: None,
                 },
             ],
             verification: VerificationConfig { commands: vec![] },
@@ -357,7 +366,7 @@ mod tests {
             1,
             PhaseConfig {
                 name: "blocked".to_owned(),
-                model: "haiku".to_owned(),
+                model: Some("haiku".to_owned()),
             },
         );
         let mut store = test_store(&temp_dir, &config);
@@ -383,7 +392,7 @@ mod tests {
             1,
             PhaseConfig {
                 name: "failed".to_owned(),
-                model: "haiku".to_owned(),
+                model: Some("haiku".to_owned()),
             },
         );
         let mut store = test_store(&temp_dir, &config);
@@ -425,7 +434,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
+        // Advance to enriching phase which has a model (opus) — orchestrator wrapper is present.
         store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -433,8 +444,8 @@ mod tests {
         assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
         assert!(prompt.contains("--- END SUBAGENT PROMPT ---"));
         assert!(prompt.contains("# Agira Task Prompt"));
-        assert!(prompt.contains("- Agent role: sonnet"));
-        assert!(prompt.contains("The configured model is `sonnet`"));
+        assert!(prompt.contains("- Agent role: opus"));
+        assert!(prompt.contains("The configured model is `opus`"));
         assert!(prompt.contains("Do NOT perform this work yourself"));
         assert!(prompt.contains("do not read files"));
         assert!(prompt.contains("explore the codebase"));
@@ -444,9 +455,28 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_uses_sonnet_fallback_for_unknown_phase() {
+    fn pending_phase_prompt_has_no_orchestrator_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        // Task in pending phase — no model, no orchestrator wrapper.
+        store.add_task("Implement pick", "", None, vec![]).unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
+        assert!(prompt.contains("# Agira Task Prompt"));
+        assert!(!prompt.contains("- Agent role:"));
+    }
+
+    #[test]
+    fn task_prompt_omits_agent_role_for_phase_without_model() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
+        // Remove in_progress so the task lands in an unknown phase with no model.
         config.phases.retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
 
@@ -454,9 +484,11 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
+        // Task is in in_progress state but config has no in_progress phase: model is None.
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        assert!(prompt.contains("- Agent role: sonnet"));
+        assert!(!prompt.contains("- Agent role:"));
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
     }
 
     #[test]
@@ -538,14 +570,16 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
+        // Advance to enriching (has model: opus) so orchestrator wrapper is present.
         store.add_task("Next task", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `sonnet`"));
-        assert!(prompt.contains("The configured model is `sonnet`"));
+        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
+        assert!(prompt.contains("The configured model is `opus`"));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("1. Spawn a subagent"));
         assert!(!prompt.contains("2. Pass the content"));
@@ -558,7 +592,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
+        // Advance to enriching (has model: opus) so orchestrator wrapper is present.
         store.add_task("Next task", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
@@ -570,7 +606,7 @@ mod tests {
         assert!(!prompt.contains("task-000 \"Previous Task\""));
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `sonnet`"));
+        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("4. Once the subagent finishes"));
     }

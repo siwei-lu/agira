@@ -64,6 +64,11 @@ pub enum PhaseUpdateError {
     #[error("cannot remove mandatory phase '{name}'")]
     MandatoryPhase { name: String },
 
+    #[error(
+        "cannot set model on mandatory phase '{name}': pending and done are transition phases with no model"
+    )]
+    MandatoryPhaseNoModel { name: String },
+
     #[error("cannot insert before mandatory initial phase '{name}'")]
     CannotInsertBeforeInitial { name: String },
 
@@ -112,7 +117,10 @@ pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
     let display: Vec<String> = config
         .phases
         .iter()
-        .map(|p| format!("{}:{}", p.name, p.model))
+        .map(|p| match p.model.as_deref() {
+            Some(m) => format!("{}:{}", p.name, m),
+            None => p.name.clone(),
+        })
         .collect();
     println!("phases: {}", display.join(" \u{2192} "));
 
@@ -140,7 +148,7 @@ pub fn run_phase_update(
         validate_model(model)?;
         Some(PhaseConfig {
             name: name.to_owned(),
-            model: model.to_owned(),
+            model: Some(model.to_owned()),
         })
     } else {
         None
@@ -213,6 +221,11 @@ pub fn run_phase_update(
     if let Some(sm) = set_model {
         let (phase_name, model_name) = (&sm[0], &sm[1]);
         validate_model(model_name)?;
+        if is_mandatory_phase(phase_name) {
+            return Err(PhaseUpdateError::MandatoryPhaseNoModel {
+                name: phase_name.clone(),
+            });
+        }
         if !config.phases.iter().any(|p| &p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.clone(),
@@ -242,7 +255,7 @@ pub fn run_phase_update(
         let (phase_name, model_name) = (&sm[0], &sm[1]);
         for p in &mut new_phases {
             if &p.name == phase_name {
-                p.model = model_name.clone();
+                p.model = Some(model_name.clone());
                 break;
             }
         }
@@ -253,7 +266,10 @@ pub fn run_phase_update(
 
     let display: Vec<String> = new_phases
         .iter()
-        .map(|p| format!("{}:{}", p.name, p.model))
+        .map(|p| match p.model.as_deref() {
+            Some(m) => format!("{}:{}", p.name, m),
+            None => p.name.clone(),
+        })
         .collect();
     println!("phases: {}", display.join(" \u{2192} "));
 
@@ -379,19 +395,19 @@ mod tests {
             phases: vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
-                    model: "opus".to_owned(),
+                    model: Some("opus".to_owned()),
                 },
                 PhaseConfig {
                     name: "in_progress".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: Some("sonnet".to_owned()),
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
-                    model: "haiku".to_owned(),
+                    model: None,
                 },
             ],
             verification: VerificationConfig { commands: vec![] },
@@ -472,7 +488,7 @@ mod tests {
         assert_eq!(phases[0].name, "pending");
         assert_eq!(phases[1].name, "enriching");
         assert_eq!(phases[2].name, "review");
-        assert_eq!(phases[2].model, "sonnet");
+        assert_eq!(phases[2].model, Some("sonnet".to_owned()));
         assert_eq!(phases[3].name, "in_progress");
         assert_eq!(phases[4].name, "done");
     }
@@ -491,7 +507,7 @@ mod tests {
         .unwrap();
         let phases = loaded_phases(&project);
         assert_eq!(phases[3].name, "review");
-        assert_eq!(phases[3].model, "sonnet");
+        assert_eq!(phases[3].model, Some("sonnet".to_owned()));
         assert_eq!(phases[4].name, "done");
     }
 
@@ -712,22 +728,25 @@ mod tests {
         run_phase_update(&project, None, None, None, None, Some(&args)).unwrap();
         let phases = loaded_phases(&project);
         let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
-        assert_eq!(enriching.model, "haiku");
+        assert_eq!(enriching.model, Some("haiku".to_owned()));
     }
 
     #[test]
-    fn set_model_changes_mandatory_phase_model() {
+    fn set_model_on_mandatory_phase_returns_error() {
         let (_temp_dir, project, _config) = setup();
         let pending_args = vec!["pending".to_owned(), "opus".to_owned()];
-        run_phase_update(&project, None, None, None, None, Some(&pending_args)).unwrap();
-        let done_args = vec!["done".to_owned(), "sonnet".to_owned()];
-        run_phase_update(&project, None, None, None, None, Some(&done_args)).unwrap();
+        let error =
+            run_phase_update(&project, None, None, None, None, Some(&pending_args)).unwrap_err();
+        assert!(
+            matches!(error, PhaseUpdateError::MandatoryPhaseNoModel { name } if name == "pending")
+        );
 
-        let phases = loaded_phases(&project);
-        let pending = phases.iter().find(|p| p.name == "pending").unwrap();
-        let done = phases.iter().find(|p| p.name == "done").unwrap();
-        assert_eq!(pending.model, "opus");
-        assert_eq!(done.model, "sonnet");
+        let done_args = vec!["done".to_owned(), "sonnet".to_owned()];
+        let error =
+            run_phase_update(&project, None, None, None, None, Some(&done_args)).unwrap_err();
+        assert!(
+            matches!(error, PhaseUpdateError::MandatoryPhaseNoModel { name } if name == "done")
+        );
     }
 
     #[test]

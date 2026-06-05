@@ -703,6 +703,7 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | PhaseNotFound { .. }
         | DuplicatePhase { .. }
         | MandatoryPhase { .. }
+        | MandatoryPhaseNoModel { .. }
         | CannotInsertBeforeInitial { .. }
         | CannotInsertAfterTerminal { .. }
         | PhaseBusy { .. }

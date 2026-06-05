@@ -240,19 +240,19 @@ mod tests {
             phases: vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
-                    model: "opus".to_owned(),
+                    model: Some("opus".to_owned()),
                 },
                 PhaseConfig {
                     name: "in_progress".to_owned(),
-                    model: "sonnet".to_owned(),
+                    model: Some("sonnet".to_owned()),
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
-                    model: "haiku".to_owned(),
+                    model: None,
                 },
             ],
             max_retries: 3,
@@ -347,7 +347,7 @@ mod tests {
             1,
             PhaseConfig {
                 name: "blocked".to_owned(),
-                model: "haiku".to_owned(),
+                model: Some("haiku".to_owned()),
             },
         );
         write_config(&project, &config);
