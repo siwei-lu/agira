@@ -46,7 +46,7 @@ pub enum PhaseUpdateError {
     ConflictingPositionFlags,
 
     #[error(
-        "invalid --add format: use phase:model (e.g. review:codex); model labels must be non-empty and contain no whitespace"
+        "invalid --add format: use phase or phase:model (e.g. review or review:codex); phase and model labels must be non-empty and contain no whitespace"
     )]
     InvalidAddFormat,
 
@@ -147,7 +147,7 @@ pub fn run_phase_update(
         let (name, model) = parse_phase_model_arg(add_arg)?;
         Some(PhaseConfig {
             name: name.to_owned(),
-            model: Some(model.to_owned()),
+            model: model.map(str::to_owned),
         })
     } else {
         None
@@ -280,11 +280,22 @@ pub fn run_phase_update(
     Ok(())
 }
 
-fn parse_phase_model_arg(input: &str) -> Result<(&str, &str), PhaseUpdateError> {
-    input
-        .split_once(':')
-        .filter(|(name, model)| is_valid_phase_label(name) && is_valid_phase_label(model))
-        .ok_or(PhaseUpdateError::InvalidAddFormat)
+fn parse_phase_model_arg(input: &str) -> Result<(&str, Option<&str>), PhaseUpdateError> {
+    if let Some((name, model)) = input.split_once(':') {
+        // Colon present: both parts must be non-empty and whitespace-free.
+        if is_valid_phase_label(name) && is_valid_phase_label(model) {
+            Ok((name, Some(model)))
+        } else {
+            Err(PhaseUpdateError::InvalidAddFormat)
+        }
+    } else {
+        // No colon: bare phase name with no model.
+        if is_valid_phase_label(input) {
+            Ok((input, None))
+        } else {
+            Err(PhaseUpdateError::InvalidAddFormat)
+        }
+    }
 }
 
 fn is_valid_phase_label(label: &str) -> bool {
@@ -562,13 +573,8 @@ mod tests {
     #[test]
     fn invalid_add_format_returns_error() {
         let (_temp_dir, project, _config) = setup();
-        for bad_input in [
-            "review",
-            ":sonnet",
-            "review:",
-            "review sonnet",
-            "review:son net",
-        ] {
+        // Bare phase name ("review") is now valid; only truly malformed inputs are rejected.
+        for bad_input in [":sonnet", "review:", "review sonnet", "review:son net"] {
             let error =
                 run_phase_update(&project, Some(bad_input), None, None, None, None).unwrap_err();
             assert!(
@@ -576,6 +582,38 @@ mod tests {
                 "expected InvalidAddFormat for input '{bad_input}'"
             );
         }
+    }
+
+    #[test]
+    fn add_model_less_phase_before_done() {
+        let (_temp_dir, project, _config) = setup();
+        run_phase_update(&project, Some("triage"), None, Some("done"), None, None).unwrap();
+        let phases = loaded_phases(&project);
+        let triage = phases.iter().find(|p| p.name == "triage").unwrap();
+        assert_eq!(triage.model, None);
+    }
+
+    #[test]
+    fn add_model_less_phase_after_existing_phase() {
+        let (_temp_dir, project, _config) = setup();
+        run_phase_update(
+            &project,
+            Some("triage"),
+            Some("enriching"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let phases = loaded_phases(&project);
+        let triage = phases.iter().find(|p| p.name == "triage").unwrap();
+        assert_eq!(triage.model, None);
+        // Ensure ordering: pending -> enriching -> triage -> in_progress -> done
+        let names: Vec<&str> = phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["pending", "enriching", "triage", "in_progress", "done"]
+        );
     }
 
     #[test]

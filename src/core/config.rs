@@ -390,6 +390,44 @@ mod tests {
     }
 
     #[test]
+    fn model_less_middle_phase_preserved_by_normalize() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "phases": [
+    {"name":"enriching","model":"opus"},
+    {"name":"triage"},
+    {"name":"in_progress","model":"sonnet"}
+  ],
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
+
+        let config = load_project_config(&path, &global_config(3)).unwrap();
+
+        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["pending", "enriching", "triage", "in_progress", "done"]
+        );
+        // model-less middle phase preserves None
+        let triage = config.phases.iter().find(|p| p.name == "triage").unwrap();
+        assert_eq!(triage.model, None);
+        // model-bearing phases are unchanged
+        let enriching = config
+            .phases
+            .iter()
+            .find(|p| p.name == "enriching")
+            .unwrap();
+        assert_eq!(enriching.model, Some("opus".to_owned()));
+    }
+
+    #[test]
     fn terminal_phase_returns_last_phase() {
         let config = Config {
             stack: "rust".to_owned(),

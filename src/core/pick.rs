@@ -162,8 +162,9 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
             "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
         )
     } else {
-        // No model configured (pending/done and similar transition phases): return subagent
-        // prompt directly without orchestrator wrapper.
+        // No model configured: return subagent prompt directly without orchestrator wrapper.
+        // This covers mandatory transition phases (pending/done) and any non-mandatory phase
+        // that was added without an explicit model.
         subagent
     }
 }
@@ -505,6 +506,53 @@ mod tests {
 
         assert!(!prompt.contains("- Agent role:"));
         assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+    }
+
+    #[test]
+    fn model_less_non_mandatory_phase_has_no_orchestrator_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        // Build a config with a model-less middle phase "triage".
+        let config = Config {
+            stack: "rust".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: None,
+                },
+                PhaseConfig {
+                    name: "triage".to_owned(),
+                    model: None, // non-mandatory, no model
+                },
+                PhaseConfig {
+                    name: "enriching".to_owned(),
+                    model: Some("opus".to_owned()),
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: None,
+                },
+            ],
+            verification: VerificationConfig { commands: vec![] },
+            acceptance_testing: "cli".to_owned(),
+            max_retries: 3,
+            prd_path: None,
+        };
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Triage work", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap(); // pending -> triage
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        // No orchestrator wrapper for model-less non-mandatory phase.
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+        // But it still contains the task prompt header.
+        assert!(prompt.contains("# Agira Task Prompt"));
+        // No agent role line.
+        assert!(!prompt.contains("- Agent role:"));
     }
 
     #[test]
