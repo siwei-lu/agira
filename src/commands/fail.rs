@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
-    hooks::{HookContext, dispatch_hooks, hooks_for_phase, resolve_debug_log},
+    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -125,18 +125,17 @@ fn dispatch_task_hooks(
     artifact: &str,
 ) {
     let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
-    let debug_log = resolve_debug_log(&project.state_dir);
     dispatch_hooks(
         &hooks,
         &HookContext::new(
             task,
             &project.slug,
             &project.git_root,
+            &project.state_dir,
             from_phase,
             to_phase,
             artifact,
         ),
-        debug_log.as_deref(),
     );
 }
 

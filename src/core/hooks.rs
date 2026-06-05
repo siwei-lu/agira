@@ -37,6 +37,7 @@ pub struct HookContext {
     pub task_created_at: String,
     pub project_slug: String,
     pub project_path: PathBuf,
+    pub state_dir: PathBuf,
     pub from_phase: String,
     pub to_phase: String,
     pub artifact: String,
@@ -44,15 +45,15 @@ pub struct HookContext {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HookDebugEntry {
+    pub spawned_at: String,
     pub event: String,
     pub task_id: String,
     pub command: String,
+    pub spawn_result: String,
     pub pid: Option<u32>,
     pub exit_status: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub timestamp: String,
-    pub spawn_error: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
 }
 
 impl HookContext {
@@ -60,6 +61,7 @@ impl HookContext {
         task: &Task,
         project_slug: &str,
         project_path: &Path,
+        state_dir: &Path,
         from_phase: &str,
         to_phase: &str,
         artifact: &str,
@@ -76,6 +78,7 @@ impl HookContext {
             task_created_at: task.created_at.clone(),
             project_slug: project_slug.to_owned(),
             project_path: project_path.to_path_buf(),
+            state_dir: state_dir.to_path_buf(),
             from_phase: from_phase.to_owned(),
             to_phase: to_phase.to_owned(),
             artifact: artifact.to_owned(),
@@ -235,14 +238,15 @@ pub fn hooks_for_phase(
     hooks_for_event(global_hooks, project_hooks, to_phase)
 }
 
-pub fn resolve_debug_log(state_dir: &Path) -> Option<PathBuf> {
+fn hook_debug_enabled() -> bool {
     matches!(std::env::var("AGIRA_HOOK_DEBUG").as_deref(), Ok("1"))
-        .then(|| state_dir.join("hooks-debug.log"))
 }
 
-pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext, debug_log: Option<&Path>) {
+pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext) {
+    let debug_log = hook_debug_enabled().then(|| ctx.state_dir.join("hook-debug.log"));
+
     for hook in hooks {
-        match debug_log {
+        match debug_log.as_deref() {
             Some(path) => dispatch_hook_with_debug(hook, ctx, path),
             None => dispatch_hook(hook, ctx),
         }
@@ -260,15 +264,15 @@ fn dispatch_hook_with_debug(hook: &HookEntry, ctx: &HookContext, log_path: &Path
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut entry = HookDebugEntry {
+        spawned_at: Utc::now().to_rfc3339(),
         event: hook.on.clone(),
         task_id: ctx.task_id.clone(),
         command: hook.run.clone(),
+        spawn_result: "ok".to_owned(),
         pid: None,
         exit_status: None,
-        stdout: String::new(),
-        stderr: String::new(),
-        timestamp: Utc::now().to_rfc3339(),
-        spawn_error: None,
+        stdout: None,
+        stderr: None,
     };
 
     match command.spawn() {
@@ -277,20 +281,17 @@ fn dispatch_hook_with_debug(hook: &HookEntry, ctx: &HookContext, log_path: &Path
             match child.wait_with_output() {
                 Ok(output) => {
                     entry.exit_status = output.status.code();
-                    entry.stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                    entry.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                    entry.timestamp = Utc::now().to_rfc3339();
+                    entry.stdout = Some(String::from_utf8_lossy(&output.stdout).into_owned());
+                    entry.stderr = Some(String::from_utf8_lossy(&output.stderr).into_owned());
                 }
                 Err(error) => {
-                    entry.spawn_error = Some(format!("wait failed: {error}"));
-                    entry.timestamp = Utc::now().to_rfc3339();
+                    entry.spawn_result = format!("error:wait failed: {error}");
                     eprintln!("warning: hook wait failed: {error}");
                 }
             }
         }
         Err(error) => {
-            entry.spawn_error = Some(error.to_string());
-            entry.timestamp = Utc::now().to_rfc3339();
+            entry.spawn_result = format!("error:{error}");
             eprintln!("warning: hook spawn failed: {error}");
         }
     }
@@ -323,26 +324,17 @@ fn hook_command(hook: &HookEntry, ctx: &HookContext) -> Command {
 fn append_hook_debug_entry(path: &Path, entry: &HookDebugEntry) {
     let contents = match serde_json::to_string(entry) {
         Ok(contents) => contents,
-        Err(error) => {
-            eprintln!("warning: hook debug log serialization failed: {error}");
-            return;
-        }
+        Err(_) => return,
     };
 
     if let Some(parent) = path.parent() {
-        if let Err(error) = fs::create_dir_all(parent) {
-            eprintln!("warning: hook debug log directory creation failed: {error}");
+        if fs::create_dir_all(parent).is_err() {
             return;
         }
     }
 
-    match OpenOptions::new().create(true).append(true).open(path) {
-        Ok(mut file) => {
-            if let Err(error) = writeln!(file, "{contents}") {
-                eprintln!("warning: hook debug log write failed: {error}");
-            }
-        }
-        Err(error) => eprintln!("warning: hook debug log open failed: {error}"),
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{contents}");
     }
 }
 
@@ -358,9 +350,17 @@ fn matching_hooks<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, thread, time::Duration};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        ffi::OsString,
+        fs,
+        sync::{Mutex, MutexGuard},
+        thread,
+        time::Duration,
+    };
 
     use chrono::DateTime;
+    use serde_json::Value;
     use tempfile::TempDir;
 
     use super::*;
@@ -638,9 +638,18 @@ run = "echo failed"
     #[test]
     fn dispatch_hooks_exposes_project_path_env() {
         let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
         let output_path = temp_dir.path().join("project_path.txt");
         let task = test_task();
-        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
         let hooks = vec![HookEntry {
             on: "done".to_owned(),
             run: format!(
@@ -649,80 +658,118 @@ run = "echo failed"
             ),
         }];
 
-        dispatch_hooks(&hooks, &ctx, None);
+        dispatch_hooks(&hooks, &ctx);
 
         let contents = read_file_eventually(&output_path);
         assert_eq!(contents, temp_dir.path().to_string_lossy());
     }
 
     #[test]
-    fn test_debug_off_does_not_create_log_file() {
+    fn default_mode_no_log_file_created() {
+        let _env = HookDebugEnvGuard::set(None);
         let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
         let task = test_task();
-        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
-        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
         let hooks = vec![HookEntry {
             on: "done".to_owned(),
             run: "true".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, None);
+        dispatch_hooks(&hooks, &ctx);
 
         assert!(!debug_path.exists());
     }
 
     #[test]
-    fn test_debug_on_creates_log_with_metadata() {
+    fn debug_mode_log_file_created_with_expected_fields() {
+        let _env = HookDebugEnvGuard::set(Some("1"));
         let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
         let task = test_task();
-        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
-        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
         let hooks = vec![HookEntry {
             on: "done".to_owned(),
             run: "printf 'hook stdout'; printf 'hook stderr' >&2".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, Some(&debug_path));
+        dispatch_hooks(&hooks, &ctx);
 
-        let entries = read_debug_entries(&debug_path);
+        let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
-        assert_eq!(entry.event, "done");
-        assert_eq!(entry.task_id, "task-001");
+        assert_debug_keys(entry);
+        assert_eq!(entry["event"], "done");
+        assert_eq!(entry["task_id"], "task-001");
         assert_eq!(
-            entry.command,
+            entry["command"],
             "printf 'hook stdout'; printf 'hook stderr' >&2"
         );
-        assert!(entry.pid.is_some());
-        assert_eq!(entry.exit_status, Some(0));
-        assert_eq!(entry.stdout, "hook stdout");
-        assert_eq!(entry.stderr, "hook stderr");
-        assert!(entry.spawn_error.is_none());
-        DateTime::parse_from_rfc3339(&entry.timestamp).unwrap();
+        assert_eq!(entry["spawn_result"], "ok");
+        assert!(entry["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert_eq!(entry["exit_status"], 0);
+        assert_eq!(entry["stdout"], "hook stdout");
+        assert_eq!(entry["stderr"], "hook stderr");
+        DateTime::parse_from_rfc3339(entry["spawned_at"].as_str().unwrap()).unwrap();
     }
 
     #[test]
-    fn test_debug_on_hook_exit_nonzero_logged() {
+    fn debug_mode_spawn_failure_logged() {
+        let _env = HookDebugEnvGuard::set(Some("1"));
         let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
         let task = test_task();
-        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "failed", "");
-        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "failed",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
         let hooks = vec![HookEntry {
             on: "failed".to_owned(),
-            run: "printf 'before failure'; exit 7".to_owned(),
+            run: "invalid\0command".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, Some(&debug_path));
+        dispatch_hooks(&hooks, &ctx);
 
-        let entries = read_debug_entries(&debug_path);
+        let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
-        assert_eq!(entry.event, "failed");
-        assert_eq!(entry.task_id, "task-001");
-        assert_eq!(entry.exit_status, Some(7));
-        assert_eq!(entry.stdout, "before failure");
-        assert_eq!(entry.stderr, "");
-        assert!(entry.spawn_error.is_none());
+        assert_debug_keys(entry);
+        assert_eq!(entry["event"], "failed");
+        assert_eq!(entry["task_id"], "task-001");
+        assert!(
+            entry["spawn_result"]
+                .as_str()
+                .unwrap()
+                .starts_with("error:")
+        );
+        assert!(entry["pid"].is_null());
+        assert!(entry["exit_status"].is_null());
+        assert!(entry["stdout"].is_null());
+        assert!(entry["stderr"].is_null());
     }
 
     fn test_task() -> Task {
@@ -755,11 +802,70 @@ run = "echo failed"
         panic!("hook output was not written to {}", path.display());
     }
 
-    fn read_debug_entries(path: &Path) -> Vec<HookDebugEntry> {
+    fn read_debug_values(path: &Path) -> Vec<Value> {
         fs::read_to_string(path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    fn assert_debug_keys(entry: &Value) {
+        let actual = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            "spawned_at",
+            "event",
+            "task_id",
+            "command",
+            "spawn_result",
+            "pid",
+            "exit_status",
+            "stdout",
+            "stderr",
+        ]);
+
+        assert_eq!(actual, expected);
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HookDebugEnvGuard {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl HookDebugEnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let previous = std::env::var_os("AGIRA_HOOK_DEBUG");
+
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var("AGIRA_HOOK_DEBUG", value),
+                    None => std::env::remove_var("AGIRA_HOOK_DEBUG"),
+                }
+            }
+
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for HookDebugEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("AGIRA_HOOK_DEBUG", value),
+                    None => std::env::remove_var("AGIRA_HOOK_DEBUG"),
+                }
+            }
+        }
     }
 }
