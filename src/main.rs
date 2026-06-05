@@ -43,6 +43,12 @@ enum Commands {
         #[command(subcommand)]
         command: PhaseCommands,
     },
+    /// List and manage initialized projects
+    #[command(alias = "projects")]
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
     /// Update agira to the latest GitHub release
     Update,
     /// Print version information
@@ -71,6 +77,12 @@ enum PhaseCommands {
         #[arg(long, num_args = 2, value_names = ["phase", "model"])]
         set_model: Option<Vec<String>>,
     },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommands {
+    /// List initialized projects and their state directories
+    List,
 }
 
 #[derive(Subcommand)]
@@ -355,6 +367,15 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Project { command } => match command {
+            ProjectCommands::List => match commands::run_project_list() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for_project_list(&error)
+                }
+            },
+        },
         Commands::Update => match commands::run_self_update() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -511,6 +532,13 @@ fn exit_code_for_self_update(error: &commands::SelfUpdateError) -> ExitCode {
         commands::SelfUpdateError::UnsupportedPlatform { .. }
         | commands::SelfUpdateError::AssetNotFound { .. } => ExitCode::from(1),
         _ => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_project_list(error: &commands::ProjectListError) -> ExitCode {
+    match error {
+        commands::ProjectListError::HomeDirectoryMissing => ExitCode::from(1),
+        commands::ProjectListError::Read { .. } => ExitCode::from(2),
     }
 }
 
