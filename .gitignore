@@ -3,3 +3,4 @@
 .orchestrator/reports/
 .orchestrator/*-task-*.*
 .claude/worktrees/
+.claude/scheduled_tasks.lock
