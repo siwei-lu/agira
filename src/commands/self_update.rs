@@ -332,6 +332,7 @@ where
             format_download_progress(downloaded, self.total_bytes, elapsed)
         )
         .map_err(DownloadCopyError::Progress)?;
+        self.output.flush().map_err(DownloadCopyError::Progress)?;
         self.last_marker = Some(progress_marker(downloaded, self.total_bytes));
         self.last_downloaded = Some(downloaded);
         Ok(())
