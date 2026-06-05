@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 
-use crate::core::{ProjectError, resolve_project};
+use crate::core::{ProjectError, resolve_initialized_project, resolve_project};
 
 #[derive(Parser)]
 #[command(name = "agira", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), disable_version_flag = true, color = clap::ColorChoice::Never, about = "Orchestrate AI-assisted software development workflows", long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BUILD_TARGET"), ")"), subcommand_value_name = "command")]
@@ -206,7 +206,7 @@ fn main() -> ExitCode {
                 limit,
                 offset,
                 filter,
-            } => match resolve_project() {
+            } => match resolve_initialized_project() {
                 Ok(project) => {
                     match commands::run_status(&project, json, filter.as_deref(), limit, offset) {
                         Ok(()) => ExitCode::SUCCESS,
@@ -221,7 +221,7 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Work { prd, artifact } => match resolve_project() {
+            TaskCommands::Work { prd, artifact } => match resolve_initialized_project() {
                 Ok(project) => {
                     match commands::run_work(&project, prd.as_deref(), artifact.as_deref()) {
                         Ok(()) => ExitCode::SUCCESS,
@@ -236,7 +236,7 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Fail { id, reason } => match resolve_project() {
+            TaskCommands::Fail { id, reason } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_fail(&project, &id, reason.as_deref()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -249,7 +249,7 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Block { id, reason } => match resolve_project() {
+            TaskCommands::Block { id, reason } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_block(&project, &id, reason.as_deref()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -262,7 +262,7 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Unblock { id } => match resolve_project() {
+            TaskCommands::Unblock { id } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_unblock(&project, &id) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -280,7 +280,7 @@ fn main() -> ExitCode {
                 description,
                 prd,
                 depends_on,
-            } => match resolve_project() {
+            } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
                     &project,
                     &title,
@@ -305,7 +305,7 @@ fn main() -> ExitCode {
                 description,
                 prd,
                 depends_on,
-            } => match resolve_project() {
+            } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_update(
                     &project,
                     &id,
@@ -468,6 +468,7 @@ fn main() -> ExitCode {
 fn exit_code_for(error: &ProjectError) -> ExitCode {
     match error {
         ProjectError::NotInGitRepository
+        | ProjectError::ProjectNotInitialized
         | ProjectError::CreateStateDir(_, _)
         | ProjectError::GlobalConfig(crate::core::GlobalConfigError::Parse { .. })
         | ProjectError::HookConfig(crate::core::HookConfigError::Parse { .. }) => ExitCode::from(1),

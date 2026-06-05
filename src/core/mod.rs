@@ -8,5 +8,5 @@ pub(crate) mod tasks;
 
 pub use global_config::GlobalConfigError;
 pub use hooks::HookConfigError;
-pub use project::{ProjectError, resolve_project};
+pub use project::{ProjectError, resolve_initialized_project, resolve_project};
 pub use tasks::StoreError;

@@ -26,6 +26,9 @@ pub enum ProjectError {
     #[error("not inside a git repository")]
     NotInGitRepository,
 
+    #[error("project not initialized — run \"agira init\" to set up this repository")]
+    ProjectNotInitialized,
+
     #[error("home directory missing")]
     HomeDirectoryMissing,
 
@@ -52,40 +55,85 @@ pub enum ProjectError {
 }
 
 pub fn resolve_project() -> Result<Project, ProjectError> {
+    let (current_dir, agira_root) = current_dir_and_agira_root()?;
+
+    resolve_project_from(&current_dir, &agira_root)
+}
+
+pub fn resolve_initialized_project() -> Result<Project, ProjectError> {
+    let (current_dir, agira_root) = current_dir_and_agira_root()?;
+
+    resolve_initialized_project_from(&current_dir, &agira_root)
+}
+
+fn current_dir_and_agira_root() -> Result<(PathBuf, PathBuf), ProjectError> {
     let current_dir = env::current_dir().map_err(|_| ProjectError::NotInGitRepository)?;
     let home = env::var_os("HOME")
         .filter(|value| !value.as_os_str().is_empty())
         .ok_or(ProjectError::HomeDirectoryMissing)?;
     let agira_root = PathBuf::from(home).join(".agira");
 
-    resolve_project_from(&current_dir, &agira_root)
+    Ok((current_dir, agira_root))
 }
 
 pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Project, ProjectError> {
+    resolve_project_from_with(start_dir, agira_root, ProjectStateMode::CreateIfMissing)
+}
+
+pub fn resolve_initialized_project_from(
+    start_dir: &Path,
+    agira_root: &Path,
+) -> Result<Project, ProjectError> {
+    resolve_project_from_with(start_dir, agira_root, ProjectStateMode::RequireInitialized)
+}
+
+fn resolve_project_from_with(
+    start_dir: &Path,
+    agira_root: &Path,
+    state_mode: ProjectStateMode,
+) -> Result<Project, ProjectError> {
     let git_root = find_git_root(start_dir)?;
 
-    fs::create_dir_all(agira_root)
-        .map_err(|error| ProjectError::CreateStateDir(agira_root.to_path_buf(), error))?;
-    let global_config = load_or_create(agira_root)?;
-    let global_hooks = load_hooks(&agira_root.join("config.toml"))?;
+    if matches!(state_mode, ProjectStateMode::CreateIfMissing) {
+        fs::create_dir_all(agira_root)
+            .map_err(|error| ProjectError::CreateStateDir(agira_root.to_path_buf(), error))?;
+    }
+
+    let global_context = if matches!(state_mode, ProjectStateMode::CreateIfMissing) {
+        Some(load_global_context(agira_root)?)
+    } else {
+        None
+    };
 
     let base_slug = slugify(&git_root_basename(&git_root));
     let source_path_content = source_path_content(&git_root);
     let base_state_dir = agira_root.join(&base_slug);
 
-    let (slug, state_dir) = match prepare_candidate(&base_state_dir, &source_path_content)? {
-        CandidateResolution::Use => (base_slug, base_state_dir),
-        CandidateResolution::Collision => {
-            let hash_slug = format!("{}-{}", base_slug, hash_suffix(&git_root));
-            let hash_state_dir = agira_root.join(&hash_slug);
+    let (slug, state_dir) =
+        match prepare_candidate(&base_state_dir, &source_path_content, state_mode)? {
+            CandidateResolution::Use => (base_slug, base_state_dir),
+            CandidateResolution::Collision => {
+                let hash_slug = format!("{}-{}", base_slug, hash_suffix(&git_root));
+                let hash_state_dir = agira_root.join(&hash_slug);
 
-            match prepare_candidate(&hash_state_dir, &source_path_content)? {
-                CandidateResolution::Use => (hash_slug, hash_state_dir),
-                CandidateResolution::Collision => {
-                    return Err(ProjectError::HashSlugCollision(hash_state_dir));
+                match prepare_candidate(&hash_state_dir, &source_path_content, state_mode)? {
+                    CandidateResolution::Use => (hash_slug, hash_state_dir),
+                    CandidateResolution::Collision => {
+                        return Err(ProjectError::HashSlugCollision(hash_state_dir));
+                    }
                 }
             }
-        }
+        };
+
+    if matches!(state_mode, ProjectStateMode::RequireInitialized)
+        && !state_dir.join("config.json").is_file()
+    {
+        return Err(ProjectError::ProjectNotInitialized);
+    }
+
+    let (global_config, global_hooks) = match global_context {
+        Some(context) => context,
+        None => load_global_context(agira_root)?,
     };
     let project_hooks = load_hooks(&state_dir.join("hooks.toml"))?;
 
@@ -103,6 +151,19 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
     );
 
     Ok(project)
+}
+
+fn load_global_context(agira_root: &Path) -> Result<(GlobalConfig, HookConfig), ProjectError> {
+    let global_config = load_or_create(agira_root)?;
+    let global_hooks = load_hooks(&agira_root.join("config.toml"))?;
+
+    Ok((global_config, global_hooks))
+}
+
+#[derive(Clone, Copy)]
+enum ProjectStateMode {
+    CreateIfMissing,
+    RequireInitialized,
 }
 
 enum CandidateResolution {
@@ -161,10 +222,11 @@ fn source_path_content(git_root: &Path) -> String {
 fn prepare_candidate(
     state_dir: &Path,
     source_path_content: &str,
+    state_mode: ProjectStateMode,
 ) -> Result<CandidateResolution, ProjectError> {
     match fs::metadata(state_dir) {
         Ok(metadata) if metadata.is_dir() => {
-            prepare_existing_candidate(state_dir, source_path_content)
+            prepare_existing_candidate(state_dir, source_path_content, state_mode)
         }
         Ok(_) => Err(ProjectError::CreateStateDir(
             state_dir.to_path_buf(),
@@ -173,12 +235,16 @@ fn prepare_candidate(
                 "state path exists and is not a directory",
             ),
         )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(state_dir)
-                .map_err(|error| ProjectError::CreateStateDir(state_dir.to_path_buf(), error))?;
-            write_source_path(state_dir, source_path_content)?;
-            Ok(CandidateResolution::Use)
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match state_mode {
+            ProjectStateMode::CreateIfMissing => {
+                fs::create_dir_all(state_dir).map_err(|error| {
+                    ProjectError::CreateStateDir(state_dir.to_path_buf(), error)
+                })?;
+                write_source_path(state_dir, source_path_content)?;
+                Ok(CandidateResolution::Use)
+            }
+            ProjectStateMode::RequireInitialized => Err(ProjectError::ProjectNotInitialized),
+        },
         Err(error) => Err(ProjectError::CreateStateDir(state_dir.to_path_buf(), error)),
     }
 }
@@ -186,6 +252,7 @@ fn prepare_candidate(
 fn prepare_existing_candidate(
     state_dir: &Path,
     source_path_content: &str,
+    state_mode: ProjectStateMode,
 ) -> Result<CandidateResolution, ProjectError> {
     let source_path = state_dir.join(".source_path");
 
@@ -197,14 +264,17 @@ fn prepare_existing_candidate(
                 Ok(CandidateResolution::Collision)
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if is_empty_dir(state_dir)? {
-                write_source_path(state_dir, source_path_content)?;
-                Ok(CandidateResolution::Use)
-            } else {
-                Ok(CandidateResolution::Collision)
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match state_mode {
+            ProjectStateMode::CreateIfMissing => {
+                if is_empty_dir(state_dir)? {
+                    write_source_path(state_dir, source_path_content)?;
+                    Ok(CandidateResolution::Use)
+                } else {
+                    Ok(CandidateResolution::Collision)
+                }
             }
-        }
+            ProjectStateMode::RequireInitialized => Ok(CandidateResolution::Collision),
+        },
         Err(error) => Err(ProjectError::SourcePathRead(source_path, error)),
     }
 }
