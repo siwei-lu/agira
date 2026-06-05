@@ -21,6 +21,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Manage project tasks
+    #[command(subcommand_value_name = "command")]
     Task {
         #[command(subcommand)]
         command: TaskCommands,
@@ -39,12 +40,14 @@ enum Commands {
         prd_path: Option<String>,
     },
     /// Manage workflow phases
+    #[command(subcommand_value_name = "command")]
     Phase {
         #[command(subcommand)]
         command: PhaseCommands,
     },
     /// Manage lifecycle hooks
     #[command(
+        subcommand_value_name = "command",
         long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
     )]
     Hook {
@@ -52,7 +55,7 @@ enum Commands {
         command: HookCommands,
     },
     /// List and manage initialized projects
-    #[command(alias = "projects")]
+    #[command(alias = "projects", subcommand_value_name = "command")]
     Project {
         #[command(subcommand)]
         command: ProjectCommands,
