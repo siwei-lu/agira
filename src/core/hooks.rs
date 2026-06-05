@@ -280,40 +280,72 @@ fn dispatch_hook_with_debug(hook: &HookEntry, ctx: &HookContext, log_path: &Path
     let mut command = hook_command(hook, ctx);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut entry = HookDebugEntry {
-        spawned_at: Utc::now().to_rfc3339(),
-        event: hook.on.clone(),
-        task_id: ctx.task_id.clone(),
-        command: hook.run.clone(),
-        spawn_result: "ok".to_owned(),
-        pid: None,
-        exit_status: None,
-        stdout: None,
-        stderr: None,
-    };
-
     match command.spawn() {
         Ok(child) => {
-            entry.pid = Some(child.id());
-            match child.wait_with_output() {
-                Ok(output) => {
-                    entry.exit_status = output.status.code();
-                    entry.stdout = Some(String::from_utf8_lossy(&output.stdout).into_owned());
-                    entry.stderr = Some(String::from_utf8_lossy(&output.stderr).into_owned());
-                }
+            let pid = Some(child.id());
+            append_hook_debug_entry(
+                log_path,
+                &HookDebugEntry {
+                    spawned_at: Utc::now().to_rfc3339(),
+                    event: hook.on.clone(),
+                    task_id: ctx.task_id.clone(),
+                    command: hook.run.clone(),
+                    spawn_result: "spawned".to_owned(),
+                    pid,
+                    exit_status: None,
+                    stdout: None,
+                    stderr: None,
+                },
+            );
+
+            let entry = match child.wait_with_output() {
+                Ok(output) => HookDebugEntry {
+                    spawned_at: Utc::now().to_rfc3339(),
+                    event: hook.on.clone(),
+                    task_id: ctx.task_id.clone(),
+                    command: hook.run.clone(),
+                    spawn_result: "ok".to_owned(),
+                    pid,
+                    exit_status: output.status.code(),
+                    stdout: Some(String::from_utf8_lossy(&output.stdout).into_owned()),
+                    stderr: Some(String::from_utf8_lossy(&output.stderr).into_owned()),
+                },
                 Err(error) => {
-                    entry.spawn_result = format!("error:wait failed: {error}");
                     eprintln!("warning: hook wait failed: {error}");
+                    HookDebugEntry {
+                        spawned_at: Utc::now().to_rfc3339(),
+                        event: hook.on.clone(),
+                        task_id: ctx.task_id.clone(),
+                        command: hook.run.clone(),
+                        spawn_result: format!("error:wait failed: {error}"),
+                        pid,
+                        exit_status: None,
+                        stdout: None,
+                        stderr: None,
+                    }
                 }
-            }
+            };
+
+            append_hook_debug_entry(log_path, &entry);
         }
         Err(error) => {
-            entry.spawn_result = format!("error:{error}");
             eprintln!("warning: hook spawn failed: {error}");
+            append_hook_debug_entry(
+                log_path,
+                &HookDebugEntry {
+                    spawned_at: Utc::now().to_rfc3339(),
+                    event: hook.on.clone(),
+                    task_id: ctx.task_id.clone(),
+                    command: hook.run.clone(),
+                    spawn_result: format!("error:{error}"),
+                    pid: None,
+                    exit_status: None,
+                    stdout: None,
+                    stderr: None,
+                },
+            );
         }
     }
-
-    append_hook_debug_entry(log_path, &entry);
 }
 
 fn hook_command(hook: &HookEntry, ctx: &HookContext) -> Command {
@@ -731,21 +763,37 @@ run = "echo failed"
         dispatch_hooks(&hooks, "done", &ctx, false);
 
         let entries = read_debug_values(&debug_path);
-        assert_eq!(entries.len(), 1);
-        let entry = &entries[0];
-        assert_debug_keys(entry);
-        assert_eq!(entry["event"], "done");
-        assert_eq!(entry["task_id"], "task-001");
+        assert_eq!(entries.len(), 2);
+
+        let preliminary = &entries[0];
+        assert_debug_keys(preliminary);
+        assert_eq!(preliminary["event"], "done");
+        assert_eq!(preliminary["task_id"], "task-001");
         assert_eq!(
-            entry["command"],
+            preliminary["command"],
             "printf 'hook stdout'; printf 'hook stderr' >&2"
         );
-        assert_eq!(entry["spawn_result"], "ok");
-        assert!(entry["pid"].as_u64().is_some_and(|pid| pid > 0));
-        assert_eq!(entry["exit_status"], 0);
-        assert_eq!(entry["stdout"], "hook stdout");
-        assert_eq!(entry["stderr"], "hook stderr");
-        DateTime::parse_from_rfc3339(entry["spawned_at"].as_str().unwrap()).unwrap();
+        assert_eq!(preliminary["spawn_result"], "spawned");
+        assert!(preliminary["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert!(preliminary["exit_status"].is_null());
+        assert!(preliminary["stdout"].is_null());
+        assert!(preliminary["stderr"].is_null());
+        DateTime::parse_from_rfc3339(preliminary["spawned_at"].as_str().unwrap()).unwrap();
+
+        let completion = &entries[1];
+        assert_debug_keys(completion);
+        assert_eq!(completion["event"], "done");
+        assert_eq!(completion["task_id"], "task-001");
+        assert_eq!(
+            completion["command"],
+            "printf 'hook stdout'; printf 'hook stderr' >&2"
+        );
+        assert_eq!(completion["spawn_result"], "ok");
+        assert!(completion["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert_eq!(completion["exit_status"], 0);
+        assert_eq!(completion["stdout"], "hook stdout");
+        assert_eq!(completion["stderr"], "hook stderr");
+        DateTime::parse_from_rfc3339(completion["spawned_at"].as_str().unwrap()).unwrap();
     }
 
     #[test]
@@ -772,8 +820,50 @@ run = "echo failed"
         dispatch_hooks(&hooks, "done", &ctx, true);
 
         let entries = read_debug_values(&debug_path);
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["event"], "done");
+        assert_eq!(entries[0]["spawn_result"], "spawned");
+        assert_eq!(entries[1]["event"], "done");
+        assert_eq!(entries[1]["spawn_result"], "ok");
+    }
+
+    #[test]
+    fn debug_mode_writes_preliminary_spawned_entry_before_completion() {
+        let _env = HookDebugEnvGuard::set(Some("1"));
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: "true".to_owned(),
+        }];
+
+        dispatch_hooks(&hooks, "done", &ctx, false);
+
+        let entries = read_debug_values(&debug_path);
+        assert_eq!(entries.len(), 2);
+
+        let preliminary = &entries[0];
+        assert_debug_keys(preliminary);
+        assert_eq!(preliminary["spawn_result"], "spawned");
+        assert!(preliminary["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert!(preliminary["exit_status"].is_null());
+        assert!(preliminary["stdout"].is_null());
+        assert!(preliminary["stderr"].is_null());
+
+        let completion = &entries[1];
+        assert_debug_keys(completion);
+        assert_eq!(completion["spawn_result"], "ok");
     }
 
     #[test]
