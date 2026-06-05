@@ -72,7 +72,7 @@ enum PhaseCommands {
     Get,
     /// Add, insert, or remove phases in the state machine
     Update {
-        /// Phase to add in phase:model format (e.g. review:opus); appended at end unless --after or --before
+        /// Phase to add in phase:model format (e.g. review:codex); model labels cannot contain whitespace
         #[arg(long, value_name = "add")]
         add: Option<String>,
         /// Insert the new phase after this existing phase
@@ -724,7 +724,7 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         NoOperation
         | ConflictingPositionFlags
         | InvalidAddFormat
-        | UnknownModel { .. }
+        | InvalidModelLabel { .. }
         | PhaseNotFound { .. }
         | DuplicatePhase { .. }
         | MandatoryPhase { .. }

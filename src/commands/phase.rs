@@ -37,8 +37,6 @@ pub enum PhaseGetError {
     InvalidConfig { path: PathBuf, reason: String },
 }
 
-const VALID_MODELS: &[&str] = &["opus", "sonnet", "haiku"];
-
 #[derive(Debug, Error)]
 pub enum PhaseUpdateError {
     #[error("at least one of --add, --remove, or --set-model is required")]
@@ -48,12 +46,14 @@ pub enum PhaseUpdateError {
     ConflictingPositionFlags,
 
     #[error(
-        "invalid --add format: use phase:model (e.g. review:opus); valid models: opus, sonnet, haiku"
+        "invalid --add format: use phase:model (e.g. review:codex); model labels must be non-empty and contain no whitespace"
     )]
     InvalidAddFormat,
 
-    #[error("unknown model: {model}; valid models: opus, sonnet, haiku")]
-    UnknownModel { model: String },
+    #[error(
+        "invalid model label: {model}; model labels must be non-empty and contain no whitespace"
+    )]
+    InvalidModelLabel { model: String },
 
     #[error("phase not found: {name}")]
     PhaseNotFound { name: String },
@@ -145,7 +145,6 @@ pub fn run_phase_update(
 
     let new_phase = if let Some(add_arg) = add {
         let (name, model) = parse_phase_model_arg(add_arg)?;
-        validate_model(model)?;
         Some(PhaseConfig {
             name: name.to_owned(),
             model: Some(model.to_owned()),
@@ -219,8 +218,13 @@ pub fn run_phase_update(
     }
 
     if let Some(sm) = set_model {
-        let (phase_name, model_name) = (&sm[0], &sm[1]);
-        validate_model(model_name)?;
+        let phase_name = &sm[0];
+        let model_name = &sm[1];
+        if !is_valid_phase_label(model_name) {
+            return Err(PhaseUpdateError::InvalidModelLabel {
+                model: model_name.clone(),
+            });
+        }
         if is_mandatory_phase(phase_name) {
             return Err(PhaseUpdateError::MandatoryPhaseNoModel {
                 name: phase_name.clone(),
@@ -279,23 +283,12 @@ pub fn run_phase_update(
 fn parse_phase_model_arg(input: &str) -> Result<(&str, &str), PhaseUpdateError> {
     input
         .split_once(':')
-        .filter(|(name, model)| {
-            !name.is_empty()
-                && !model.is_empty()
-                && !name.chars().any(char::is_whitespace)
-                && !model.chars().any(char::is_whitespace)
-        })
+        .filter(|(name, model)| is_valid_phase_label(name) && is_valid_phase_label(model))
         .ok_or(PhaseUpdateError::InvalidAddFormat)
 }
 
-fn validate_model(model: &str) -> Result<(), PhaseUpdateError> {
-    if VALID_MODELS.contains(&model) {
-        Ok(())
-    } else {
-        Err(PhaseUpdateError::UnknownModel {
-            model: model.to_owned(),
-        })
-    }
+fn is_valid_phase_label(label: &str) -> bool {
+    !label.is_empty() && !label.chars().any(char::is_whitespace)
 }
 
 fn is_mandatory_phase(name: &str) -> bool {
@@ -569,7 +562,13 @@ mod tests {
     #[test]
     fn invalid_add_format_returns_error() {
         let (_temp_dir, project, _config) = setup();
-        for bad_input in ["review", ":sonnet", "review:", "review sonnet"] {
+        for bad_input in [
+            "review",
+            ":sonnet",
+            "review:",
+            "review sonnet",
+            "review:son net",
+        ] {
             let error =
                 run_phase_update(&project, Some(bad_input), None, None, None, None).unwrap_err();
             assert!(
@@ -580,11 +579,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_model_in_add_returns_error() {
-        let (_temp_dir, project, _config) = setup();
-        let error =
-            run_phase_update(&project, Some("review:gpt4"), None, None, None, None).unwrap_err();
-        assert!(matches!(error, PhaseUpdateError::UnknownModel { model } if model == "gpt4"));
+    fn add_accepts_freeform_model_labels() {
+        for model in ["codex", "dispatch-codex", "my_agent"] {
+            let (_temp_dir, project, _config) = setup();
+            let add_arg = format!("review:{model}");
+            run_phase_update(&project, Some(&add_arg), None, Some("done"), None, None).unwrap();
+            let phases = loaded_phases(&project);
+            let review = phases.iter().find(|p| p.name == "review").unwrap();
+            assert_eq!(review.model, Some(model.to_owned()));
+        }
     }
 
     #[test]
@@ -760,11 +763,27 @@ mod tests {
     }
 
     #[test]
-    fn set_model_unknown_model_returns_error() {
+    fn set_model_accepts_freeform_model_labels() {
         let (_temp_dir, project, _config) = setup();
-        let args = vec!["enriching".to_owned(), "gpt4".to_owned()];
-        let error = run_phase_update(&project, None, None, None, None, Some(&args)).unwrap_err();
-        assert!(matches!(error, PhaseUpdateError::UnknownModel { model } if model == "gpt4"));
+        let args = vec!["enriching".to_owned(), "my_agent".to_owned()];
+        run_phase_update(&project, None, None, None, None, Some(&args)).unwrap();
+        let phases = loaded_phases(&project);
+        let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
+        assert_eq!(enriching.model, Some("my_agent".to_owned()));
+    }
+
+    #[test]
+    fn set_model_rejects_empty_or_whitespace_model_labels() {
+        for bad_model in ["", "my agent"] {
+            let (_temp_dir, project, _config) = setup();
+            let args = vec!["enriching".to_owned(), bad_model.to_owned()];
+            let error =
+                run_phase_update(&project, None, None, None, None, Some(&args)).unwrap_err();
+            assert!(
+                matches!(error, PhaseUpdateError::InvalidModelLabel { model } if model == bad_model),
+                "expected InvalidModelLabel for model '{bad_model}'"
+            );
+        }
     }
 
     #[test]
