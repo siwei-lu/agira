@@ -2,3 +2,4 @@
 .orchestrator/tasks.json
 .orchestrator/reports/
 .orchestrator/*-task-*.*
+.claude/worktrees/
