@@ -59,8 +59,8 @@ pub fn run_status(
     project: &Project,
     json: bool,
     filter: Option<&str>,
-    limit: usize,
-    offset: usize,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<(), StatusError> {
     if json {
         if let Some(id) = filter {
@@ -117,15 +117,28 @@ pub fn run_status(
         print_status_output(&format_status_table(&[task], &terminal_phase));
     } else {
         let sorted_tasks = sort_tasks_by_id_asc(tasks);
-        let paginated_tasks = paginate_tasks(&sorted_tasks, limit, offset);
+        let total = sorted_tasks.len();
+        let explicit = limit.is_some() || offset.is_some();
+        let limit_eff = limit.unwrap_or(20);
+        let offset_eff = if explicit {
+            offset.unwrap_or(0)
+        } else {
+            total.saturating_sub(20)
+        };
+        let paginated_tasks = paginate_tasks(&sorted_tasks, limit_eff, offset_eff);
         let mut output = format_status_table(&paginated_tasks, &terminal_phase);
 
-        if limit != 0 && tasks.len() > limit {
+        if limit_eff != 0 && total > limit_eff {
             output.push('\n');
-            output.push_str(&format!(
-                "Showing {limit} of {} tasks. Use --offset or --limit to see more.",
-                tasks.len()
-            ));
+            if explicit {
+                output.push_str(&format!(
+                    "Showing {limit_eff} of {total} tasks. Use --offset or --limit to see more."
+                ));
+            } else {
+                output.push_str(&format!(
+                    "Showing latest {limit_eff} of {total} tasks. Use --offset or --limit to see more."
+                ));
+            }
         }
 
         print_status_output(&output);
@@ -433,7 +446,8 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
         write_empty_tasks(&project);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert_eq!(
@@ -447,7 +461,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert_eq!(
@@ -464,7 +479,8 @@ mod tests {
             .add_task("Implement status command", "", None, vec![], None)
             .unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.contains("ID"));
@@ -490,7 +506,8 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.contains("✓ done"));
@@ -505,7 +522,8 @@ mod tests {
             .unwrap();
         store.fail_task("task-001", "blocked").unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.contains("✗ failed"));
@@ -520,7 +538,8 @@ mod tests {
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.contains("⊘ blocked"));
@@ -535,7 +554,8 @@ mod tests {
         let title = "x".repeat(50);
         store.add_task(&title, "", None, vec![], None).unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         let expected = format!("{}…", "x".repeat(40));
@@ -567,19 +587,41 @@ mod tests {
         )
         .unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.find("task-001").unwrap() < output.find("task-002").unwrap());
     }
 
     #[test]
-    fn default_status_paginates_to_first_twenty_tasks() {
+    fn default_status_shows_latest_twenty() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) = capture_output(|| run_status(&project, false, None, None, None));
+
+        result.unwrap();
+        let ids = task_row_ids(&output);
+        assert_eq!(ids.len(), 20);
+        assert_eq!(ids.first().unwrap(), "task-006");
+        assert_eq!(ids.last().unwrap(), "task-025");
+        assert!(!output.contains("task-005"));
+        assert!(
+            output
+                .ends_with("Showing latest 20 of 25 tasks. Use --offset or --limit to see more.\n")
+        );
+    }
+
+    #[test]
+    fn explicit_limit_and_offset_preserve_front_window() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        add_tasks(&mut store, 25);
+
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         let ids = task_row_ids(&output);
@@ -591,12 +633,61 @@ mod tests {
     }
 
     #[test]
+    fn single_limit_flag_is_explicit_and_starts_at_front() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        add_tasks(&mut store, 25);
+
+        let (result, output) = capture_output(|| run_status(&project, false, None, Some(5), None));
+
+        result.unwrap();
+        assert_eq!(
+            task_row_ids(&output),
+            vec!["task-001", "task-002", "task-003", "task-004", "task-005"]
+        );
+    }
+
+    #[test]
+    fn single_offset_flag_is_explicit_with_default_limit() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        add_tasks(&mut store, 25);
+
+        let (result, output) = capture_output(|| run_status(&project, false, None, None, Some(3)));
+
+        result.unwrap();
+        let ids = task_row_ids(&output);
+        assert_eq!(ids.len(), 20);
+        assert_eq!(ids.first().unwrap(), "task-004");
+        assert_eq!(ids.last().unwrap(), "task-023");
+        assert!(!output.contains("task-003"));
+        assert!(!output.contains("task-024"));
+    }
+
+    #[test]
+    fn default_status_with_twenty_or_fewer_tasks_shows_all_without_footer() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        add_tasks(&mut store, 20);
+
+        let (result, output) = capture_output(|| run_status(&project, false, None, None, None));
+
+        result.unwrap();
+        let ids = task_row_ids(&output);
+        assert_eq!(ids.len(), 20);
+        assert_eq!(ids.first().unwrap(), "task-001");
+        assert_eq!(ids.last().unwrap(), "task-020");
+        assert!(!output.contains("Use --offset or --limit to see more."));
+    }
+
+    #[test]
     fn limit_zero_shows_all_tasks() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 0, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(0), Some(0)));
 
         result.unwrap();
         let ids = task_row_ids(&output);
@@ -612,7 +703,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 5, 3));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(5), Some(3)));
 
         result.unwrap();
         assert_eq!(
@@ -627,7 +719,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 21);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.ends_with("Showing 20 of 21 tasks. Use --offset or --limit to see more.\n"));
@@ -639,7 +732,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 20);
 
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
 
         result.unwrap();
         assert!(!output.contains("Use --offset or --limit to see more."));
@@ -651,7 +745,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
 
-        let (result, output) = capture_output(|| run_status(&project, true, None, 1, 10));
+        let (result, output) =
+            capture_output(|| run_status(&project, true, None, Some(1), Some(10)));
 
         result.unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -668,7 +763,8 @@ mod tests {
         let raw = "{\n  \"tasks\": []\n}";
         fs::write(project.state_dir.join("tasks.json"), raw).unwrap();
 
-        let (result, output) = capture_output(|| run_status(&project, true, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, true, None, Some(20), Some(0)));
 
         result.unwrap();
         assert_eq!(output, raw);
@@ -679,7 +775,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let (result, output) = capture_output(|| run_status(&project, true, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, true, None, Some(20), Some(0)));
         let error = result.unwrap_err();
 
         assert!(matches!(error, StatusError::JsonOutput { .. }));
@@ -692,17 +789,18 @@ mod tests {
         let project = test_project(&temp_dir);
         write_empty_tasks(&project);
 
-        let error = run_status(&project, false, None, 20, 0).unwrap_err();
+        let error = run_status(&project, false, None, Some(20), Some(0)).unwrap_err();
         assert!(matches!(error, StatusError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_status(&project, false, None, 20, 0).unwrap_err();
+        let error = run_status(&project, false, None, Some(20), Some(0)).unwrap_err();
         assert!(matches!(error, StatusError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
         result.unwrap();
         assert_eq!(output, format!("{NO_TASKS_MESSAGE}\n"));
     }
@@ -724,7 +822,7 @@ mod tests {
     fn json_output_exit_code_contract_is_two() {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
-        let error = run_status(&project, true, None, 20, 0).unwrap_err();
+        let error = run_status(&project, true, None, Some(20), Some(0)).unwrap_err();
 
         let code = match error {
             StatusError::JsonOutput { .. } => ExitCode::from(2),
@@ -746,7 +844,7 @@ mod tests {
             .unwrap();
 
         let (result, output) =
-            capture_output(|| run_status(&project, true, Some("task-001"), 20, 0));
+            capture_output(|| run_status(&project, true, Some("task-001"), Some(20), Some(0)));
 
         result.unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -763,7 +861,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Some task", "", None, vec![], None).unwrap();
 
-        let error = run_status(&project, true, Some("task-999"), 20, 0).unwrap_err();
+        let error = run_status(&project, true, Some("task-999"), Some(20), Some(0)).unwrap_err();
 
         match error {
             StatusError::TaskNotFound { id } => assert_eq!(id, "task-999"),
@@ -776,7 +874,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_status(&project, true, Some("task-001"), 20, 0).unwrap_err();
+        let error = run_status(&project, true, Some("task-001"), Some(20), Some(0)).unwrap_err();
 
         assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }
@@ -793,7 +891,7 @@ mod tests {
             .unwrap();
 
         let (result, output) =
-            capture_output(|| run_status(&project, false, Some("task-002"), 20, 0));
+            capture_output(|| run_status(&project, false, Some("task-002"), Some(20), Some(0)));
 
         result.unwrap();
         assert!(output.contains("task-002"));
@@ -808,7 +906,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Some task", "", None, vec![], None).unwrap();
 
-        let error = run_status(&project, false, Some("task-999"), 20, 0).unwrap_err();
+        let error = run_status(&project, false, Some("task-999"), Some(20), Some(0)).unwrap_err();
 
         match error {
             StatusError::TaskNotFound { id } => assert_eq!(id, "task-999"),
@@ -821,7 +919,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_status(&project, false, Some("task-001"), 20, 0).unwrap_err();
+        let error = run_status(&project, false, Some("task-001"), Some(20), Some(0)).unwrap_err();
 
         assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }
@@ -831,7 +929,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
         write_empty_tasks(&project);
 
-        let error = run_status(&project, false, Some("task-001"), 20, 0).unwrap_err();
+        let error = run_status(&project, false, Some("task-001"), Some(20), Some(0)).unwrap_err();
 
         assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }

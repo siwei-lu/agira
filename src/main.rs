@@ -167,17 +167,17 @@ enum HookCommands {
 
 #[derive(Subcommand)]
 enum TaskCommands {
-    /// Show current task status table
+    /// Show current task status table; defaults to the latest 20 tasks
     Status {
         /// Output raw JSON instead of the formatted table
         #[arg(long)]
         json: bool,
-        /// Number of tasks to show, or 0 to show all
-        #[arg(long, default_value_t = 20, value_name = "limit")]
-        limit: usize,
-        /// Number of tasks to skip from the latest-first list
-        #[arg(long, default_value_t = 0, value_name = "offset")]
-        offset: usize,
+        /// Number of tasks to show, or 0 to show all; default shows the latest 20 tasks
+        #[arg(long, value_name = "limit")]
+        limit: Option<usize>,
+        /// Number of tasks to skip from the start of the ascending list
+        #[arg(long, value_name = "offset")]
+        offset: Option<usize>,
         /// Show only this task ID
         #[arg(value_name = "task-id")]
         filter: Option<String>,
