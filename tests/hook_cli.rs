@@ -201,6 +201,10 @@ fn hook_add_help_documents_injected_env_vars() {
         "expected AGIRA_TASK_DESCRIPTION in hook add --help output"
     );
     assert!(
+        stdout.contains("AGIRA_PROJECT_PATH"),
+        "expected AGIRA_PROJECT_PATH in hook add --help output"
+    );
+    assert!(
         stdout.contains("AGIRA_TO_PHASE"),
         "expected AGIRA_TO_PHASE in hook add --help output"
     );
@@ -227,6 +231,10 @@ fn hook_help_documents_injected_env_vars() {
     assert!(
         stdout.contains("AGIRA_TASK_DESCRIPTION"),
         "expected AGIRA_TASK_DESCRIPTION in hook --help output"
+    );
+    assert!(
+        stdout.contains("AGIRA_PROJECT_PATH"),
+        "expected AGIRA_PROJECT_PATH in hook --help output"
     );
     assert!(
         stdout.contains("AGIRA_TO_PHASE"),

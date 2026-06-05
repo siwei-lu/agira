@@ -255,6 +255,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
   - `AGIRA_TASK_MAX_RETRIES` — task 的最大 retry 次数
   - `AGIRA_TASK_CREATED_AT` — task 创建时间，RFC3339 字符串
   - `AGIRA_PROJECT_SLUG` — 项目 slug
+  - `AGIRA_PROJECT_PATH` — canonical git root 路径
   - `AGIRA_FROM_PHASE` — 变更前 phase 名；`task_added` 时为空字符串
   - `AGIRA_TO_PHASE` — 变更后 phase 名；`task_added` 时为新 task 的初始 phase
   - `AGIRA_ARTIFACT` — `--artifact` 传入的字符串；若不适用则为空字符串
@@ -310,7 +311,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ## Changelog
 ### Round 5 — 2026-06-05
 - FM-012 (new): hook configuration schema — global (`~/.agira/config.toml`) and per-project (`~/.agira/<slug>/hooks.toml`) TOML `[[hooks]]` tables with `on` and `run` fields
-- FM-013 (new): hook execution — fire-and-forget detached `sh -c` subprocess after atomic write, with `AGIRA_TASK_ID/TITLE/PROJECT_SLUG/FROM_PHASE/TO_PHASE/ARTIFACT` env vars; global hooks first then per-project
+- FM-013 (new): hook execution — fire-and-forget detached `sh -c` subprocess after atomic write, with `AGIRA_TASK_ID/TITLE/PROJECT_SLUG/PROJECT_PATH/FROM_PHASE/TO_PHASE/ARTIFACT` env vars; global hooks first then per-project
 
 ### Round 4 — 2026-06-05
 - FM-002: remove `--models` flag; fold model into `--phases` as `phase:model` pairs (e.g. `enriching:opus,in_progress:sonnet`); bare invocation now recommends model per phase type; remove `default_model` from global config

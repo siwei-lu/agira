@@ -102,7 +102,7 @@ fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task)
     );
     dispatch_hooks(
         &hooks,
-        &HookContext::new(task, &project.slug, "", &task.state, ""),
+        &HookContext::new(task, &project.slug, &project.git_root, "", &task.state, ""),
     );
 }
 

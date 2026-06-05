@@ -116,6 +116,7 @@ pub fn run_todo(
                 &HookContext::new(
                     &resulting_task,
                     &project.slug,
+                    &project.git_root,
                     &from_phase,
                     &resulting_state,
                     artifact,

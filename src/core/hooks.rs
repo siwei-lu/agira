@@ -34,6 +34,7 @@ pub struct HookContext {
     pub task_max_retries: String,
     pub task_created_at: String,
     pub project_slug: String,
+    pub project_path: PathBuf,
     pub from_phase: String,
     pub to_phase: String,
     pub artifact: String,
@@ -43,6 +44,7 @@ impl HookContext {
     pub fn new(
         task: &Task,
         project_slug: &str,
+        project_path: &Path,
         from_phase: &str,
         to_phase: &str,
         artifact: &str,
@@ -58,6 +60,7 @@ impl HookContext {
             task_max_retries: task.max_retries.to_string(),
             task_created_at: task.created_at.clone(),
             project_slug: project_slug.to_owned(),
+            project_path: project_path.to_path_buf(),
             from_phase: from_phase.to_owned(),
             to_phase: to_phase.to_owned(),
             artifact: artifact.to_owned(),
@@ -232,6 +235,7 @@ pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext) {
             .env("AGIRA_TASK_MAX_RETRIES", &ctx.task_max_retries)
             .env("AGIRA_TASK_CREATED_AT", &ctx.task_created_at)
             .env("AGIRA_PROJECT_SLUG", &ctx.project_slug)
+            .env("AGIRA_PROJECT_PATH", &ctx.project_path)
             .env("AGIRA_FROM_PHASE", &ctx.from_phase)
             .env("AGIRA_TO_PHASE", &ctx.to_phase)
             .env("AGIRA_ARTIFACT", &ctx.artifact)
@@ -254,11 +258,12 @@ fn matching_hooks<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs, thread, time::Duration};
 
     use tempfile::TempDir;
 
     use super::*;
+    use crate::core::tasks::Task;
 
     #[test]
     fn absent_file_returns_empty_config() {
@@ -527,5 +532,55 @@ run = "echo failed"
         let hooks = collect_hooks(temp_dir.path(), "test-project", "done").unwrap();
 
         assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn dispatch_hooks_exposes_project_path_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("project_path.txt");
+        let task = test_task();
+        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: format!(
+                "printf '%s' \"$AGIRA_PROJECT_PATH\" > {}",
+                output_path.display()
+            ),
+        }];
+
+        dispatch_hooks(&hooks, &ctx);
+
+        let contents = read_file_eventually(&output_path);
+        assert_eq!(contents, temp_dir.path().to_string_lossy());
+    }
+
+    fn test_task() -> Task {
+        Task {
+            id: "task-001".to_owned(),
+            title: "Test task".to_owned(),
+            description: "Task description".to_owned(),
+            state: "done".to_owned(),
+            blocked_at_phase: None,
+            blocked_reason: None,
+            prd_module_id: None,
+            dependencies: vec![],
+            retry_count: 0,
+            max_retries: 3,
+            phases: BTreeMap::new(),
+            history: vec![],
+            created_at: "2026-06-05T00:00:00Z".to_owned(),
+        }
+    }
+
+    fn read_file_eventually(path: &Path) -> String {
+        for _ in 0..50 {
+            if let Ok(contents) = fs::read_to_string(path) {
+                return contents;
+            }
+
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("hook output was not written to {}", path.display());
     }
 }

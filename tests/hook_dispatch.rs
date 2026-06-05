@@ -84,7 +84,7 @@ fn todo_artifact_dispatches_hook_with_env_vars() {
     fs::create_dir(&agira_root).unwrap();
     let hook_output = home.path().join("hook-output.txt");
     let hook_command = format!(
-        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_PROJECT_SLUG|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {}",
+        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_PROJECT_SLUG|$AGIRA_PROJECT_PATH|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {}",
         shell_quote(&hook_output)
     );
     fs::write(
@@ -124,6 +124,7 @@ run = {hook_command:?}
             "task-001",
             "Env hook task",
             "hook-repo",
+            repo.canonicalize().unwrap().to_str().unwrap(),
             "enriching",
             "done",
             "artifact value"
@@ -166,7 +167,7 @@ fn task_added_hook_receives_new_task_env_vars() {
         .join("hooks.toml");
     let hook_output = home.path().join("task-added-hook-output.txt");
     let hook_command = format!(
-        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_TASK_DESCRIPTION|$AGIRA_TASK_STATE|$AGIRA_TASK_PRD_MODULE_ID|$AGIRA_TASK_DEPENDENCIES|$AGIRA_TASK_RETRY_COUNT|$AGIRA_TASK_MAX_RETRIES|$AGIRA_TASK_CREATED_AT|$AGIRA_PROJECT_SLUG|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {}",
+        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_TASK_DESCRIPTION|$AGIRA_TASK_STATE|$AGIRA_TASK_PRD_MODULE_ID|$AGIRA_TASK_DEPENDENCIES|$AGIRA_TASK_RETRY_COUNT|$AGIRA_TASK_MAX_RETRIES|$AGIRA_TASK_CREATED_AT|$AGIRA_PROJECT_SLUG|$AGIRA_PROJECT_PATH|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {}",
         shell_quote(&hook_output)
     );
     fs::write(
@@ -194,7 +195,7 @@ run = {hook_command:?}
         .expect("task_added hook did not write output within 2s");
     let fields: Vec<&str> = contents.trim_end().split('|').collect();
 
-    assert_eq!(fields.len(), 13);
+    assert_eq!(fields.len(), 14);
     assert_eq!(fields[0], "task-001");
     assert_eq!(fields[1], "Task added hook task");
     assert_eq!(fields[2], "description value");
@@ -205,9 +206,10 @@ run = {hook_command:?}
     assert_eq!(fields[7], "3");
     DateTime::parse_from_rfc3339(fields[8]).unwrap();
     assert_eq!(fields[9], "task-added-hook-repo");
-    assert_eq!(fields[10], "");
-    assert_eq!(fields[11], "enriching");
-    assert_eq!(fields[12], "");
+    assert_eq!(fields[10], repo.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(fields[11], "");
+    assert_eq!(fields[12], "enriching");
+    assert_eq!(fields[13], "");
 }
 
 #[test]
