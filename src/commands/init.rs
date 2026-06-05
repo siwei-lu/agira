@@ -386,8 +386,9 @@ fn dependency_matches(name: &str, markers: &[&str]) -> bool {
 fn bare_invocation_prompt() -> &'static str {
     r#"# agira init — agent setup required
 
-`agira init` was called without flags. Your job: scan this repo, reason about what you find,
-recommend configuration, interview the user, then call `agira init` with all flags filled in.
+`agira init` was called without flags. Your job: scan this repo, prove the project can
+start locally, reason about what you find, recommend configuration, interview the user,
+then call `agira init` with all flags filled in.
 
 ## Step 1 — Scan the repo
 
@@ -403,18 +404,43 @@ Read and record findings from each of the following before asking the user anyth
 2. **Build / test / lint commands** — read `package.json` scripts section, any `Makefile`,
    CI configs (`.github/workflows/`, `.gitlab-ci.yml`). Record the exact commands.
 
-3. **Project structure** — list top-level directories and key source files to understand
+3. **Run / start instructions** — find and read the project's local run instructions:
+   README files, docs, `package.json` scripts (`dev`, `start`, `serve`), `Makefile`,
+   `Cargo.toml`, `pyproject.toml`, Docker Compose files, Procfiles, or framework config.
+   Record the exact start command, expected port or URL, and any documented env setup.
+
+4. **Project structure** — list top-level directories and key source files to understand
    whether this is a CLI, library, API, full-stack app, or something else.
 
-4. **Existing AI config** — read `CLAUDE.md`, `.claude/settings.json` if present.
+5. **Existing AI config** — read `CLAUDE.md`, `.claude/settings.json` if present.
 
-5. **Commit conventions** — run `git log --no-merges -10 --format="%s"` and note the pattern
+6. **Commit conventions** — run `git log --no-merges -10 --format="%s"` and note the pattern
    (Conventional Commits, Angular, freeform, etc.).
 
-6. **PRD** — check `docs/prd.md`. If found and it contains `## Functional Modules` with FM-IDs,
+7. **PRD** — check `docs/prd.md`. If found and it contains `## Functional Modules` with FM-IDs,
    record its path. Otherwise note it as absent.
 
-## Step 2 — Reason and recommend
+## Step 2 — Prove the project starts (REQUIRED)
+
+After scanning and before recommending flags, you MUST make a real local start/run attempt.
+This step is required, not optional. Do not proceed to `agira init` until the project starts successfully, unless you have a concrete blocker that requires user input.
+
+1. Choose the most appropriate run command from the instructions you found.
+2. Install missing dependencies using the repo's declared package manager or build tool.
+3. Resolve environment issues when possible: read `.env.example` or docs, set documented
+   non-secret defaults, choose a free supported port, and fix missing generated files.
+   Do not invent secrets; ask the user if a real credential is required.
+4. Actually start the dev server, API, CLI, or app. For long-running servers, start them
+   only long enough to verify readiness, then stop the process unless the user asks to
+   keep it running.
+5. Confirm success with concrete evidence: listening URL, health endpoint, rendered page,
+   CLI output, or equivalent smoke check.
+
+Record the exact start command, required env setup, port or URL, and verification evidence.
+These findings must feed into `--verification-commands`, `--acceptance-testing`, and
+`CLAUDE.md`.
+
+## Step 3 — Reason and recommend
 
 After scanning, reason about each flag. For each one, propose 2–3 concrete options ranked by
 fit, with a brief justification. **Do not just show a value and ask "confirm or override?"** —
@@ -438,12 +464,16 @@ Examples:
 Present 2 options with a clear trade-off. Format: `phase:model,phase:model,...`
 
 **`--verification-commands`**
-From your scan, propose exact commands. Prefer commands found in CI or Makefile over
-anything you infer. If the scan found nothing, say so and ask the user directly.
+From your scan and required start proof, propose exact commands. Prefer commands found in
+CI or Makefile over anything you infer. Include the confirmed project-start smoke command
+or wrapper command, plus any setup command required before acceptance testing can run.
+Use semicolons only as command separators; do not put raw semicolons inside an individual
+command. If a reliable start check requires multiple shell operations, prefer an existing
+single project script or Makefile target and list that.
 Format: `cmd1;cmd2;cmd3`
 
 **`--acceptance-testing`**
-Reason from what you detected:
+Reason from what you successfully started, not markers alone:
 - Frontend markers (next, vite, react, vue, svelte, angular) → `ui`
 - Backend markers (express, fastify, koa, nest, Spring, FastAPI, etc.) → `api`
 - Both present → `hybrid`
@@ -455,9 +485,9 @@ Valid values: `cli`, `api`, `ui`, `hybrid`, `none`
 If you found `docs/prd.md` with FM-IDs, propose it. Otherwise leave blank unless the user
 mentions a requirements document.
 
-## Step 3 — Interview the user
+## Step 4 — Interview the user
 
-Present your findings and recommendations, one flag at a time. For each:
+Present your findings, required start proof, and recommendations, one flag at a time. For each:
 1. State what the scan found (one line)
 2. State your recommendation and why (one or two lines)
 3. Offer 2–3 concrete alternatives when the choice isn't obvious
@@ -466,7 +496,7 @@ Present your findings and recommendations, one flag at a time. For each:
 If the scan clearly determined a value with no ambiguity, confirm it in a single line and
 move on. Only dwell on decisions where multiple options are genuinely reasonable.
 
-## Step 4 — Run agira init
+## Step 5 — Run agira init
 
 Once all values are confirmed, call:
 
@@ -479,10 +509,10 @@ agira init \
   [--prd-path <path>]
 ```
 
-## Step 5 — Write CLAUDE.md
+## Step 6 — Write CLAUDE.md
 
 After running `agira init`, write a **complete** `CLAUDE.md` in the repo root that captures
-all project context gathered in Steps 1–3. The goal is a file any AI agent can read to start
+all project context gathered in Steps 1–4. The goal is a file any AI agent can read to start
 working in this repo immediately — not a bounded annotation.
 
 **If CLAUDE.md does not exist:** create it from scratch.
@@ -495,6 +525,7 @@ The CLAUDE.md must cover all of these at minimum:
 - **Stack** — language, primary framework, key libraries
 - **Project structure** — what the top-level directories contain; where the main source tree lives
 - **Build, test, and lint commands** — exact commands, ready to copy-paste
+- **Local run/start** — exact start command, required env setup, port or URL, and proof it worked
 - **Commit conventions** — pattern from `git log`; omit if no consistent pattern was found
 - **PRD** — relative path if a requirements document was confirmed; omit otherwise
 - **Development workflow** — any conventions captured in existing config (current CLAUDE.md,
@@ -798,6 +829,15 @@ mod tests {
         assert!(!prompt.contains("agira-context"));
         assert!(prompt.contains("phase:model"));
         assert!(!prompt.contains("--models"));
+        assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
+        assert!(prompt.contains("This step is required, not optional."));
+        assert!(
+            prompt.contains("Do not proceed to `agira init` until the project starts successfully")
+        );
+        assert!(prompt.contains("Run / start instructions"));
+        assert!(prompt.contains("confirmed project-start smoke command"));
+        assert!(prompt.contains("Reason from what you successfully started, not markers alone"));
+        assert!(prompt.contains("Local run/start"));
     }
 
     #[test]
