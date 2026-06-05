@@ -94,16 +94,22 @@ enum ProjectCommands {
 enum HookCommands {
     /// List effective lifecycle hooks
     List,
-    /// Add a project lifecycle hook
+    /// Add a lifecycle hook
     Add {
+        /// Write the hook to ~/.agira/config.toml instead of the current project
+        #[arg(long = "global")]
+        global: bool,
         /// Hook event name: *, failed, or a configured phase
         event: String,
         /// Shell command to run for the hook
         #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Remove all project lifecycle hooks for an event
+    /// Remove all lifecycle hooks for an event
     Remove {
+        /// Remove hooks from ~/.agira/config.toml instead of the current project
+        #[arg(long = "global")]
+        global: bool,
         /// Hook event name: *, failed, or a configured phase
         event: String,
     },
@@ -405,8 +411,12 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            HookCommands::Add { event, command } => match resolve_project() {
-                Ok(project) => match commands::run_hook_add(&project, &event, &command) {
+            HookCommands::Add {
+                global,
+                event,
+                command,
+            } => match resolve_project() {
+                Ok(project) => match commands::run_hook_add(&project, &event, &command, global) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -418,8 +428,8 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            HookCommands::Remove { event } => match resolve_project() {
-                Ok(project) => match commands::run_hook_remove(&project, &event) {
+            HookCommands::Remove { global, event } => match resolve_project() {
+                Ok(project) => match commands::run_hook_remove(&project, &event, global) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");

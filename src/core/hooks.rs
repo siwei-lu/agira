@@ -76,6 +76,62 @@ pub fn load_hooks(path: &Path) -> Result<HookConfig, HookConfigError> {
 }
 
 pub fn save_hooks(path: &Path, config: &HookConfig) -> Result<(), HookConfigError> {
+    let contents = toml::to_string_pretty(config).map_err(|source| HookConfigError::Serialize {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    write_hooks_file(path, contents)
+}
+
+pub fn save_hooks_preserving_toml(path: &Path, config: &HookConfig) -> Result<(), HookConfigError> {
+    let mut document = match fs::read_to_string(path) {
+        Ok(contents) => {
+            toml::from_str::<toml::Table>(&contents).map_err(|error| HookConfigError::Parse {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => toml::Table::new(),
+        Err(source) => {
+            return Err(HookConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    if config.hooks.is_empty() {
+        document.remove("hooks");
+    } else {
+        document.insert("hooks".to_owned(), hooks_value(config));
+    }
+
+    let contents =
+        toml::to_string_pretty(&document).map_err(|source| HookConfigError::Serialize {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    write_hooks_file(path, contents)
+}
+
+fn hooks_value(config: &HookConfig) -> toml::Value {
+    toml::Value::Array(
+        config
+            .hooks
+            .iter()
+            .map(|hook| {
+                let mut hook_table = toml::Table::new();
+                hook_table.insert("on".to_owned(), toml::Value::String(hook.on.clone()));
+                hook_table.insert("run".to_owned(), toml::Value::String(hook.run.clone()));
+                toml::Value::Table(hook_table)
+            })
+            .collect(),
+    )
+}
+
+fn write_hooks_file(path: &Path, contents: String) -> Result<(), HookConfigError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| HookConfigError::Write {
             path: path.to_path_buf(),
@@ -83,10 +139,6 @@ pub fn save_hooks(path: &Path, config: &HookConfig) -> Result<(), HookConfigErro
         })?;
     }
 
-    let contents = toml::to_string_pretty(config).map_err(|source| HookConfigError::Serialize {
-        path: path.to_path_buf(),
-        source,
-    })?;
     let temporary_path = path.with_extension("toml.tmp");
 
     fs::write(&temporary_path, contents)
@@ -239,6 +291,60 @@ run = "echo changed"
         save_hooks(&path, &config).unwrap();
 
         assert_eq!(load_hooks(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn save_hooks_preserving_toml_replaces_hooks_and_preserves_other_keys() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"default_max_retries = 9
+extra = "keep"
+
+[[hooks]]
+on = "done"
+run = "echo old"
+"#,
+        )
+        .unwrap();
+        let config = HookConfig {
+            hooks: vec![HookEntry {
+                on: "failed".to_owned(),
+                run: "echo new".to_owned(),
+            }],
+        };
+
+        save_hooks_preserving_toml(&path, &config).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("default_max_retries = 9"));
+        assert!(contents.contains("extra = \"keep\""));
+        assert!(!contents.contains("echo old"));
+        assert_eq!(load_hooks(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn save_hooks_preserving_toml_removes_empty_hooks_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"default_max_retries = 3
+
+[[hooks]]
+on = "done"
+run = "echo done"
+"#,
+        )
+        .unwrap();
+
+        save_hooks_preserving_toml(&path, &HookConfig::default()).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("default_max_retries = 3"));
+        assert!(!contents.contains("[[hooks]]"));
+        assert_eq!(load_hooks(&path).unwrap(), HookConfig::default());
     }
 
     #[test]

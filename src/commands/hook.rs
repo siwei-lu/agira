@@ -1,10 +1,13 @@
-use std::{fs, io, path::PathBuf};
+use std::{
+    fmt, fs, io,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
 use crate::core::{
     config::{Config, ConfigError, load_project_config},
-    hooks::{HookConfig, HookConfigError, HookEntry, save_hooks},
+    hooks::{HookConfig, HookConfigError, HookEntry, save_hooks, save_hooks_preserving_toml},
     project::Project,
 };
 
@@ -22,8 +25,8 @@ pub enum HookError {
     #[error("hook command cannot be empty")]
     EmptyCommand,
 
-    #[error("no project hook configured for {event}")]
-    HookNotFound { event: String },
+    #[error("no {scope} hook configured for {event}")]
+    HookNotFound { scope: HookScope, event: String },
 
     #[error("config file not found: {path}")]
     ConfigNotFound { path: PathBuf },
@@ -53,6 +56,31 @@ pub enum HookError {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookScope {
+    Project,
+    Global,
+}
+
+impl HookScope {
+    fn from_global(global: bool) -> Self {
+        if global { Self::Global } else { Self::Project }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Global => "global",
+        }
+    }
+}
+
+impl fmt::Display for HookScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
 pub fn run_hook_list(project: &Project) -> Result<(), HookError> {
     print!("{}", format_hook_list(project));
 
@@ -63,6 +91,7 @@ pub fn run_hook_add(
     project: &Project,
     event: &str,
     command_parts: &[String],
+    global: bool,
 ) -> Result<(), HookError> {
     validate_event(project, event)?;
     let command = command_parts.join(" ");
@@ -70,40 +99,51 @@ pub fn run_hook_add(
         return Err(HookError::EmptyCommand);
     }
 
-    let mut hooks = project.project_hooks.clone();
+    let scope = HookScope::from_global(global);
+    let mut hooks = scoped_hooks(project, scope).clone();
     hooks.hooks.push(HookEntry {
         on: event.to_owned(),
         run: command.clone(),
     });
-    save_hooks(&project_hooks_path(project), &hooks)?;
+    save_scoped_hooks(&scoped_hooks_path(project, scope), &hooks, scope)?;
 
-    println!("added hook {event}: {command}");
+    if scope == HookScope::Project {
+        println!("added hook {event}: {command}");
+    } else {
+        println!("added {scope} hook {event}: {command}");
+    }
 
     Ok(())
 }
 
-pub fn run_hook_remove(project: &Project, event: &str) -> Result<(), HookError> {
+pub fn run_hook_remove(project: &Project, event: &str, global: bool) -> Result<(), HookError> {
     validate_event(project, event)?;
 
-    let mut hooks = project.project_hooks.clone();
+    let scope = HookScope::from_global(global);
+    let mut hooks = scoped_hooks(project, scope).clone();
     let before = hooks.hooks.len();
     hooks.hooks.retain(|hook| hook.on != event);
     let removed = before - hooks.hooks.len();
 
     if removed == 0 {
         return Err(HookError::HookNotFound {
+            scope,
             event: event.to_owned(),
         });
     }
 
-    let hooks_path = project_hooks_path(project);
-    if hooks.hooks.is_empty() {
+    let hooks_path = scoped_hooks_path(project, scope);
+    if hooks.hooks.is_empty() && scope == HookScope::Project {
         delete_hooks_file(&hooks_path)?;
     } else {
-        save_hooks(&hooks_path, &hooks)?;
+        save_scoped_hooks(&hooks_path, &hooks, scope)?;
     }
 
-    println!("removed {removed} hook(s) for {event}");
+    if scope == HookScope::Project {
+        println!("removed {removed} hook(s) for {event}");
+    } else {
+        println!("removed {removed} {scope} hook(s) for {event}");
+    }
 
     Ok(())
 }
@@ -163,6 +203,38 @@ fn map_config_error(error: ConfigError) -> HookError {
 
 fn project_hooks_path(project: &Project) -> PathBuf {
     project.state_dir.join("hooks.toml")
+}
+
+fn global_hooks_path(project: &Project) -> PathBuf {
+    project
+        .state_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project.state_dir.clone())
+        .join("config.toml")
+}
+
+fn scoped_hooks(project: &Project, scope: HookScope) -> &HookConfig {
+    match scope {
+        HookScope::Project => &project.project_hooks,
+        HookScope::Global => &project.global_hooks,
+    }
+}
+
+fn scoped_hooks_path(project: &Project, scope: HookScope) -> PathBuf {
+    match scope {
+        HookScope::Project => project_hooks_path(project),
+        HookScope::Global => global_hooks_path(project),
+    }
+}
+
+fn save_scoped_hooks(path: &Path, hooks: &HookConfig, scope: HookScope) -> Result<(), HookError> {
+    match scope {
+        HookScope::Project => save_hooks(path, hooks)?,
+        HookScope::Global => save_hooks_preserving_toml(path, hooks)?,
+    }
+
+    Ok(())
 }
 
 fn delete_hooks_file(path: &PathBuf) -> Result<(), HookError> {
@@ -286,17 +358,17 @@ mod tests {
     fn add_accepts_star_failed_and_configured_phase_names() {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
-        run_hook_add(&project, "*", &["echo all".to_owned()]).unwrap();
+        run_hook_add(&project, "*", &["echo all".to_owned()], false).unwrap();
         let project = Project {
             project_hooks: load_hooks(&project.state_dir.join("hooks.toml")).unwrap(),
             ..project
         };
-        run_hook_add(&project, "failed", &["echo failed".to_owned()]).unwrap();
+        run_hook_add(&project, "failed", &["echo failed".to_owned()], false).unwrap();
         let project = Project {
             project_hooks: load_hooks(&project.state_dir.join("hooks.toml")).unwrap(),
             ..project
         };
-        run_hook_add(&project, "done", &["echo done".to_owned()]).unwrap();
+        run_hook_add(&project, "done", &["echo done".to_owned()], false).unwrap();
 
         let hooks = load_hooks(&project.state_dir.join("hooks.toml")).unwrap();
         assert_eq!(
@@ -322,10 +394,11 @@ mod tests {
     fn add_rejects_unknown_event_not_in_phases_and_rejects_empty_command() {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
-        let error = run_hook_add(&project, "review", &["echo review".to_owned()]).unwrap_err();
+        let error =
+            run_hook_add(&project, "review", &["echo review".to_owned()], false).unwrap_err();
         assert!(matches!(error, HookError::UnknownEvent { event, .. } if event == "review"));
 
-        let error = run_hook_add(&project, "done", &["   ".to_owned()]).unwrap_err();
+        let error = run_hook_add(&project, "done", &["   ".to_owned()], false).unwrap_err();
         assert!(matches!(error, HookError::EmptyCommand));
     }
 
@@ -345,7 +418,7 @@ mod tests {
         };
         let (_temp_dir, project) = setup(global_hooks.clone(), project_hooks);
 
-        run_hook_add(&project, "done", &["echo project".to_owned()]).unwrap();
+        run_hook_add(&project, "done", &["echo project".to_owned()], false).unwrap();
 
         let hooks = load_hooks(&project.state_dir.join("hooks.toml")).unwrap();
         assert_eq!(
@@ -384,7 +457,7 @@ mod tests {
         };
         let (_temp_dir, project) = setup(HookConfig::default(), project_hooks);
 
-        run_hook_remove(&project, "done").unwrap();
+        run_hook_remove(&project, "done", false).unwrap();
 
         let hooks = load_hooks(&project.state_dir.join("hooks.toml")).unwrap();
         assert_eq!(
@@ -400,16 +473,16 @@ mod tests {
     fn remove_rejects_valid_events_with_no_matching_project_hook() {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
-        let error = run_hook_remove(&project, "done").unwrap_err();
+        let error = run_hook_remove(&project, "done", false).unwrap_err();
 
-        assert!(matches!(error, HookError::HookNotFound { event } if event == "done"));
+        assert!(matches!(error, HookError::HookNotFound { event, .. } if event == "done"));
     }
 
     #[test]
     fn remove_rejects_unknown_events() {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
-        let error = run_hook_remove(&project, "review").unwrap_err();
+        let error = run_hook_remove(&project, "review", false).unwrap_err();
 
         assert!(matches!(error, HookError::UnknownEvent { event, .. } if event == "review"));
     }
@@ -424,7 +497,7 @@ mod tests {
         };
         let (_temp_dir, project) = setup(HookConfig::default(), project_hooks);
 
-        run_hook_remove(&project, "done").unwrap();
+        run_hook_remove(&project, "done", false).unwrap();
 
         assert!(!project.state_dir.join("hooks.toml").exists());
     }
