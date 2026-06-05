@@ -1,6 +1,7 @@
 mod add;
 mod block;
 mod fail;
+mod hook;
 mod init;
 mod phase;
 mod project;
@@ -13,6 +14,7 @@ mod work;
 pub use add::{AddError, run_add};
 pub use block::{BlockError, run_block};
 pub use fail::{FailError, run_fail};
+pub use hook::{HookError, run_hook_add, run_hook_list, run_hook_remove};
 pub use init::{InitError, InitFlags, run_init};
 pub use phase::{PhaseGetError, PhaseUpdateError, run_phase_get, run_phase_update};
 pub use project::{ProjectListError, run_project_list};

@@ -39,6 +39,20 @@ pub enum HookConfigError {
 
     #[error("invalid hooks config at {path}: {message}")]
     Parse { path: PathBuf, message: String },
+
+    #[error("failed to serialize hooks config for {path}")]
+    Serialize {
+        path: PathBuf,
+        #[source]
+        source: toml::ser::Error,
+    },
+
+    #[error("failed to write {path}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 pub fn load_hooks(path: &Path) -> Result<HookConfig, HookConfigError> {
@@ -59,6 +73,28 @@ pub fn load_hooks(path: &Path) -> Result<HookConfig, HookConfigError> {
         path: path.to_path_buf(),
         message: error.to_string(),
     })
+}
+
+pub fn save_hooks(path: &Path, config: &HookConfig) -> Result<(), HookConfigError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| HookConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let contents = toml::to_string_pretty(config).map_err(|source| HookConfigError::Serialize {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let temporary_path = path.with_extension("toml.tmp");
+
+    fs::write(&temporary_path, contents)
+        .and_then(|_| fs::rename(&temporary_path, path))
+        .map_err(|source| HookConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -164,6 +200,45 @@ run = "echo changed"
                 ],
             }
         );
+    }
+
+    #[test]
+    fn save_hooks_writes_toml_that_load_hooks_reads_back_unchanged() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("hooks.toml");
+        let config = HookConfig {
+            hooks: vec![
+                HookEntry {
+                    on: "done".to_owned(),
+                    run: "printf ok".to_owned(),
+                },
+                HookEntry {
+                    on: "*".to_owned(),
+                    run: "echo all".to_owned(),
+                },
+            ],
+        };
+
+        save_hooks(&path, &config).unwrap();
+        let loaded = load_hooks(&path).unwrap();
+
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn save_hooks_creates_parent_directories_as_needed() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("nested").join("hooks.toml");
+        let config = HookConfig {
+            hooks: vec![HookEntry {
+                on: "failed".to_owned(),
+                run: "echo fail".to_owned(),
+            }],
+        };
+
+        save_hooks(&path, &config).unwrap();
+
+        assert_eq!(load_hooks(&path).unwrap(), config);
     }
 
     #[test]

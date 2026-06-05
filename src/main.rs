@@ -43,6 +43,11 @@ enum Commands {
         #[command(subcommand)]
         command: PhaseCommands,
     },
+    /// Manage lifecycle hooks
+    Hook {
+        #[command(subcommand)]
+        command: HookCommands,
+    },
     /// List and manage initialized projects
     #[command(alias = "projects")]
     Project {
@@ -83,6 +88,25 @@ enum PhaseCommands {
 enum ProjectCommands {
     /// List initialized projects and their state directories
     List,
+}
+
+#[derive(Subcommand)]
+enum HookCommands {
+    /// List effective lifecycle hooks
+    List,
+    /// Add a project lifecycle hook
+    Add {
+        /// Hook event name: *, failed, or a configured phase
+        event: String,
+        /// Shell command to run for the hook
+        #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Remove all project lifecycle hooks for an event
+    Remove {
+        /// Hook event name: *, failed, or a configured phase
+        event: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -367,6 +391,47 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Hook { command } => match command {
+            HookCommands::List => match resolve_project() {
+                Ok(project) => match commands::run_hook_list(&project) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_hook(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            HookCommands::Add { event, command } => match resolve_project() {
+                Ok(project) => match commands::run_hook_add(&project, &event, &command) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_hook(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            HookCommands::Remove { event } => match resolve_project() {
+                Ok(project) => match commands::run_hook_remove(&project, &event) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_hook(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+        },
         Commands::Project { command } => match command {
             ProjectCommands::List => match commands::run_project_list() {
                 Ok(()) => ExitCode::SUCCESS,
@@ -586,6 +651,26 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
             | crate::core::StoreError::Serialize(_)
             | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_hook(error: &commands::HookError) -> ExitCode {
+    use commands::HookError::*;
+
+    match error {
+        InvalidEventName
+        | UnknownEvent { .. }
+        | EmptyCommand
+        | HookNotFound { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. } => ExitCode::from(1),
+        ConfigRead { .. } | Delete { .. } => ExitCode::from(2),
+        Hooks(hook_error) => match hook_error {
+            crate::core::HookConfigError::Parse { .. } => ExitCode::from(1),
+            crate::core::HookConfigError::Read { .. }
+            | crate::core::HookConfigError::Serialize { .. }
+            | crate::core::HookConfigError::Write { .. } => ExitCode::from(2),
         },
     }
 }

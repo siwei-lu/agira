@@ -1,0 +1,105 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
+
+use tempfile::TempDir;
+
+fn agira(home: &Path, repo: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agira"));
+    command.current_dir(repo).env("HOME", home);
+    command
+}
+
+fn run_ok(command: &mut Command) -> Output {
+    let output = command.output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "command failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    output
+}
+
+fn run_err(command: &mut Command) -> Output {
+    let output = command.output().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "command unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    output
+}
+
+fn setup_repo() -> (TempDir, TempDir, PathBuf) {
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("Hook CLI Repo");
+    fs::create_dir(&repo).unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+
+    run_ok(agira(home.path(), &repo).args([
+        "init",
+        "--stack",
+        "rust",
+        "--phases",
+        "enriching:sonnet,in_progress:sonnet,verifying:haiku,done:haiku",
+        "--verification-commands",
+        "none",
+        "--acceptance-testing",
+        "cli",
+    ]));
+
+    (home, workspace, repo)
+}
+
+fn project_hooks_path(home: &Path) -> PathBuf {
+    home.join(".agira").join("hook-cli-repo").join("hooks.toml")
+}
+
+#[test]
+fn hook_add_creates_project_hooks_file_and_list_shows_project_hook() {
+    let (home, _workspace, repo) = setup_repo();
+
+    run_ok(agira(home.path(), &repo).args(["hook", "add", "done", "printf", "ok"]));
+
+    let hooks_path = project_hooks_path(home.path());
+    let contents = fs::read_to_string(&hooks_path).unwrap();
+    assert!(contents.contains("on = \"done\""));
+    assert!(contents.contains("run = \"printf ok\""));
+
+    let output = run_ok(agira(home.path(), &repo).args(["hook", "list"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("source  event  command"));
+    assert!(stdout.contains("project  done  printf ok"));
+}
+
+#[test]
+fn hook_remove_prevents_project_hook_from_appearing_in_list() {
+    let (home, _workspace, repo) = setup_repo();
+
+    run_ok(agira(home.path(), &repo).args(["hook", "add", "done", "printf", "ok"]));
+    run_ok(agira(home.path(), &repo).args(["hook", "remove", "done"]));
+
+    let output = run_ok(agira(home.path(), &repo).args(["hook", "list"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "no hooks configured\n");
+}
+
+#[test]
+fn hook_add_unknown_phase_exits_nonzero_with_unknown_hook_event() {
+    let (home, _workspace, repo) = setup_repo();
+
+    let output = run_err(agira(home.path(), &repo).args(["hook", "add", "review", "echo", "x"]));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.contains("unknown hook event: review"));
+}
