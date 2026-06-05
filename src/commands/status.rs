@@ -116,7 +116,7 @@ pub fn run_status(
             .ok_or_else(|| StatusError::TaskNotFound { id: id.to_owned() })?;
         print_status_output(&format_status_table(&[task], &terminal_phase));
     } else {
-        let sorted_tasks = sort_tasks_by_id_desc(tasks);
+        let sorted_tasks = sort_tasks_by_id_asc(tasks);
         let paginated_tasks = paginate_tasks(&sorted_tasks, limit, offset);
         let mut output = format_status_table(&paginated_tasks, &terminal_phase);
 
@@ -202,9 +202,9 @@ fn format_status_table(tasks: &[&Task], terminal_phase: &str) -> String {
     lines.join("\n")
 }
 
-fn sort_tasks_by_id_desc(tasks: &[Task]) -> Vec<&Task> {
+fn sort_tasks_by_id_asc(tasks: &[Task]) -> Vec<&Task> {
     let mut sorted_tasks: Vec<&Task> = tasks.iter().collect();
-    sorted_tasks.sort_by(|left, right| compare_task_ids_desc(&left.id, &right.id));
+    sorted_tasks.sort_by(|left, right| compare_task_ids_asc(&left.id, &right.id));
     sorted_tasks
 }
 
@@ -265,10 +265,10 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     }
 }
 
-fn compare_task_ids_desc(left: &str, right: &str) -> Ordering {
+fn compare_task_ids_asc(left: &str, right: &str) -> Ordering {
     match (task_id_number(left), task_id_number(right)) {
         (Some(left_number), Some(right_number)) => {
-            right_number.cmp(&left_number).then_with(|| right.cmp(left))
+            left_number.cmp(&right_number).then_with(|| left.cmp(right))
         }
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
@@ -545,14 +545,14 @@ mod tests {
     }
 
     #[test]
-    fn sorted_by_id_descending() {
+    fn sorted_by_id_ascending() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Second in file", "", None, vec![], None)
+            .add_task("First in file", "", None, vec![], None)
             .unwrap();
         store
-            .add_task("First in file", "", None, vec![], None)
+            .add_task("Second in file", "", None, vec![], None)
             .unwrap();
 
         let mut tasks_file: TasksFile = serde_json::from_str(
@@ -569,11 +569,11 @@ mod tests {
         let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
 
         result.unwrap();
-        assert!(output.find("task-002").unwrap() < output.find("task-001").unwrap());
+        assert!(output.find("task-001").unwrap() < output.find("task-002").unwrap());
     }
 
     #[test]
-    fn default_status_paginates_to_latest_twenty_tasks() {
+    fn default_status_paginates_to_first_twenty_tasks() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
@@ -583,10 +583,10 @@ mod tests {
         result.unwrap();
         let ids = task_row_ids(&output);
         assert_eq!(ids.len(), 20);
-        assert_eq!(ids.first().unwrap(), "task-025");
-        assert_eq!(ids.last().unwrap(), "task-006");
-        assert!(!output.contains("task-005"));
-        assert!(!output.contains("task-001"));
+        assert_eq!(ids.first().unwrap(), "task-001");
+        assert_eq!(ids.last().unwrap(), "task-020");
+        assert!(!output.contains("task-021"));
+        assert!(!output.contains("task-025"));
     }
 
     #[test]
@@ -600,13 +600,13 @@ mod tests {
         result.unwrap();
         let ids = task_row_ids(&output);
         assert_eq!(ids.len(), 25);
-        assert_eq!(ids.first().unwrap(), "task-025");
-        assert_eq!(ids.last().unwrap(), "task-001");
+        assert_eq!(ids.first().unwrap(), "task-001");
+        assert_eq!(ids.last().unwrap(), "task-025");
         assert!(!output.contains("Showing"));
     }
 
     #[test]
-    fn offset_skips_tasks_from_descending_window() {
+    fn offset_skips_tasks_from_ascending_window() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         add_tasks(&mut store, 25);
@@ -616,7 +616,7 @@ mod tests {
         result.unwrap();
         assert_eq!(
             task_row_ids(&output),
-            vec!["task-022", "task-021", "task-020", "task-019", "task-018"]
+            vec!["task-004", "task-005", "task-006", "task-007", "task-008"]
         );
     }
 
