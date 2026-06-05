@@ -11,6 +11,9 @@
   - `serde` / `serde_json` — JSON state files
   - `chrono` — ISO 8601 timestamps
   - `sha2` — slug collision hashing
+  - `reqwest` (blocking, rustls-tls) — fetch GitHub releases for `agira update`
+  - `toml` — parse `~/.agira/config.toml` global config
+  - `libc` — low-level OS calls
 - **Dev deps**: `tempfile` — integration tests using real temp dirs
 
 ## Project structure
@@ -23,18 +26,23 @@ agira/
 │   │   ├── advance.rs       — shared phase-advance output helpers
 │   │   ├── config.rs        — config.json schema + reader/migration
 │   │   ├── global_config.rs — ~/.agira/config.toml reader
+│   │   ├── hooks.rs         — lifecycle hook resolution + execution
 │   │   ├── pick.rs          — next actionable task selection and prompt formatting
 │   │   ├── project.rs       — git root resolution, slug derivation, state dir creation
 │   │   └── tasks.rs         — tasks.json schema, atomic read/write, state machine transitions
 │   └── commands/
 │       ├── init.rs        — `agira init` (bare agent-prompt path + flag-driven write path)
 │       ├── add.rs         — `agira task add`
+│       ├── block.rs       — `agira task block`
+│       ├── unblock.rs     — `agira task unblock`
 │       ├── fail.rs        — `agira task fail`
+│       ├── hook.rs        — `agira hook` (manage lifecycle hooks)
 │       ├── phase.rs       — `agira phase get` / `agira phase update`
 │       ├── self_update.rs — `agira update`
 │       ├── status.rs      — `agira task status`
 │       ├── update.rs      — `agira task update`
 │       └── todo.rs        — `agira task todo` (print prompt / advance with --artifact)
+├── tests/               — integration tests against real temp dirs
 ├── docs/
 │   ├── prd.md           — requirements; FM-IDs used to tag tasks
 │   └── conventions.md   — project taste decisions (error style, output format, etc.)
@@ -54,7 +62,22 @@ cargo fmt -- --check         # format check (used in verification)
 cargo clippy -- -D warnings  # lint
 ```
 
-No Makefile or CI config exists; use the above directly.
+No Makefile. The only CI is `.github/workflows/release.yml`, which builds release
+binaries for macOS arm64 + Linux amd64 and publishes a GitHub Release on `v*` tags —
+it does **not** run tests or lint, so run the verification commands above locally.
+
+## Local run / start
+
+`agira` is a CLI binary, not a server — "starting" it means building and invoking it:
+
+```sh
+cargo build              # produces ./target/debug/agira
+./target/debug/agira -v  # smoke check → prints e.g. "agira 0.9.0 (aarch64-apple-darwin)"
+```
+
+Verified: `cargo build` succeeds and `agira -v` prints the version + build target.
+No env vars or credentials are required to run. Runtime state lives in `~/.agira/<slug>/`;
+this project's own config is at `~/.agira/agira/config.json`.
 
 ## Commit conventions
 
