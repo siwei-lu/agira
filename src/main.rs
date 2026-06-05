@@ -70,7 +70,7 @@ enum Commands {
 enum PhaseCommands {
     /// List current phases in the state machine
     Get,
-    /// Add, insert, or remove phases in the state machine
+    /// Add, insert, remove, or update phases in the state machine
     Update {
         /// Phase to add: bare name (e.g. review) or name:model (e.g. review:codex); labels cannot contain whitespace
         #[arg(long, value_name = "add")]
@@ -87,6 +87,9 @@ enum PhaseCommands {
         /// Change the model of an existing phase: --set-model <phase> <model>
         #[arg(long, num_args = 2, value_names = ["phase", "model"])]
         set_model: Option<Vec<String>>,
+        /// Clear the model from an existing non-mandatory phase
+        #[arg(long = "clear-model", value_name = "phase")]
+        clear_model: Option<String>,
     },
 }
 
@@ -429,14 +432,16 @@ fn main() -> ExitCode {
                 before,
                 remove,
                 set_model,
+                clear_model,
             } => match resolve_project() {
-                Ok(project) => match commands::run_phase_update(
+                Ok(project) => match commands::run_phase_update_with_clear_model(
                     &project,
                     add.as_deref(),
                     after.as_deref(),
                     before.as_deref(),
                     remove.as_deref(),
                     set_model.as_deref(),
+                    clear_model.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {

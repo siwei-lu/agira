@@ -23,6 +23,8 @@ pub struct PhaseConfig {
 pub struct Config {
     pub stack: String,
     pub phases: Vec<PhaseConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
     pub verification: VerificationConfig,
     pub acceptance_testing: String,
     #[serde(default = "default_max_retries")]
@@ -83,7 +85,7 @@ struct ProjectConfigFile {
     verification: VerificationConfig,
     acceptance_testing: String,
     max_retries: Option<u32>,
-    // Legacy fallback used only for old-format migration.
+    // Legacy fallback, also preserved in the loaded Config for model-less phases.
     #[serde(default)]
     default_model: Option<String>,
     prd_path: Option<String>,
@@ -116,12 +118,13 @@ pub fn load_project_config(
             }
         })?;
 
+    let default_model = project_config.default_model;
     let phases = match project_config.phases {
         Some(phases) => phases,
         None => migrate_state_machine(
             project_config.state_machine.unwrap_or_default(),
             project_config.models.as_ref(),
-            project_config.default_model.as_deref(),
+            default_model.as_deref(),
         ),
     };
     let phases = normalize_mandatory_phases(phases);
@@ -133,6 +136,7 @@ pub fn load_project_config(
     Ok(Config {
         stack: project_config.stack,
         phases,
+        default_model,
         verification: project_config.verification,
         acceptance_testing: project_config.acceptance_testing,
         max_retries: project_config
@@ -390,6 +394,45 @@ mod tests {
     }
 
     #[test]
+    fn project_config_preserves_default_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        write_new_format_config(&path, r#", "default_model": "codex""#);
+
+        let config = load_project_config(&path, &global_config(5)).unwrap();
+
+        assert_eq!(config.default_model, Some("codex".to_owned()));
+    }
+
+    #[test]
+    fn old_format_default_model_is_preserved_after_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "state_machine": ["enriching", "done"],
+  "models": {},
+  "default_model": "opus",
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
+
+        let config = load_project_config(&path, &global_config(3)).unwrap();
+
+        assert_eq!(config.default_model, Some("opus".to_owned()));
+        let enriching = config
+            .phases
+            .iter()
+            .find(|p| p.name == "enriching")
+            .unwrap();
+        assert_eq!(enriching.model, Some("opus".to_owned()));
+    }
+
+    #[test]
     fn model_less_middle_phase_preserved_by_normalize() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
@@ -441,6 +484,7 @@ mod tests {
                     model: None,
                 },
             ],
+            default_model: None,
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,

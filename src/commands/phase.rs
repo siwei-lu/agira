@@ -39,7 +39,7 @@ pub enum PhaseGetError {
 
 #[derive(Debug, Error)]
 pub enum PhaseUpdateError {
-    #[error("at least one of --add, --remove, or --set-model is required")]
+    #[error("at least one of --add, --remove, --set-model, or --clear-model is required")]
     NoOperation,
 
     #[error("--after and --before cannot be used together")]
@@ -127,7 +127,8 @@ pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
     Ok(())
 }
 
-pub fn run_phase_update(
+#[cfg(test)]
+fn run_phase_update(
     project: &Project,
     add: Option<&str>,
     after: Option<&str>,
@@ -135,7 +136,31 @@ pub fn run_phase_update(
     remove: Option<&str>,
     set_model: Option<&[String]>,
 ) -> Result<(), PhaseUpdateError> {
-    if add.is_none() && remove.is_none() && set_model.is_none() {
+    run_phase_update_inner(project, add, after, before, remove, set_model, None)
+}
+
+pub fn run_phase_update_with_clear_model(
+    project: &Project,
+    add: Option<&str>,
+    after: Option<&str>,
+    before: Option<&str>,
+    remove: Option<&str>,
+    set_model: Option<&[String]>,
+    clear_model: Option<&str>,
+) -> Result<(), PhaseUpdateError> {
+    run_phase_update_inner(project, add, after, before, remove, set_model, clear_model)
+}
+
+fn run_phase_update_inner(
+    project: &Project,
+    add: Option<&str>,
+    after: Option<&str>,
+    before: Option<&str>,
+    remove: Option<&str>,
+    set_model: Option<&[String]>,
+    clear_model: Option<&str>,
+) -> Result<(), PhaseUpdateError> {
+    if add.is_none() && remove.is_none() && set_model.is_none() && clear_model.is_none() {
         return Err(PhaseUpdateError::NoOperation);
     }
 
@@ -237,6 +262,19 @@ pub fn run_phase_update(
         }
     }
 
+    if let Some(phase_name) = clear_model {
+        if is_mandatory_phase(phase_name) {
+            return Err(PhaseUpdateError::MandatoryPhaseNoModel {
+                name: phase_name.to_owned(),
+            });
+        }
+        if !config.phases.iter().any(|p| p.name == phase_name) {
+            return Err(PhaseUpdateError::PhaseNotFound {
+                name: phase_name.to_owned(),
+            });
+        }
+    }
+
     let mut new_phases = config.phases.clone();
 
     if let Some(remove) = remove {
@@ -260,6 +298,15 @@ pub fn run_phase_update(
         for p in &mut new_phases {
             if &p.name == phase_name {
                 p.model = Some(model_name.clone());
+                break;
+            }
+        }
+    }
+
+    if let Some(phase_name) = clear_model {
+        for p in &mut new_phases {
+            if p.name == phase_name {
+                p.model = None;
                 break;
             }
         }
@@ -414,6 +461,7 @@ mod tests {
                     model: None,
                 },
             ],
+            default_model: None,
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
@@ -772,6 +820,58 @@ mod tests {
         let phases = loaded_phases(&project);
         let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
         assert_eq!(enriching.model, Some("haiku".to_owned()));
+    }
+
+    #[test]
+    fn clear_model_unsets_existing_phase_model() {
+        let (_temp_dir, project, _config) = setup();
+        run_phase_update_with_clear_model(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("enriching"),
+        )
+        .unwrap();
+        let phases = loaded_phases(&project);
+        let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
+        assert_eq!(enriching.model, None);
+    }
+
+    #[test]
+    fn clear_model_unknown_phase_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error = run_phase_update_with_clear_model(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("nonexistent"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
+    }
+
+    #[test]
+    fn clear_model_on_mandatory_phase_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error = run_phase_update_with_clear_model(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("pending"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, PhaseUpdateError::MandatoryPhaseNoModel { name } if name == "pending")
+        );
     }
 
     #[test]

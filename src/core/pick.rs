@@ -3,7 +3,7 @@ use std::cmp::{Ordering, Reverse};
 use chrono::{DateTime, FixedOffset};
 
 use crate::core::{
-    config::{Config, INITIAL_PHASE_NAME},
+    config::{Config, INITIAL_PHASE_NAME, TERMINAL_PHASE_NAME},
     tasks::{Task, TaskPhase},
 };
 
@@ -94,7 +94,7 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
         .phases
         .iter()
         .find(|p| p.name == task.state)
-        .and_then(|p| p.model.as_deref());
+        .and_then(|p| effective_phase_model(p, config));
 
     let mut subagent = format!(
         "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
@@ -162,11 +162,20 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
             "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
         )
     } else {
-        // No model configured: return subagent prompt directly without orchestrator wrapper.
-        // This covers mandatory transition phases (pending/done) and any non-mandatory phase
-        // that was added without an explicit model.
+        // No effective model: return subagent prompt directly without orchestrator wrapper.
         subagent
     }
+}
+
+fn effective_phase_model<'a>(
+    phase: &'a crate::core::config::PhaseConfig,
+    config: &'a Config,
+) -> Option<&'a str> {
+    if phase.name == INITIAL_PHASE_NAME || phase.name == TERMINAL_PHASE_NAME {
+        return None;
+    }
+
+    phase.model.as_deref().or(config.default_model.as_deref())
 }
 
 fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
@@ -279,6 +288,7 @@ mod tests {
                     model: None,
                 },
             ],
+            default_model: None,
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
@@ -468,12 +478,32 @@ mod tests {
     }
 
     #[test]
-    fn pending_phase_prompt_has_no_orchestrator_wrapper() {
+    fn explicit_phase_model_wins_over_default_model() {
         let temp_dir = TempDir::new().unwrap();
-        let config = test_config();
+        let mut config = test_config();
+        config.default_model = Some("codex".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        // Task in pending phase — no model, no orchestrator wrapper.
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("- Agent role: opus"));
+        assert!(prompt.contains("The configured model is `opus`"));
+        assert!(!prompt.contains("- Agent role: codex"));
+    }
+
+    #[test]
+    fn pending_phase_prompt_has_no_orchestrator_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.default_model = Some("codex".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        // Task in pending phase — transition phase, no model, no orchestrator wrapper.
         store
             .add_task("Implement pick", "", None, vec![], None)
             .unwrap();
@@ -488,9 +518,10 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_omits_agent_role_for_phase_without_model() {
+    fn task_prompt_omits_agent_role_for_unknown_phase_with_default_model() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
+        config.default_model = Some("codex".to_owned());
         // Remove in_progress so the task lands in an unknown phase with no model.
         config.phases.retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
@@ -509,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn model_less_non_mandatory_phase_has_no_orchestrator_wrapper() {
+    fn model_less_non_mandatory_phase_uses_configured_default_model() {
         let temp_dir = TempDir::new().unwrap();
         // Build a config with a model-less middle phase "triage".
         let config = Config {
@@ -532,6 +563,7 @@ mod tests {
                     model: None,
                 },
             ],
+            default_model: Some("codex".to_owned()),
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
@@ -546,12 +578,48 @@ mod tests {
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        // No orchestrator wrapper for model-less non-mandatory phase.
-        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
-        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
-        // But it still contains the task prompt header.
+        assert!(prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
         assert!(prompt.contains("# Agira Task Prompt"));
-        // No agent role line.
+        assert!(prompt.contains("- Agent role: codex"));
+        assert!(prompt.contains("The configured model is `codex`"));
+    }
+
+    #[test]
+    fn model_less_non_mandatory_phase_without_default_stays_model_less() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Config {
+            stack: "rust".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: None,
+                },
+                PhaseConfig {
+                    name: "triage".to_owned(),
+                    model: None,
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: None,
+                },
+            ],
+            default_model: None,
+            verification: VerificationConfig { commands: vec![] },
+            acceptance_testing: "cli".to_owned(),
+            max_retries: 3,
+            prd_path: None,
+        };
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Triage work", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
         assert!(!prompt.contains("- Agent role:"));
     }
 

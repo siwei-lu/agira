@@ -25,7 +25,7 @@ pub enum InitError {
     MissingFlags { missing: Vec<String> },
 
     #[error(
-        "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:codex); phase names and model labels must be non-empty and contain no whitespace"
+        "invalid phases: use comma-separated phase names or phase:model pairs (e.g. enriching,in_progress:codex); phase names and model labels must be non-empty and contain no whitespace"
     )]
     InvalidPhases,
 
@@ -75,6 +75,7 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     let config = Config {
         stack: stack.to_owned(),
         phases: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
+        default_model: None,
         verification: VerificationConfig {
             commands: parse_verification_commands_flag(
                 flags.verification_commands.as_deref().unwrap_or_default(),
@@ -206,6 +207,7 @@ fn config_for_stack(
     Config {
         stack: stack.to_owned(),
         phases: default_phases(),
+        default_model: None,
         verification: VerificationConfig { commands },
         acceptance_testing: acceptance_testing.to_owned(),
         max_retries,
@@ -458,8 +460,9 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-Reason about project complexity to propose only the middle of the state machine. Each phase carries a freeform agent/model label.
-Model labels are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
+Reason about project complexity to propose only the middle of the state machine. Each phase may carry a freeform agent/model label.
+Model labels are optional. When present, they are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
+A bare phase name is valid when the phase should be model-less in config. If a project config later defines `default_model`, prompt generation can use that default for non-mandatory bare phases.
 `pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
@@ -468,9 +471,10 @@ Model labels are arbitrary non-empty text with no whitespace, such as `opus`, `s
 Examples:
 - PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku`
 - CLI tool or library: `in_progress:codex,verifying:haiku`
-- Prototype: `in_progress:sonnet`
+- Prototype with explicit model: `in_progress:sonnet`
+- Prototype using a configured default model: `in_progress`
 
-Present 2 options with a clear trade-off. Format: `phase:model,phase:model,...`
+Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],...`
 
 **`--verification-commands`**
 From your scan and required start proof, propose exact commands. Prefer commands found in
@@ -512,7 +516,7 @@ Once all values are confirmed, call:
 ```sh
 agira init \
   --stack <stack> \
-  --phases <phase:model,...> \
+  --phases <phase[:model],...> \
   --verification-commands <cmd1;cmd2;...> \
   --acceptance-testing <cli|api|ui|hybrid|none> \
   [--prd-path <path>]
@@ -601,7 +605,16 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                         })
                     }
                 }
-                None => Err(InitError::InvalidPhases),
+                None => {
+                    if pair.chars().any(char::is_whitespace) {
+                        Err(InitError::InvalidPhases)
+                    } else {
+                        Ok(PhaseConfig {
+                            name: pair.to_owned(),
+                            model: None,
+                        })
+                    }
+                }
             }
         })
         .collect();
@@ -771,16 +784,19 @@ mod tests {
         assert_eq!(without_mandatory[2].name, "in_progress");
         assert_eq!(without_mandatory[3].name, "done");
 
+        let with_bare_phase = super::parse_phases_flag("enriching,in_progress:codex").unwrap();
+        assert_eq!(with_bare_phase.len(), 4);
+        assert_eq!(with_bare_phase[1].name, "enriching");
+        assert_eq!(with_bare_phase[1].model, None);
+        assert_eq!(with_bare_phase[2].name, "in_progress");
+        assert_eq!(with_bare_phase[2].model, Some("codex".to_owned()));
+
         assert!(matches!(
             super::parse_phases_flag("in progress:sonnet"),
             Err(InitError::InvalidPhases)
         ));
         assert!(matches!(
             super::parse_phases_flag(""),
-            Err(InitError::InvalidPhases)
-        ));
-        assert!(matches!(
-            super::parse_phases_flag("enriching"),
             Err(InitError::InvalidPhases)
         ));
         assert!(matches!(
@@ -851,7 +867,8 @@ mod tests {
         assert!(prompt.contains("CLAUDE.md"));
         assert!(prompt.contains("Write the whole file, not just an appended block."));
         assert!(!prompt.contains("agira-context"));
-        assert!(prompt.contains("phase:model"));
+        assert!(prompt.contains("Model labels are optional."));
+        assert!(prompt.contains("phase[:model]"));
         assert!(prompt.contains("freeform agent/model label"));
         assert!(prompt.contains("codex"));
         assert!(prompt.contains("`pending` and `done` are built-in phases"));

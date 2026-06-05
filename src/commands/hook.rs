@@ -365,6 +365,7 @@ mod tests {
                     model: None,
                 },
             ],
+            default_model: None,
             verification: VerificationConfig { commands: vec![] },
             acceptance_testing: "cli".to_owned(),
             max_retries: 3,
