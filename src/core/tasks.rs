@@ -83,6 +83,9 @@ pub enum StoreError {
     #[error("task {id} is not in the pending phase")]
     NotInPendingPhase { id: String },
 
+    #[error("task {id} is depended on by {dependent_id}")]
+    DependedOnBy { id: String, dependent_id: String },
+
     #[error("unknown phase: {phase}")]
     UnknownPhase { phase: String },
 
@@ -500,6 +503,15 @@ impl TaskStore {
 
         if task.state != *pending_phase {
             return Err(StoreError::NotInPendingPhase { id: id.to_owned() });
+        }
+
+        if let Some(dependent) = self.tasks_file.tasks.iter().find(|task| {
+            task.id != id && task.dependencies.iter().any(|dependency| dependency == id)
+        }) {
+            return Err(StoreError::DependedOnBy {
+                id: id.to_owned(),
+                dependent_id: dependent.id.clone(),
+            });
         }
 
         let mut tasks_file = self.tasks_file.clone();
@@ -1069,6 +1081,30 @@ mod tests {
             },
             "done",
         );
+    }
+
+    #[test]
+    fn remove_task_rejects_tasks_with_dependents() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store
+            .add_task("Second", "", None, vec!["task-001".to_owned()], None)
+            .unwrap();
+
+        let error = store.remove_task("task-001").unwrap_err();
+
+        assert!(matches!(
+            error,
+            StoreError::DependedOnBy {
+                ref id,
+                ref dependent_id,
+            } if id == "task-001" && dependent_id == "task-002"
+        ));
+        assert!(store.get_task("task-001").is_some());
+        assert!(store.get_task("task-002").is_some());
+        assert_eq!(store.all_tasks().len(), 2);
     }
 
     #[test]

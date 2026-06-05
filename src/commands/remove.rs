@@ -16,6 +16,9 @@ pub enum RemoveError {
     #[error("task {id} is {state} and cannot be removed")]
     NotPending { id: String, state: String },
 
+    #[error("task {id} is depended on by {dependent_id}")]
+    HasDependents { id: String, dependent_id: String },
+
     #[error("config file not found: {path}")]
     ConfigNotFound { path: PathBuf },
 
@@ -55,6 +58,17 @@ fn remove_task_flow(
         return Err(RemoveError::NotPending {
             id: id.to_owned(),
             state: current_state,
+        });
+    }
+
+    if let Some(dependent) = store
+        .all_tasks()
+        .iter()
+        .find(|t| t.id != id && t.dependencies.iter().any(|dep| dep == id))
+    {
+        return Err(RemoveError::HasDependents {
+            id: id.to_owned(),
+            dependent_id: dependent.id.clone(),
         });
     }
 
@@ -104,6 +118,10 @@ fn map_store_error(error: StoreError, store: &TaskStore, id: &str) -> RemoveErro
                 state: task.state.clone(),
             },
             None => RemoveError::TaskNotFound { id: id.to_owned() },
+        },
+        StoreError::DependedOnBy { dependent_id, .. } => RemoveError::HasDependents {
+            id: id.to_owned(),
+            dependent_id,
         },
         other => RemoveError::StoreError(other),
     }
@@ -294,5 +312,55 @@ mod tests {
         let error = pending_phase(&config, path).unwrap_err();
 
         assert!(matches!(error, RemoveError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn removing_task_with_dependents_returns_error() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Dep", "", None, vec![], None).unwrap();
+        store
+            .add_task("Dependent", "", None, vec!["task-001".to_owned()], None)
+            .unwrap();
+
+        let error = run_remove(&project, "task-001").unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "task task-001 is depended on by task-002"
+        );
+        match error {
+            RemoveError::HasDependents { id, dependent_id } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(dependent_id, "task-002");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn removing_blocked_task_returns_not_pending() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let error = run_remove(&project, "task-001").unwrap_err();
+
+        assert!(matches!(error, RemoveError::NotPending { .. }));
+    }
+
+    #[test]
+    fn removing_done_task_returns_not_pending() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let error = run_remove(&project, "task-001").unwrap_err();
+
+        assert!(matches!(error, RemoveError::NotPending { .. }));
     }
 }

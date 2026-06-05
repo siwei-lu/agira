@@ -751,6 +751,7 @@ fn exit_code_for_remove(error: &commands::RemoveError) -> ExitCode {
     match error {
         TaskNotFound { .. }
         | NotPending { .. }
+        | HasDependents { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
