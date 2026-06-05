@@ -450,6 +450,14 @@ mod tests {
 
         result.unwrap();
         assert!(output.contains("agira task todo --artifact"));
+        assert!(output.contains("This task is currently in the pending phase."));
+        assert!(
+            output
+                .contains("You are expected to accept the task and advance it, not just read it.")
+        );
+        assert!(output.contains(
+            "You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase."
+        ));
     }
 
     #[test]

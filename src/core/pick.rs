@@ -3,7 +3,7 @@ use std::cmp::{Ordering, Reverse};
 use chrono::{DateTime, FixedOffset};
 
 use crate::core::{
-    config::Config,
+    config::{Config, INITIAL_PHASE_NAME},
     tasks::{Task, TaskPhase},
 };
 
@@ -134,6 +134,10 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
                 subagent.push_str(&format!("\n- `{command}`"));
             }
         }
+    }
+
+    if task.state == INITIAL_PHASE_NAME {
+        subagent.push_str("\n\n## Pending Phase\nThis task is currently in the pending phase. You are expected to accept the task and advance it, not just read it. You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase.");
     }
 
     subagent.push_str(&format!(
@@ -469,6 +473,47 @@ mod tests {
     }
 
     #[test]
+    fn pending_task_prompt_tells_agent_to_accept_and_advance() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Accept work", "", None, vec![]).unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("## Pending Phase"));
+        assert!(prompt.contains("This task is currently in the pending phase."));
+        assert!(
+            prompt
+                .contains("You are expected to accept the task and advance it, not just read it.")
+        );
+        assert!(prompt.contains(
+            "You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase."
+        ));
+    }
+
+    #[test]
+    fn non_pending_task_prompt_omits_pending_phase_instruction() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Continue work", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Pending Phase"));
+        assert!(!prompt.contains("This task is currently in the pending phase."));
+        assert!(
+            !prompt
+                .contains("You are expected to accept the task and advance it, not just read it.")
+        );
+        assert!(!prompt.contains("agira task todo --artifact \"<evidence>\""));
+    }
+
+    #[test]
     fn task_prompt_contains_checkpoint_block_instruction() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
@@ -502,7 +547,6 @@ mod tests {
         assert!(prompt.contains("3. Spawn a subagent using model `sonnet`"));
         assert!(prompt.contains("The configured model is `sonnet`"));
         assert!(!prompt.contains("Once the subagent finishes"));
-        assert!(!prompt.contains("call `agira task todo --artifact"));
         assert!(!prompt.contains("1. Spawn a subagent"));
         assert!(!prompt.contains("2. Pass the content"));
         assert!(!prompt.contains("3. Once the subagent finishes"));
