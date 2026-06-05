@@ -45,6 +45,9 @@ pub enum HookError {
         source: serde_json::Error,
     },
 
+    #[error("invalid config {path}: {reason}")]
+    InvalidConfig { path: PathBuf, reason: String },
+
     #[error(transparent)]
     Hooks(#[from] HookConfigError),
 
@@ -198,6 +201,7 @@ fn map_config_error(error: ConfigError) -> HookError {
         ConfigError::NotFound { path } => HookError::ConfigNotFound { path },
         ConfigError::Read { path, source } => HookError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => HookError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => HookError::InvalidConfig { path, reason },
     }
 }
 

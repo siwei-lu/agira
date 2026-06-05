@@ -69,6 +69,7 @@ fn map_config_error(error: ConfigError) -> AddError {
         ConfigError::NotFound { path } => AddError::ConfigNotFound { path },
         ConfigError::Read { path, source } => AddError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => AddError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => AddError::InvalidConfig { path, reason },
     }
 }
 

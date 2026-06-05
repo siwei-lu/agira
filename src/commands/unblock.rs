@@ -81,6 +81,7 @@ fn map_config_error(error: ConfigError) -> UnblockError {
         ConfigError::NotFound { path } => UnblockError::ConfigNotFound { path },
         ConfigError::Read { path, source } => UnblockError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => UnblockError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => UnblockError::InvalidConfig { path, reason },
     }
 }
 

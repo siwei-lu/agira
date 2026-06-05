@@ -9,6 +9,8 @@ use thiserror::Error;
 
 use crate::core::global_config::GlobalConfig;
 
+pub const TERMINAL_PHASE_NAME: &str = "done";
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhaseConfig {
     pub name: String,
@@ -60,6 +62,9 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error("invalid config {path}: {reason}")]
+    Invalid { path: PathBuf, reason: String },
 }
 
 #[derive(Deserialize)]
@@ -117,6 +122,10 @@ pub fn load_project_config(
             project_config.default_model.as_deref(),
         ),
     };
+    validate_terminal_phase(&phases).map_err(|reason| ConfigError::Invalid {
+        path: path.to_path_buf(),
+        reason,
+    })?;
 
     Ok(Config {
         stack: project_config.stack,
@@ -147,6 +156,21 @@ fn migrate_state_machine(
             PhaseConfig { name, model }
         })
         .collect()
+}
+
+pub fn validate_terminal_phase(phases: &[PhaseConfig]) -> Result<(), String> {
+    let Some(terminal_phase) = phases.last() else {
+        return Ok(());
+    };
+
+    if terminal_phase.name == TERMINAL_PHASE_NAME {
+        Ok(())
+    } else {
+        Err(format!(
+            "last phase must be named '{TERMINAL_PHASE_NAME}' (found '{}')",
+            terminal_phase.name
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +216,21 @@ mod tests {
         .unwrap();
     }
 
+    fn write_config_with_terminal_phase(path: &Path, terminal_phase: &str) {
+        fs::write(
+            path,
+            format!(
+                r#"{{
+  "stack": "rust",
+  "phases": [{{"name":"enriching","model":"opus"}},{{"name":"{terminal_phase}","model":"haiku"}}],
+  "verification": {{ "commands": [] }},
+  "acceptance_testing": "cli"
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn new_format_loads_phases_directly() {
         let temp_dir = TempDir::new().unwrap();
@@ -208,6 +247,25 @@ mod tests {
     }
 
     #[test]
+    fn new_format_rejects_non_done_terminal_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        write_config_with_terminal_phase(&path, "verifying");
+
+        let error = load_project_config(&path, &global_config(3)).unwrap_err();
+
+        match error {
+            ConfigError::Invalid { reason, .. } => {
+                assert_eq!(
+                    reason,
+                    "last phase must be named 'done' (found 'verifying')"
+                );
+            }
+            other => panic!("expected invalid config, got: {other}"),
+        }
+    }
+
+    #[test]
     fn old_format_migrated_using_global_default() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
@@ -220,6 +278,35 @@ mod tests {
         assert_eq!(config.phases[0].model, "sonnet");
         assert_eq!(config.phases[1].name, "done");
         assert_eq!(config.phases[1].model, "sonnet");
+    }
+
+    #[test]
+    fn old_format_rejects_non_done_terminal_phase_after_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "state_machine": ["enriching", "verifying"],
+  "models": {},
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
+
+        let error = load_project_config(&path, &global_config(3)).unwrap_err();
+
+        match error {
+            ConfigError::Invalid { reason, .. } => {
+                assert_eq!(
+                    reason,
+                    "last phase must be named 'done' (found 'verifying')"
+                );
+            }
+            other => panic!("expected invalid config, got: {other}"),
+        }
     }
 
     #[test]

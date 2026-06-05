@@ -39,6 +39,9 @@ pub enum UpdateError {
         source: serde_json::Error,
     },
 
+    #[error("invalid config {path}: {reason}")]
+    InvalidConfig { path: PathBuf, reason: String },
+
     #[error(transparent)]
     StoreError(#[from] StoreError),
 }
@@ -95,6 +98,7 @@ fn map_config_error(error: ConfigError) -> UpdateError {
         ConfigError::NotFound { path } => UpdateError::ConfigNotFound { path },
         ConfigError::Read { path, source } => UpdateError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => UpdateError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => UpdateError::InvalidConfig { path, reason },
     }
 }
 

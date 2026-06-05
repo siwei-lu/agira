@@ -104,6 +104,7 @@ fn map_config_error(error: ConfigError) -> BlockError {
         ConfigError::NotFound { path } => BlockError::ConfigNotFound { path },
         ConfigError::Read { path, source } => BlockError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => BlockError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => BlockError::InvalidConfig { path, reason },
     }
 }
 

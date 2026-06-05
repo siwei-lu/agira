@@ -7,7 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::core::{
-    config::{Config, PhaseConfig, VerificationConfig},
+    config::{Config, PhaseConfig, VerificationConfig, validate_terminal_phase},
     project::Project,
 };
 
@@ -25,6 +25,9 @@ pub enum InitError {
         "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:sonnet)"
     )]
     InvalidPhases,
+
+    #[error("invalid phases: {reason}")]
+    InvalidTerminalPhase { reason: String },
 
     #[error("invalid acceptance-testing: use cli, api, ui, hybrid, or none")]
     InvalidAcceptanceTesting,
@@ -601,6 +604,8 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
     if phases.is_empty() {
         return Err(InitError::InvalidPhases);
     }
+    validate_terminal_phase(&phases)
+        .map_err(|reason| InitError::InvalidTerminalPhase { reason })?;
     Ok(phases)
 }
 
@@ -746,6 +751,16 @@ mod tests {
         let single = super::parse_phases_flag("done:haiku").unwrap();
         assert_eq!(single[0].name, "done");
         assert_eq!(single[0].model, "haiku");
+
+        match super::parse_phases_flag("enriching:opus,in_progress:sonnet").unwrap_err() {
+            InitError::InvalidTerminalPhase { reason } => {
+                assert_eq!(
+                    reason,
+                    "last phase must be named 'done' (found 'in_progress')"
+                );
+            }
+            other => panic!("expected InvalidTerminalPhase, got: {other}"),
+        }
 
         assert!(matches!(
             super::parse_phases_flag("in progress:sonnet"),

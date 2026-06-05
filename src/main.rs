@@ -480,6 +480,7 @@ fn exit_code_for_init(error: &commands::InitError) -> ExitCode {
     match error {
         commands::InitError::MissingFlags { .. }
         | commands::InitError::InvalidPhases
+        | commands::InitError::InvalidTerminalPhase { .. }
         | commands::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
@@ -592,7 +593,8 @@ fn exit_code_for_update(error: &commands::UpdateError) -> ExitCode {
         | UnknownDependency { .. }
         | CannotUpdate { .. }
         | ConfigNotFound { .. }
-        | ConfigLoad { .. } => ExitCode::from(1),
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }
@@ -638,7 +640,7 @@ fn exit_code_for_phase_get(error: &commands::PhaseGetError) -> ExitCode {
     use commands::PhaseGetError::*;
 
     match error {
-        NotFound { .. } | Load { .. } => ExitCode::from(1),
+        NotFound { .. } | Load { .. } | InvalidConfig { .. } => ExitCode::from(1),
         Read { .. } => ExitCode::from(2),
     }
 }
@@ -655,7 +657,8 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | DuplicatePhase { .. }
         | PhaseBusy { .. }
         | ConfigNotFound { .. }
-        | ConfigLoad { .. } => ExitCode::from(1),
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } | ConfigWrite { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }
@@ -675,7 +678,8 @@ fn exit_code_for_hook(error: &commands::HookError) -> ExitCode {
         | EmptyCommand
         | HookNotFound { .. }
         | ConfigNotFound { .. }
-        | ConfigLoad { .. } => ExitCode::from(1),
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
         ConfigRead { .. } | Delete { .. } => ExitCode::from(2),
         Hooks(hook_error) => match hook_error {
             crate::core::HookConfigError::Parse { .. } => ExitCode::from(1),

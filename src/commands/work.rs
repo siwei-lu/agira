@@ -195,6 +195,7 @@ fn map_config_error(error: ConfigError) -> WorkError {
         },
         ConfigError::Read { path, source } => WorkError::Io { path, source },
         ConfigError::Parse { path, source } => WorkError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => WorkError::InvalidConfig { path, reason },
     }
 }
 

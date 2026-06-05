@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::core::{
-    config::{ConfigError, PhaseConfig, load_project_config},
+    config::{ConfigError, PhaseConfig, load_project_config, validate_terminal_phase},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -29,6 +29,9 @@ pub enum PhaseGetError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error("invalid config {path}: {reason}")]
+    InvalidConfig { path: PathBuf, reason: String },
 }
 
 const VALID_MODELS: &[&str] = &["opus", "sonnet", "haiku"];
@@ -74,6 +77,9 @@ pub enum PhaseUpdateError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error("invalid config {path}: {reason}")]
+    InvalidConfig { path: PathBuf, reason: String },
 
     #[error("failed to write {path}")]
     ConfigWrite {
@@ -210,6 +216,7 @@ pub fn run_phase_update(
         }
     }
 
+    validate_updated_phases(&config_path, &new_phases)?;
     patch_phases(&config_path, &new_phases)?;
 
     let display: Vec<String> = new_phases
@@ -241,6 +248,23 @@ fn validate_model(model: &str) -> Result<(), PhaseUpdateError> {
             model: model.to_owned(),
         })
     }
+}
+
+fn validate_updated_phases(
+    config_path: &Path,
+    phases: &[PhaseConfig],
+) -> Result<(), PhaseUpdateError> {
+    if phases.is_empty() {
+        return Err(PhaseUpdateError::InvalidConfig {
+            path: config_path.to_path_buf(),
+            reason: "phases must not be empty".to_owned(),
+        });
+    }
+
+    validate_terminal_phase(phases).map_err(|reason| PhaseUpdateError::InvalidConfig {
+        path: config_path.to_path_buf(),
+        reason,
+    })
 }
 
 fn patch_phases(config_path: &Path, new_phases: &[PhaseConfig]) -> Result<(), PhaseUpdateError> {
@@ -287,6 +311,7 @@ fn map_get_config_error(error: ConfigError) -> PhaseGetError {
         ConfigError::NotFound { path } => PhaseGetError::NotFound { path },
         ConfigError::Read { path, source } => PhaseGetError::Read { path, source },
         ConfigError::Parse { path, source } => PhaseGetError::Load { path, source },
+        ConfigError::Invalid { path, reason } => PhaseGetError::InvalidConfig { path, reason },
     }
 }
 
@@ -295,6 +320,7 @@ fn map_update_config_error(error: ConfigError) -> PhaseUpdateError {
         ConfigError::NotFound { path } => PhaseUpdateError::ConfigNotFound { path },
         ConfigError::Read { path, source } => PhaseUpdateError::ConfigRead { path, source },
         ConfigError::Parse { path, source } => PhaseUpdateError::ConfigLoad { path, source },
+        ConfigError::Invalid { path, reason } => PhaseUpdateError::InvalidConfig { path, reason },
     }
 }
 
@@ -429,12 +455,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_appends_to_end_by_default() {
+    fn insert_without_position_cannot_move_done_from_end() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_update(&project, Some("deployed:haiku"), None, None, None, None).unwrap();
+        let error =
+            run_phase_update(&project, Some("deployed:haiku"), None, None, None, None).unwrap_err();
+        match error {
+            PhaseUpdateError::InvalidConfig { reason, .. } => {
+                assert_eq!(reason, "last phase must be named 'done' (found 'deployed')");
+            }
+            other => panic!("expected InvalidConfig, got: {other}"),
+        }
+
         let phases = loaded_phases(&project);
-        assert_eq!(phases.last().unwrap().name, "deployed");
-        assert_eq!(phases.last().unwrap().model, "haiku");
+        assert_eq!(phases.last().unwrap().name, "done");
+        assert!(!phases.iter().any(|p| p.name == "deployed"));
     }
 
     #[test]
@@ -466,6 +500,24 @@ mod tests {
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].name, "enriching");
         assert_eq!(phases[1].name, "done");
+    }
+
+    #[test]
+    fn remove_done_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error = run_phase_update(&project, None, None, None, Some("done"), None).unwrap_err();
+        match error {
+            PhaseUpdateError::InvalidConfig { reason, .. } => {
+                assert_eq!(
+                    reason,
+                    "last phase must be named 'done' (found 'in_progress')"
+                );
+            }
+            other => panic!("expected InvalidConfig, got: {other}"),
+        }
+
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.last().unwrap().name, "done");
     }
 
     #[test]
@@ -551,7 +603,7 @@ mod tests {
             &project,
             Some("review:sonnet"),
             None,
-            None,
+            Some("done"),
             Some("in_progress"),
             None,
         )
@@ -559,7 +611,8 @@ mod tests {
         let phases = loaded_phases(&project);
         assert_eq!(phases.len(), 3);
         assert!(!phases.iter().any(|p| p.name == "in_progress"));
-        assert!(phases.iter().any(|p| p.name == "review"));
+        assert_eq!(phases[1].name, "review");
+        assert_eq!(phases[2].name, "done");
     }
 
     #[test]
