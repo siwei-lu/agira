@@ -458,8 +458,8 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-Reason about project complexity to propose the middle of the state machine. Each phase carries its model.
-`pending` is always inserted first and `done` is always inserted last; include them only if you want to override their default models.
+Reason about project complexity to propose only the middle of the state machine. Each phase carries its model.
+`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.
 - Design / enrichment phases → `opus` (reasoning-heavy, architecture decisions)
 - Implementation phases → `sonnet` (code generation, good cost/quality balance)
 - Verification / linting phases → `haiku` (fast, cheap, mechanical checks)
@@ -851,6 +851,8 @@ mod tests {
         assert!(prompt.contains("Write the whole file, not just an appended block."));
         assert!(!prompt.contains("agira-context"));
         assert!(prompt.contains("phase:model"));
+        assert!(prompt.contains("`pending` and `done` are built-in phases"));
+        assert!(prompt.contains("Do not define, include, or reference them in `--phases`"));
         assert!(!prompt.contains("--models"));
         assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
         assert!(prompt.contains("This step is required, not optional."));
