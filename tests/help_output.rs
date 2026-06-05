@@ -81,3 +81,58 @@ fn project_help_uses_lowercase_command_placeholder() {
         "found uppercase <COMMAND> in 'agira project --help'"
     );
 }
+
+#[test]
+fn config_help_lists_valid_keys() {
+    let out = help_stdout(&["config"]);
+    assert!(
+        out.contains("default-max-retries"),
+        "expected 'agira config --help' to list default-max-retries, got:\n{out}"
+    );
+    assert!(
+        out.contains("hook-debug"),
+        "expected 'agira config --help' to list hook-debug, got:\n{out}"
+    );
+}
+
+#[test]
+fn config_get_help_lists_displayed_keys() {
+    let out = help_stdout(&["config", "get"]);
+    assert!(
+        out.contains("default-max-retries"),
+        "expected 'agira config get --help' to list default-max-retries, got:\n{out}"
+    );
+    assert!(
+        out.contains("hook-debug"),
+        "expected 'agira config get --help' to list hook-debug, got:\n{out}"
+    );
+}
+
+#[test]
+fn config_set_help_lists_settable_key() {
+    let out = help_stdout(&["config", "set"]);
+    assert!(
+        out.contains("hook-debug"),
+        "expected 'agira config set --help' to list hook-debug, got:\n{out}"
+    );
+    assert!(
+        out.contains("<key>"),
+        "expected lowercase <key> in 'agira config set --help', got:\n{out}"
+    );
+    assert!(
+        out.contains("<value>"),
+        "expected lowercase <value> in 'agira config set --help', got:\n{out}"
+    );
+    assert!(
+        !out.contains("<KEY>"),
+        "found uppercase <KEY> in 'agira config set --help'"
+    );
+    assert!(
+        !out.contains("<VALUE>"),
+        "found uppercase <VALUE> in 'agira config set --help'"
+    );
+    assert!(
+        !out.contains("default-max-retries"),
+        "did not expect 'agira config set --help' to advertise default-max-retries as settable, got:\n{out}"
+    );
+}

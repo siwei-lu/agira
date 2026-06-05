@@ -46,7 +46,10 @@ enum Commands {
         command: PhaseCommands,
     },
     /// Manage global agira configuration
-    #[command(subcommand_value_name = "command")]
+    #[command(
+        subcommand_value_name = "command",
+        long_about = "Manage global agira configuration.\n\nValid config keys:\n\n  config get shows default-max-retries and hook-debug.\n  Only hook-debug is settable with value true or false."
+    )]
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
@@ -108,8 +111,12 @@ enum ProjectCommands {
 #[derive(Subcommand)]
 enum ConfigCommands {
     /// List global config settings
+    #[command(after_help = "Displayed config keys:\n\n  default-max-retries\n  hook-debug")]
     Get,
     /// Set a global config setting
+    #[command(
+        after_help = "valid keys: hook-debug\n\nOnly hook-debug is settable. Value must be true or false."
+    )]
     Set {
         /// Config key to update
         #[arg(value_name = "key")]
