@@ -136,6 +136,7 @@ fn dispatch_task_hooks(
             to_phase,
             artifact,
         ),
+        project.global_config.hook_debug,
     );
 }
 

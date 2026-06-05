@@ -122,6 +122,7 @@ pub fn run_todo(
                     &resulting_state,
                     artifact,
                 ),
+                project.global_config.hook_debug,
             );
 
             if resulting_state == terminal_phase {

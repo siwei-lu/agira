@@ -117,6 +117,7 @@ fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task)
             &task.state,
             "",
         ),
+        project.global_config.hook_debug,
     );
 }
 

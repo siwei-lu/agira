@@ -1,7 +1,7 @@
 mod commands;
 mod core;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{env, path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 
@@ -45,10 +45,16 @@ enum Commands {
         #[command(subcommand)]
         command: PhaseCommands,
     },
+    /// Manage global agira configuration
+    #[command(subcommand_value_name = "command")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
     /// Manage lifecycle hooks
     #[command(
         subcommand_value_name = "command",
-        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Set AGIRA_HOOK_DEBUG=1 to append JSON-Lines hook execution details to ~/.agira/<project-slug>/hook-debug.log.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
     )]
     Hook {
         #[command(subcommand)]
@@ -100,12 +106,27 @@ enum ProjectCommands {
 }
 
 #[derive(Subcommand)]
+enum ConfigCommands {
+    /// List global config settings
+    Get,
+    /// Set a global config setting
+    Set {
+        /// Config key to update
+        #[arg(value_name = "key")]
+        key: String,
+        /// Config value to write
+        #[arg(value_name = "value")]
+        value: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum HookCommands {
     /// List effective lifecycle hooks
     List,
     /// Add a lifecycle hook
     #[command(
-        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Set AGIRA_HOOK_DEBUG=1 to append JSON-Lines hook execution details to ~/.agira/<project-slug>/hook-debug.log.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Add {
         /// Write the hook to ~/.agira/config.toml instead of the current project
@@ -120,7 +141,7 @@ enum HookCommands {
     },
     /// Update lifecycle hooks for an event
     #[command(
-        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Set AGIRA_HOOK_DEBUG=1 to append JSON-Lines hook execution details to ~/.agira/<project-slug>/hook-debug.log.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Update {
         /// Update hooks in ~/.agira/config.toml instead of the current project
@@ -456,6 +477,30 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Config { command } => match agira_root_from_home() {
+            Ok(agira_root) => match command {
+                ConfigCommands::Get => match commands::run_config_get(&agira_root) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_config_command(&error)
+                    }
+                },
+                ConfigCommands::Set { key, value } => {
+                    match commands::run_config_set(&agira_root, &key, &value) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_config_command(&error)
+                        }
+                    }
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for_config_command(&error)
+            }
+        },
         Commands::Hook { command } => match command {
             HookCommands::List => match resolve_project() {
                 Ok(project) => match commands::run_hook_list(&project) {
@@ -541,6 +586,14 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn agira_root_from_home() -> Result<PathBuf, commands::ConfigCommandError> {
+    let home = env::var_os("HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .ok_or(commands::ConfigCommandError::HomeDirectoryMissing)?;
+
+    Ok(PathBuf::from(home).join(".agira"))
 }
 
 fn exit_code_for(error: &ProjectError) -> ExitCode {
@@ -694,6 +747,22 @@ fn exit_code_for_project_list(error: &commands::ProjectListError) -> ExitCode {
     match error {
         commands::ProjectListError::HomeDirectoryMissing => ExitCode::from(1),
         commands::ProjectListError::Read { .. } => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_config_command(error: &commands::ConfigCommandError) -> ExitCode {
+    match error {
+        commands::ConfigCommandError::HomeDirectoryMissing
+        | commands::ConfigCommandError::UnknownKey { .. }
+        | commands::ConfigCommandError::InvalidValue { .. }
+        | commands::ConfigCommandError::GlobalConfig(crate::core::GlobalConfigError::Parse {
+            ..
+        }) => ExitCode::from(1),
+        commands::ConfigCommandError::GlobalConfig(
+            crate::core::GlobalConfigError::Read { .. }
+            | crate::core::GlobalConfigError::Write { .. },
+        )
+        | commands::ConfigCommandError::Save(_) => ExitCode::from(2),
     }
 }
 

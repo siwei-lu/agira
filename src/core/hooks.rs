@@ -238,12 +238,12 @@ pub fn hooks_for_phase(
     hooks_for_event(global_hooks, project_hooks, to_phase)
 }
 
-fn hook_debug_enabled() -> bool {
-    matches!(std::env::var("AGIRA_HOOK_DEBUG").as_deref(), Ok("1"))
+fn hook_debug_enabled(hook_debug: bool) -> bool {
+    hook_debug || matches!(std::env::var("AGIRA_HOOK_DEBUG").as_deref(), Ok("1"))
 }
 
-pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext) {
-    let debug_log = hook_debug_enabled().then(|| ctx.state_dir.join("hook-debug.log"));
+pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext, hook_debug: bool) {
+    let debug_log = hook_debug_enabled(hook_debug).then(|| ctx.state_dir.join("hook-debug.log"));
 
     for hook in hooks {
         match debug_log.as_deref() {
@@ -658,7 +658,7 @@ run = "echo failed"
             ),
         }];
 
-        dispatch_hooks(&hooks, &ctx);
+        dispatch_hooks(&hooks, &ctx, false);
 
         let contents = read_file_eventually(&output_path);
         assert_eq!(contents, temp_dir.path().to_string_lossy());
@@ -685,7 +685,7 @@ run = "echo failed"
             run: "true".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx);
+        dispatch_hooks(&hooks, &ctx, false);
 
         assert!(!debug_path.exists());
     }
@@ -711,7 +711,7 @@ run = "echo failed"
             run: "printf 'hook stdout'; printf 'hook stderr' >&2".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx);
+        dispatch_hooks(&hooks, &ctx, false);
 
         let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
@@ -729,6 +729,34 @@ run = "echo failed"
         assert_eq!(entry["stdout"], "hook stdout");
         assert_eq!(entry["stderr"], "hook stderr");
         DateTime::parse_from_rfc3339(entry["spawned_at"].as_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn config_debug_mode_log_file_created() {
+        let _env = HookDebugEnvGuard::set(None);
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: "true".to_owned(),
+        }];
+
+        dispatch_hooks(&hooks, &ctx, true);
+
+        let entries = read_debug_values(&debug_path);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["event"], "done");
     }
 
     #[test]
@@ -752,7 +780,7 @@ run = "echo failed"
             run: "invalid\0command".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx);
+        dispatch_hooks(&hooks, &ctx, false);
 
         let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);

@@ -240,6 +240,7 @@ mod tests {
     fn global_config(default_max_retries: u32) -> GlobalConfig {
         GlobalConfig {
             default_max_retries,
+            hook_debug: false,
         }
     }
 
