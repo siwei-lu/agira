@@ -414,7 +414,7 @@ mod tests {
     fn add_tasks(store: &mut TaskStore, count: usize) {
         for index in 1..=count {
             store
-                .add_task(&format!("Task {index:03}"), "", None, vec![])
+                .add_task(&format!("Task {index:03}"), "", None, vec![], None)
                 .unwrap();
         }
     }
@@ -460,7 +460,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Implement status command", "", None, vec![])
+            .add_task("Implement status command", "", None, vec![], None)
             .unwrap();
 
         let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
@@ -482,7 +482,9 @@ mod tests {
     fn terminal_done_shows_checkmark() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Finish status", "", None, vec![]).unwrap();
+        store
+            .add_task("Finish status", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -497,7 +499,9 @@ mod tests {
     fn failed_task_shows_cross() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Fail status", "", None, vec![]).unwrap();
+        store
+            .add_task("Fail status", "", None, vec![], None)
+            .unwrap();
         store.fail_task("task-001", "blocked").unwrap();
 
         let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
@@ -510,7 +514,9 @@ mod tests {
     fn blocked_task_shows_blocked_prefix() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store
+            .add_task("Blocked task", "", None, vec![], None)
+            .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
         let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
@@ -526,7 +532,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         let title = "x".repeat(50);
-        store.add_task(&title, "", None, vec![]).unwrap();
+        store.add_task(&title, "", None, vec![], None).unwrap();
 
         let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
 
@@ -542,8 +548,12 @@ mod tests {
     fn sorted_by_id_descending() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Second in file", "", None, vec![]).unwrap();
-        store.add_task("First in file", "", None, vec![]).unwrap();
+        store
+            .add_task("Second in file", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("First in file", "", None, vec![], None)
+            .unwrap();
 
         let mut tasks_file: TasksFile = serde_json::from_str(
             &fs::read_to_string(project.state_dir.join("tasks.json")).unwrap(),
@@ -727,8 +737,12 @@ mod tests {
     fn json_with_filter_outputs_single_task_object() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First task", "", None, vec![]).unwrap();
-        store.add_task("Second task", "", None, vec![]).unwrap();
+        store
+            .add_task("First task", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Second task", "", None, vec![], None)
+            .unwrap();
 
         let (result, output) =
             capture_output(|| run_status(&project, true, Some("task-001"), 20, 0));
@@ -746,7 +760,7 @@ mod tests {
     fn json_with_filter_task_not_found() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Some task", "", None, vec![]).unwrap();
+        store.add_task("Some task", "", None, vec![], None).unwrap();
 
         let error = run_status(&project, true, Some("task-999"), 20, 0).unwrap_err();
 
@@ -770,8 +784,12 @@ mod tests {
     fn filter_shows_only_matching_task() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First task", "", None, vec![]).unwrap();
-        store.add_task("Second task", "", None, vec![]).unwrap();
+        store
+            .add_task("First task", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Second task", "", None, vec![], None)
+            .unwrap();
 
         let (result, output) =
             capture_output(|| run_status(&project, false, Some("task-002"), 20, 0));
@@ -787,7 +805,7 @@ mod tests {
     fn filter_unknown_id_returns_task_not_found() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Some task", "", None, vec![]).unwrap();
+        store.add_task("Some task", "", None, vec![], None).unwrap();
 
         let error = run_status(&project, false, Some("task-999"), 20, 0).unwrap_err();
 

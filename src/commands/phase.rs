@@ -637,7 +637,9 @@ mod tests {
     fn blocked_removal_lists_task_ids() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store
+            .add_task("Blocked task", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         let error =
             run_phase_update(&project, None, None, None, Some("enriching"), None).unwrap_err();
@@ -808,8 +810,8 @@ mod tests {
     fn multiple_tasks_blocked_removal_lists_all() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task A", "", None, vec![]).unwrap();
-        store.add_task("Task B", "", None, vec![]).unwrap();
+        store.add_task("Task A", "", None, vec![], None).unwrap();
+        store.add_task("Task B", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-002").unwrap();
         let error =

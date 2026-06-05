@@ -204,6 +204,9 @@ enum TaskCommands {
         /// Comma-separated task IDs this task depends on
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Vec<String>,
+        /// Place the task directly into this phase instead of the default starting phase
+        #[arg(long, value_name = "phase")]
+        phase: Option<String>,
     },
     /// Update editable fields of an existing task
     Update {
@@ -309,6 +312,7 @@ fn main() -> ExitCode {
                 description,
                 prd,
                 depends_on,
+                phase,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
                     &project,
@@ -316,6 +320,7 @@ fn main() -> ExitCode {
                     description.as_deref(),
                     prd.as_deref(),
                     &depends_on,
+                    phase.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -670,6 +675,7 @@ fn exit_code_for_project_list(error: &commands::ProjectListError) -> ExitCode {
 fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
     match error {
         commands::AddError::UnknownDependency { .. }
+        | commands::AddError::UnknownPhase { .. }
         | commands::AddError::ConfigNotFound { .. }
         | commands::AddError::ConfigLoad { .. }
         | commands::AddError::InvalidConfig { .. } => ExitCode::from(1),

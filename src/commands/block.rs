@@ -249,7 +249,7 @@ mod tests {
     fn successful_block_persists_state_and_prints_output() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
 
         let (result, output) =
             capture_output(|| run_block(&project, "task-001", Some("waiting on api")));
@@ -268,7 +268,7 @@ mod tests {
     fn blocking_done_task_returns_already_terminal() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -289,7 +289,7 @@ mod tests {
     fn blocking_already_blocked_task_returns_already_terminal() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.block_task("task-001", "first").unwrap();
 
         let error = run_block(&project, "task-001", Some("second")).unwrap_err();
@@ -301,7 +301,7 @@ mod tests {
     fn blocking_failed_task_returns_already_terminal() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "broken").unwrap();
 
         let error = run_block(&project, "task-001", Some("reason")).unwrap_err();

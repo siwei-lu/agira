@@ -80,6 +80,9 @@ pub enum StoreError {
     #[error("task {id} is {state} and cannot be updated")]
     CannotUpdateTerminal { id: String, state: String },
 
+    #[error("unknown phase: {phase}")]
+    UnknownPhase { phase: String },
+
     #[error("failed to write or read {path}")]
     Io {
         path: PathBuf,
@@ -161,6 +164,7 @@ impl TaskStore {
         description: &str,
         prd_module_id: Option<String>,
         dependencies: Vec<String>,
+        phase_override: Option<&str>,
     ) -> Result<Task, StoreError> {
         let id = format!("task-{:03}", self.tasks_file.tasks.len() + 1);
 
@@ -173,20 +177,28 @@ impl TaskStore {
             }
         }
 
-        let first_phase =
+        let initial_phase = if let Some(phase) = phase_override {
+            if !self.state_machine.iter().any(|s| s == phase) {
+                return Err(StoreError::UnknownPhase {
+                    phase: phase.to_owned(),
+                });
+            }
+            phase.to_owned()
+        } else {
             self.state_machine
                 .first()
                 .cloned()
                 .ok_or_else(|| StoreError::InvalidTransition {
                     from: String::new(),
                     to: String::new(),
-                })?;
+                })?
+        };
         let created_at = Utc::now().to_rfc3339();
         let task = Task {
             id,
             title: title.to_owned(),
             description: description.to_owned(),
-            state: first_phase.clone(),
+            state: initial_phase.clone(),
             blocked_at_phase: None,
             blocked_reason: None,
             prd_module_id,
@@ -196,7 +208,7 @@ impl TaskStore {
             phases: BTreeMap::new(),
             history: vec![HistoryEntry {
                 from: None,
-                to: first_phase,
+                to: initial_phase,
                 timestamp: created_at.clone(),
                 reason: "task created".to_owned(),
             }],
@@ -558,7 +570,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("First task", "Description", None, vec![])
+            .add_task("First task", "Description", None, vec![], None)
             .unwrap();
 
         assert_eq!(task.id, "task-001");
@@ -576,13 +588,45 @@ mod tests {
     }
 
     #[test]
+    fn add_task_with_phase_override_places_task_in_that_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let task = store
+            .add_task("First task", "", None, vec![], Some("enriching"))
+            .unwrap();
+
+        assert_eq!(task.state, "enriching");
+        assert_eq!(task.history.len(), 1);
+        assert_eq!(task.history[0].to, "enriching");
+        assert_eq!(store.get_task("task-001").unwrap().state, "enriching");
+    }
+
+    #[test]
+    fn add_task_with_unknown_phase_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let error = store
+            .add_task("First task", "", None, vec![], Some("reviewing"))
+            .unwrap_err();
+
+        match error {
+            StoreError::UnknownPhase { phase } => assert_eq!(phase, "reviewing"),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(store.all_tasks().is_empty());
+        assert!(!temp_dir.path().join("tasks.json").exists());
+    }
+
+    #[test]
     fn sequential_ids() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        let first = store.add_task("First", "", None, vec![]).unwrap();
-        let second = store.add_task("Second", "", None, vec![]).unwrap();
-        let third = store.add_task("Third", "", None, vec![]).unwrap();
+        let first = store.add_task("First", "", None, vec![], None).unwrap();
+        let second = store.add_task("Second", "", None, vec![], None).unwrap();
+        let third = store.add_task("Third", "", None, vec![], None).unwrap();
 
         assert_eq!(first.id, "task-001");
         assert_eq!(second.id, "task-002");
@@ -594,7 +638,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -610,7 +654,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -623,7 +667,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.next_phase("task-001").unwrap_err();
@@ -635,7 +679,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "provided reason").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -650,7 +694,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -663,7 +707,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let (retry_count, max_retries) = store.retry_task("task-001", "try again").unwrap();
@@ -684,7 +728,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Done", "", None, vec![]).unwrap();
+        store.add_task("Done", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before_done = store.get_task("task-001").unwrap().clone();
@@ -693,7 +737,7 @@ mod tests {
         assert!(matches!(error, StoreError::AlreadyTerminal));
         assert_eq!(store.get_task("task-001").unwrap(), &before_done);
 
-        store.add_task("Failed", "", None, vec![]).unwrap();
+        store.add_task("Failed", "", None, vec![], None).unwrap();
         store.fail_task("task-002", "failed").unwrap();
         let before_failed = store.get_task("task-002").unwrap().clone();
 
@@ -707,7 +751,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
@@ -731,7 +775,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -754,9 +798,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", None, vec![]).unwrap();
         store
-            .add_task("Dependent", "", None, vec!["task-001".to_owned()])
+            .add_task("Dependency", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", None, vec!["task-001".to_owned()], None)
             .unwrap();
 
         let error = store.next_phase("task-002").unwrap_err();
@@ -777,9 +823,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", None, vec![]).unwrap();
         store
-            .add_task("Dependent", "", None, vec!["task-001".to_owned()])
+            .add_task("Dependency", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", None, vec!["task-001".to_owned()], None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -794,9 +842,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", None, vec![]).unwrap();
         store
-            .add_task("Dependent", "", None, vec!["task-001".to_owned()])
+            .add_task("Dependency", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", None, vec!["task-001".to_owned()], None)
             .unwrap();
         store.fail_task("task-001", "dependency failed").unwrap();
 
@@ -809,7 +859,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.block_task("task-001", "waiting on api").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -828,7 +878,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -841,7 +891,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.block_task("task-001", "reason").unwrap_err();
@@ -853,7 +903,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.block_task("task-001", "first reason").unwrap();
 
         let error = store.block_task("task-001", "second reason").unwrap_err();
@@ -874,7 +924,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.unblock_task("task-001").unwrap();
@@ -894,7 +944,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
 
         let error = store.unblock_task("task-001").unwrap_err();
         assert!(matches!(error, StoreError::NotBlocked));
@@ -914,10 +964,56 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
 
         let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
         let value: Value = serde_json::from_str(&contents).unwrap();
         assert!(value.get("tasks").is_some());
+    }
+
+    #[test]
+    fn add_task_with_phase_override_uses_specified_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let task = store
+            .add_task("Backfilled", "", None, vec![], Some("enriching"))
+            .unwrap();
+
+        assert_eq!(task.state, "enriching");
+        assert_eq!(task.history.len(), 1);
+        assert_eq!(task.history[0].from, None);
+        assert_eq!(task.history[0].to, "enriching");
+        assert_eq!(task.history[0].reason, "task created");
+    }
+
+    #[test]
+    fn add_task_with_phase_override_to_terminal_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let task = store
+            .add_task("Already done", "", None, vec![], Some("done"))
+            .unwrap();
+
+        assert_eq!(task.state, "done");
+        assert_eq!(task.history[0].to, "done");
+    }
+
+    #[test]
+    fn add_task_with_unknown_phase_override_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let error = store
+            .add_task("Bad phase", "", None, vec![], Some("nonexistent"))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StoreError::UnknownPhase { ref phase } if phase == "nonexistent"
+        ));
+        assert_eq!(error.to_string(), "unknown phase: nonexistent");
+        assert!(!temp_dir.path().join("tasks.json").exists());
     }
 }

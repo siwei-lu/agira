@@ -249,7 +249,9 @@ mod tests {
     fn update_title_persists() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Original title", "", None, vec![]).unwrap();
+        store
+            .add_task("Original title", "", None, vec![], None)
+            .unwrap();
 
         let (result, output) = capture_output(|| {
             run_update(
@@ -275,7 +277,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Task", "original desc", None, vec![])
+            .add_task("Task", "original desc", None, vec![], None)
             .unwrap();
 
         run_update(
@@ -298,7 +300,7 @@ mod tests {
     fn update_prd_persists() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![]).unwrap();
+        store.add_task("Task", "", None, vec![], None).unwrap();
 
         run_update(
             &project,
@@ -323,10 +325,10 @@ mod tests {
     fn update_depends_on_replaces_list() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Dep A", "", None, vec![]).unwrap();
-        store.add_task("Dep B", "", None, vec![]).unwrap();
+        store.add_task("Dep A", "", None, vec![], None).unwrap();
+        store.add_task("Dep B", "", None, vec![], None).unwrap();
         store
-            .add_task("Subject", "", None, vec!["task-001".to_owned()])
+            .add_task("Subject", "", None, vec!["task-001".to_owned()], None)
             .unwrap();
 
         run_update(
@@ -352,7 +354,7 @@ mod tests {
     fn update_depends_on_unknown_dep_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![]).unwrap();
+        store.add_task("Task", "", None, vec![], None).unwrap();
 
         let error = run_update(
             &project,
@@ -376,7 +378,7 @@ mod tests {
     fn update_done_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![]).unwrap();
+        store.add_task("Task", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -408,7 +410,7 @@ mod tests {
     fn update_failed_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![]).unwrap();
+        store.add_task("Task", "", None, vec![], None).unwrap();
         store.fail_task("task-001", "oops").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -439,7 +441,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Old title", "old desc", None, vec![])
+            .add_task("Old title", "old desc", None, vec![], None)
             .unwrap();
 
         run_update(

@@ -319,9 +319,13 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Later phase", "", None, vec![]).unwrap();
+        store
+            .add_task("Later phase", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
-        store.add_task("Earlier phase", "", None, vec![]).unwrap();
+        store
+            .add_task("Earlier phase", "", None, vec![], None)
+            .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -334,8 +338,8 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("First", "", None, vec![]).unwrap();
-        store.add_task("Second", "", None, vec![]).unwrap();
+        store.add_task("First", "", None, vec![], None).unwrap();
+        store.add_task("Second", "", None, vec![], None).unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -348,9 +352,11 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Blocking task", "", None, vec![]).unwrap();
         store
-            .add_task("Blocked task", "", None, vec!["task-001".to_owned()])
+            .add_task("Blocking task", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Blocked task", "", None, vec!["task-001".to_owned()], None)
             .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
@@ -372,10 +378,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Blocked current task", "", None, vec![])
+            .add_task("Blocked current task", "", None, vec![], None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", None, vec![])
+            .add_task("Next actionable task", "", None, vec![], None)
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
@@ -398,10 +404,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Failed current task", "", None, vec![])
+            .add_task("Failed current task", "", None, vec![], None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", None, vec![])
+            .add_task("Next actionable task", "", None, vec![], None)
             .unwrap();
         store.fail_task("task-001", "broken").unwrap();
 
@@ -416,8 +422,12 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Blocked task", "", None, vec![]).unwrap();
-        store.add_task("Failed task", "", None, vec![]).unwrap();
+        store
+            .add_task("Blocked task", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Failed task", "", None, vec![], None)
+            .unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.fail_task("task-002", "broken").unwrap();
 
@@ -435,7 +445,9 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching phase which has a model (opus) — orchestrator wrapper is present.
-        store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -461,7 +473,9 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Task in pending phase — no model, no orchestrator wrapper.
-        store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -480,7 +494,9 @@ mod tests {
         config.phases.retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
 
-        store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -497,7 +513,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement work", "", None, vec![]).unwrap();
+        store
+            .add_task("Implement work", "", None, vec![], None)
+            .unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -510,7 +528,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Accept work", "", None, vec![]).unwrap();
+        store
+            .add_task("Accept work", "", None, vec![], None)
+            .unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -531,7 +551,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Continue work", "", None, vec![]).unwrap();
+        store
+            .add_task("Continue work", "", None, vec![], None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -552,7 +574,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Clarify requirements", "", None, vec![])
+            .add_task("Clarify requirements", "", None, vec![], None)
             .unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -571,7 +593,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", None, vec![]).unwrap();
+        store.add_task("Next task", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -593,7 +615,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", None, vec![]).unwrap();
+        store.add_task("Next task", "", None, vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -617,7 +639,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
 
         let output = format_pick_output(&config, store.all_tasks(), None, None);
 
@@ -630,9 +654,11 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("First done task", "", None, vec![]).unwrap();
         store
-            .add_task("Second done task", "", None, vec![])
+            .add_task("First done task", "", None, vec![], None)
+            .unwrap();
+        store
+            .add_task("Second done task", "", None, vec![], None)
             .unwrap();
         for id in ["task-001", "task-002"] {
             store.next_phase(id).unwrap();

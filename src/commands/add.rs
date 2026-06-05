@@ -14,6 +14,9 @@ pub enum AddError {
     #[error("unknown dependency: {id}")]
     UnknownDependency { id: String },
 
+    #[error("unknown phase: {phase}")]
+    UnknownPhase { phase: String },
+
     #[error("config file not found: {path}")]
     ConfigNotFound { path: PathBuf },
 
@@ -44,6 +47,7 @@ pub fn run_add(
     description: Option<&str>,
     prd_module_id: Option<&str>,
     depends_on: &[String],
+    phase: Option<&str>,
 ) -> Result<(), AddError> {
     let config_path = project.state_dir.join("config.json");
     let config =
@@ -63,6 +67,7 @@ pub fn run_add(
         description.unwrap_or(""),
         prd_module_id.map(ToOwned::to_owned),
         depends_on.to_vec(),
+        phase,
     )
 }
 
@@ -82,8 +87,9 @@ fn add_task_flow(
     description: &str,
     prd_module_id: Option<String>,
     depends_on: Vec<String>,
+    phase: Option<&str>,
 ) -> Result<(), AddError> {
-    let task = match store.add_task(title, description, prd_module_id, depends_on) {
+    let task = match store.add_task(title, description, prd_module_id, depends_on, phase) {
         Ok(task) => task,
         Err(error) => return Err(map_store_error(error)),
     };
@@ -111,6 +117,7 @@ fn map_store_error(error: StoreError) -> AddError {
         StoreError::DependencyBlocked { blocking_id, .. } => {
             AddError::UnknownDependency { id: blocking_id }
         }
+        StoreError::UnknownPhase { phase } => AddError::UnknownPhase { phase },
         other => AddError::StoreError(other),
     }
 }
@@ -232,7 +239,7 @@ mod tests {
         let (_temp_dir, project, config) = test_project_with_config();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Implement login endpoint", None, None, &[]));
+            capture_output(|| run_add(&project, "Implement login endpoint", None, None, &[], None));
         result.unwrap();
 
         assert_eq!(output, "added task-001: Implement login endpoint\n");
@@ -263,7 +270,7 @@ mod tests {
     #[test]
     fn add_task_with_dependencies() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Prepare", None, None, &[]))
+        capture_output(|| run_add(&project, "Prepare", None, None, &[], None))
             .0
             .unwrap();
 
@@ -275,6 +282,7 @@ mod tests {
                 Some("ship release"),
                 Some("FM-007"),
                 &depends_on,
+                None,
             )
         });
         result.unwrap();
@@ -297,7 +305,7 @@ mod tests {
         let depends_on = vec!["task-999".to_owned()];
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Blocked", None, None, &depends_on));
+            capture_output(|| run_add(&project, "Blocked", None, None, &depends_on, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -310,11 +318,28 @@ mod tests {
     }
 
     #[test]
+    fn add_task_with_unknown_phase_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let (result, output) =
+            capture_output(|| run_add(&project, "Review me", None, None, &[], Some("reviewing")));
+        let error = result.unwrap_err();
+
+        match &error {
+            AddError::UnknownPhase { phase } => assert_eq!(phase, "reviewing"),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(output, "");
+        assert_eq!(error.to_string(), "unknown phase: reviewing");
+        assert!(!project.state_dir.join("tasks.json").exists());
+    }
+
+    #[test]
     fn add_multiple_tasks_sequential_ids() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         for title in ["First", "Second", "Third"] {
-            capture_output(|| run_add(&project, title, None, None, &[]))
+            capture_output(|| run_add(&project, title, None, None, &[], None))
                 .0
                 .unwrap();
         }
@@ -335,7 +360,7 @@ mod tests {
         project.global_config.default_max_retries = 5;
         write_config_without_max_retries(&project);
 
-        capture_output(|| run_add(&project, "Uses global retries", None, None, &[]))
+        capture_output(|| run_add(&project, "Uses global retries", None, None, &[], None))
             .0
             .unwrap();
 
@@ -348,17 +373,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_add(&project, "Missing config", None, None, &[]).unwrap_err();
+        let error = run_add(&project, "Missing config", None, None, &[], None).unwrap_err();
         assert!(matches!(error, AddError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_add(&project, "Malformed config", None, None, &[]).unwrap_err();
+        let error = run_add(&project, "Malformed config", None, None, &[], None).unwrap_err();
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        run_add(&project, "Mandatory-only config", None, None, &[]).unwrap();
+        run_add(&project, "Mandatory-only config", None, None, &[], None).unwrap();
         let tasks_file = read_tasks(&project);
         assert_eq!(tasks_file.tasks[0].state, "pending");
     }
@@ -377,6 +402,7 @@ mod tests {
             "",
             None,
             vec!["task-999".to_owned()],
+            None,
         )
         .unwrap_err();
 
@@ -385,5 +411,53 @@ mod tests {
             AddError::UnknownDependency { id } if id == "task-999"
         ));
         assert!(!temp_dir.path().join("tasks.json").exists());
+    }
+
+    #[test]
+    fn add_task_with_phase_override_places_task_in_specified_phase() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Backfilled task",
+                None,
+                None,
+                &[],
+                Some("enriching"),
+            )
+        });
+        result.unwrap();
+
+        assert_eq!(output, "added task-001: Backfilled task\n");
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        assert_eq!(task.state, "enriching");
+        assert_eq!(task.history[0].to, "enriching");
+    }
+
+    #[test]
+    fn add_task_with_unknown_phase_override_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Bad phase task",
+                None,
+                None,
+                &[],
+                Some("nonexistent"),
+            )
+        });
+        let error = result.unwrap_err();
+
+        match &error {
+            AddError::UnknownPhase { phase } => assert_eq!(phase, "nonexistent"),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(output, "");
+        assert_eq!(error.to_string(), "unknown phase: nonexistent");
     }
 }
