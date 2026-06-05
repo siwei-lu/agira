@@ -112,6 +112,20 @@ enum HookCommands {
         #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Update lifecycle hooks for an event
+    #[command(
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+    )]
+    Update {
+        /// Update hooks in ~/.agira/config.toml instead of the current project
+        #[arg(long = "global")]
+        global: bool,
+        /// Hook event name: *, task_added, failed, or a configured phase
+        event: String,
+        /// Replacement shell command to run for the hook
+        #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Remove all lifecycle hooks for an event
     Remove {
         /// Remove hooks from ~/.agira/config.toml instead of the current project
@@ -435,6 +449,25 @@ fn main() -> ExitCode {
                         exit_code_for_hook(&error)
                     }
                 },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            HookCommands::Update {
+                global,
+                event,
+                command,
+            } => match resolve_project() {
+                Ok(project) => {
+                    match commands::run_hook_update(&project, &event, &command, global) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_hook(&error)
+                        }
+                    }
+                }
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for(&error)

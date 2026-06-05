@@ -100,7 +100,7 @@ pub fn run_hook_add(
     global: bool,
 ) -> Result<(), HookError> {
     validate_event(project, event)?;
-    let command = command_parts.join(" ");
+    let command = command_from_parts(command_parts);
     if command.trim().is_empty() {
         return Err(HookError::EmptyCommand);
     }
@@ -154,6 +154,44 @@ pub fn run_hook_remove(project: &Project, event: &str, global: bool) -> Result<(
     Ok(())
 }
 
+pub fn run_hook_update(
+    project: &Project,
+    event: &str,
+    command_parts: &[String],
+    global: bool,
+) -> Result<(), HookError> {
+    validate_event(project, event)?;
+    let command = command_from_parts(command_parts);
+    if command.trim().is_empty() {
+        return Err(HookError::EmptyCommand);
+    }
+
+    let scope = HookScope::from_global(global);
+    let mut hooks = scoped_hooks(project, scope).clone();
+    let mut updated = 0;
+    for hook in hooks.hooks.iter_mut().filter(|hook| hook.on == event) {
+        hook.run = command.clone();
+        updated += 1;
+    }
+
+    if updated == 0 {
+        return Err(HookError::HookNotFound {
+            scope,
+            event: event.to_owned(),
+        });
+    }
+
+    save_scoped_hooks(&scoped_hooks_path(project, scope), &hooks, scope)?;
+
+    if scope == HookScope::Project {
+        println!("updated {updated} hook(s) for {event}: {command}");
+    } else {
+        println!("updated {updated} {scope} hook(s) for {event}: {command}");
+    }
+
+    Ok(())
+}
+
 fn format_hook_list(project: &Project) -> String {
     if project.global_hooks.hooks.is_empty() && project.project_hooks.hooks.is_empty() {
         return "no hooks configured\n".to_owned();
@@ -169,6 +207,38 @@ fn append_hook_rows(output: &mut String, source: &str, config: &HookConfig) {
     for hook in &config.hooks {
         output.push_str(&format!("{source}  {}  {}\n", hook.on, hook.run));
     }
+}
+
+fn command_from_parts(command_parts: &[String]) -> String {
+    if command_parts.len() == 1 {
+        return command_parts[0].clone();
+    }
+
+    command_parts
+        .iter()
+        .map(|part| shell_word(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_word(part: &str) -> String {
+    if !part.is_empty() && !part.chars().any(char::is_whitespace) {
+        return part.to_owned();
+    }
+
+    let mut quoted = String::with_capacity(part.len() + 2);
+    quoted.push('"');
+    for character in part.chars() {
+        match character {
+            '"' | '\\' | '`' => {
+                quoted.push('\\');
+                quoted.push(character);
+            }
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn validate_event(project: &Project, event: &str) -> Result<(), HookError> {
@@ -359,6 +429,21 @@ mod tests {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
         assert_eq!(format_hook_list(&project), "no hooks configured\n");
+    }
+
+    #[test]
+    fn command_from_parts_preserves_single_string_and_quotes_spaced_arguments() {
+        assert_eq!(command_from_parts(&["echo all".to_owned()]), "echo all");
+        assert_eq!(
+            command_from_parts(&[
+                "hermes".to_owned(),
+                "chat".to_owned(),
+                "--quiet".to_owned(),
+                "-q".to_owned(),
+                "/todo $AGIRA_PROJECT_PATH".to_owned(),
+            ]),
+            "hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\""
+        );
     }
 
     #[test]

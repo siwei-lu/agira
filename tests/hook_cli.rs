@@ -185,11 +185,7 @@ fn hook_update_global_replaces_matching_event_command() {
         "update",
         "--global",
         "task_added",
-        "hermes",
-        "chat",
-        "--quiet",
-        "-q",
-        "/todo $AGIRA_PROJECT_PATH",
+        "hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\"",
     ]));
 
     let global_config = fs::read_to_string(global_config_path(home.path())).unwrap();
@@ -200,7 +196,9 @@ fn hook_update_global_replaces_matching_event_command() {
 
     let output = run_ok(agira(home.path(), &repo).args(["hook", "list"]));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("global  task_added  hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\""));
+    assert!(
+        stdout.contains("global  task_added  hermes chat --quiet -q \"/todo $AGIRA_PROJECT_PATH\"")
+    );
 }
 
 #[test]
