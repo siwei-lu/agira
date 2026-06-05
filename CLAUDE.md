@@ -79,8 +79,10 @@ Functional modules (FM-001, FM-002, ...) define acceptance criteria for each fea
 
 ### agira state machine
 
-Phases: `enriching → in_progress → verifying → done` (or `→ failed` from any phase)
+Phases: `pending → enriching → in_progress → verifying → done` (or `→ failed` from any phase).
+`pending` is always the first phase and `done` is always terminal; config may omit either and agira will insert them at startup.
 
+- **pending** — task created, ready for the first real workflow step
 - **enriching** — architect elaborates the spec before implementation begins
 - **in_progress** — implementer writes the code
 - **verifying** — verifier runs checks and acceptance tests

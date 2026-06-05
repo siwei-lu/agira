@@ -162,6 +162,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -256,7 +260,7 @@ mod tests {
         let store = test_store(&temp_dir, &config);
         let task = store.get_task("task-001").unwrap();
         assert_eq!(task.state, "blocked");
-        assert_eq!(task.blocked_at_phase.as_deref(), Some("enriching"));
+        assert_eq!(task.blocked_at_phase.as_deref(), Some("pending"));
         assert_eq!(task.blocked_reason.as_deref(), Some("waiting on api"));
     }
 
@@ -265,6 +269,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("First", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 

@@ -245,6 +245,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -418,7 +422,6 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store.add_task("Implement pick", "", None, vec![]).unwrap();
-        store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -444,6 +447,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &test_config());
 
         store.add_task("Implement pick", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -495,8 +499,8 @@ mod tests {
 
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
-        assert!(prompt.contains("The configured model is `opus`"));
+        assert!(prompt.contains("3. Spawn a subagent using model `sonnet`"));
+        assert!(prompt.contains("The configured model is `sonnet`"));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("call `agira task todo --artifact"));
         assert!(!prompt.contains("1. Spawn a subagent"));
@@ -522,7 +526,7 @@ mod tests {
         assert!(!prompt.contains("task-000 \"Previous Task\""));
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
+        assert!(prompt.contains("3. Spawn a subagent using model `sonnet`"));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("4. Once the subagent finishes"));
     }
@@ -551,6 +555,7 @@ mod tests {
             .add_task("Second done task", "", None, vec![])
             .unwrap();
         for id in ["task-001", "task-002"] {
+            store.next_phase(id).unwrap();
             store.next_phase(id).unwrap();
             store.next_phase(id).unwrap();
             store.next_phase(id).unwrap();

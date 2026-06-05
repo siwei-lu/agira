@@ -239,6 +239,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -374,6 +378,7 @@ mod tests {
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
         fs::write(git_dir.path().join("dirty.txt"), "dirty").unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None, None));
@@ -427,6 +432,7 @@ mod tests {
         store.add_task("Done task", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None, None));
 
@@ -455,7 +461,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None, Some("enriched")));
 
         result.unwrap();
-        assert!(output.contains("task-001 → in_progress"));
+        assert!(output.contains("task-001 → enriching"));
         assert!(!output.contains("# Commit"));
         assert!(!output.contains("# Agira Task Prompt"));
     }
@@ -476,7 +482,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None, Some("next artifact")));
 
         result.unwrap();
-        assert!(output.contains("task-002 → in_progress"));
+        assert!(output.contains("task-002 → enriching"));
 
         let store = test_store(&temp_dir, &config);
         let blocked_task = store.get_task("task-001").unwrap();
@@ -484,9 +490,9 @@ mod tests {
         assert!(blocked_task.phases.is_empty());
 
         let next_task = store.get_task("task-002").unwrap();
-        assert_eq!(next_task.state, "in_progress");
+        assert_eq!(next_task.state, "enriching");
         assert_eq!(
-            next_task.phases.get("enriching").unwrap().artifact,
+            next_task.phases.get("pending").unwrap().artifact,
             "next artifact"
         );
     }
@@ -500,7 +506,8 @@ mod tests {
         store
             .add_task("Second task", "", None, vec!["task-001".to_owned()])
             .unwrap();
-        store.next_phase("task-001").unwrap(); // enriching → in_progress
+        store.next_phase("task-001").unwrap(); // pending -> enriching
+        store.next_phase("task-001").unwrap(); // enriching -> in_progress
 
         let (result, output) = capture_output(|| run_todo(&project, None, Some("implemented")));
 
@@ -517,6 +524,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Only task", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None, Some("implemented")));
 
@@ -531,6 +539,7 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Done task", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -564,8 +573,8 @@ mod tests {
 
         let store = test_store(&temp_dir, &config);
         let task = store.get_task("task-001").unwrap();
-        assert_eq!(task.state, "in_progress");
-        let phase = task.phases.get("enriching").unwrap();
+        assert_eq!(task.state, "enriching");
+        let phase = task.phases.get("pending").unwrap();
         assert_eq!(phase.artifact, "done it");
     }
 

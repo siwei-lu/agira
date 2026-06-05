@@ -6,7 +6,10 @@ use std::{
 use thiserror::Error;
 
 use crate::core::{
-    config::{ConfigError, PhaseConfig, load_project_config, validate_terminal_phase},
+    config::{
+        ConfigError, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, load_project_config,
+        validate_terminal_phase,
+    },
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -57,6 +60,15 @@ pub enum PhaseUpdateError {
 
     #[error("phase already exists: {name}")]
     DuplicatePhase { name: String },
+
+    #[error("cannot remove mandatory phase '{name}'")]
+    MandatoryPhase { name: String },
+
+    #[error("cannot insert before mandatory initial phase '{name}'")]
+    CannotInsertBeforeInitial { name: String },
+
+    #[error("cannot insert after mandatory terminal phase '{name}'")]
+    CannotInsertAfterTerminal { name: String },
 
     #[error("cannot remove phase '{name}': tasks currently in that phase: {}", task_ids.join(", "))]
     PhaseBusy { name: String, task_ids: Vec<String> },
@@ -163,6 +175,12 @@ pub fn run_phase_update(
     }
 
     if let Some(remove) = remove {
+        if is_mandatory_phase(remove) {
+            return Err(PhaseUpdateError::MandatoryPhase {
+                name: remove.to_owned(),
+            });
+        }
+
         let store = TaskStore::new(&project.state_dir, &config)?;
         let blocking_ids: Vec<String> = store
             .all_tasks()
@@ -174,6 +192,20 @@ pub fn run_phase_update(
             return Err(PhaseUpdateError::PhaseBusy {
                 name: remove.to_owned(),
                 task_ids: blocking_ids,
+            });
+        }
+    }
+
+    if new_phase.is_some() {
+        if before == Some(INITIAL_PHASE_NAME) {
+            return Err(PhaseUpdateError::CannotInsertBeforeInitial {
+                name: INITIAL_PHASE_NAME.to_owned(),
+            });
+        }
+
+        if after == Some(TERMINAL_PHASE_NAME) || (after.is_none() && before.is_none()) {
+            return Err(PhaseUpdateError::CannotInsertAfterTerminal {
+                name: TERMINAL_PHASE_NAME.to_owned(),
             });
         }
     }
@@ -248,6 +280,10 @@ fn validate_model(model: &str) -> Result<(), PhaseUpdateError> {
             model: model.to_owned(),
         })
     }
+}
+
+fn is_mandatory_phase(name: &str) -> bool {
+    name == INITIAL_PHASE_NAME || name == TERMINAL_PHASE_NAME
 }
 
 fn validate_updated_phases(
@@ -342,6 +378,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -429,11 +469,12 @@ mod tests {
         )
         .unwrap();
         let phases = loaded_phases(&project);
-        assert_eq!(phases[0].name, "enriching");
-        assert_eq!(phases[1].name, "review");
-        assert_eq!(phases[1].model, "sonnet");
-        assert_eq!(phases[2].name, "in_progress");
-        assert_eq!(phases[3].name, "done");
+        assert_eq!(phases[0].name, "pending");
+        assert_eq!(phases[1].name, "enriching");
+        assert_eq!(phases[2].name, "review");
+        assert_eq!(phases[2].model, "sonnet");
+        assert_eq!(phases[3].name, "in_progress");
+        assert_eq!(phases[4].name, "done");
     }
 
     #[test]
@@ -449,9 +490,9 @@ mod tests {
         )
         .unwrap();
         let phases = loaded_phases(&project);
-        assert_eq!(phases[2].name, "review");
-        assert_eq!(phases[2].model, "sonnet");
-        assert_eq!(phases[3].name, "done");
+        assert_eq!(phases[3].name, "review");
+        assert_eq!(phases[3].model, "sonnet");
+        assert_eq!(phases[4].name, "done");
     }
 
     #[test]
@@ -460,15 +501,53 @@ mod tests {
         let error =
             run_phase_update(&project, Some("deployed:haiku"), None, None, None, None).unwrap_err();
         match error {
-            PhaseUpdateError::InvalidConfig { reason, .. } => {
-                assert_eq!(reason, "last phase must be named 'done' (found 'deployed')");
+            PhaseUpdateError::CannotInsertAfterTerminal { name } => {
+                assert_eq!(name, "done");
             }
-            other => panic!("expected InvalidConfig, got: {other}"),
+            other => panic!("expected CannotInsertAfterTerminal, got: {other}"),
         }
 
         let phases = loaded_phases(&project);
         assert_eq!(phases.last().unwrap().name, "done");
         assert!(!phases.iter().any(|p| p.name == "deployed"));
+    }
+
+    #[test]
+    fn insert_after_done_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error = run_phase_update(
+            &project,
+            Some("deployed:haiku"),
+            Some("done"),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PhaseUpdateError::CannotInsertAfterTerminal { name } if name == "done"
+        ));
+    }
+
+    #[test]
+    fn insert_before_pending_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error = run_phase_update(
+            &project,
+            Some("triage:haiku"),
+            None,
+            Some("pending"),
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            PhaseUpdateError::CannotInsertBeforeInitial { name } if name == "pending"
+        ));
     }
 
     #[test]
@@ -497,27 +576,37 @@ mod tests {
         let (_temp_dir, project, _config) = setup();
         run_phase_update(&project, None, None, None, Some("in_progress"), None).unwrap();
         let phases = loaded_phases(&project);
-        assert_eq!(phases.len(), 2);
-        assert_eq!(phases[0].name, "enriching");
-        assert_eq!(phases[1].name, "done");
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].name, "pending");
+        assert_eq!(phases[1].name, "enriching");
+        assert_eq!(phases[2].name, "done");
     }
 
     #[test]
     fn remove_done_returns_error() {
         let (_temp_dir, project, _config) = setup();
         let error = run_phase_update(&project, None, None, None, Some("done"), None).unwrap_err();
-        match error {
-            PhaseUpdateError::InvalidConfig { reason, .. } => {
-                assert_eq!(
-                    reason,
-                    "last phase must be named 'done' (found 'in_progress')"
-                );
-            }
-            other => panic!("expected InvalidConfig, got: {other}"),
-        }
+        assert!(matches!(
+            error,
+            PhaseUpdateError::MandatoryPhase { name } if name == "done"
+        ));
 
         let phases = loaded_phases(&project);
         assert_eq!(phases.last().unwrap().name, "done");
+    }
+
+    #[test]
+    fn remove_pending_returns_error() {
+        let (_temp_dir, project, _config) = setup();
+        let error =
+            run_phase_update(&project, None, None, None, Some("pending"), None).unwrap_err();
+        assert!(matches!(
+            error,
+            PhaseUpdateError::MandatoryPhase { name } if name == "pending"
+        ));
+
+        let phases = loaded_phases(&project);
+        assert_eq!(phases.first().unwrap().name, "pending");
     }
 
     #[test]
@@ -533,6 +622,7 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
         let error =
             run_phase_update(&project, None, None, None, Some("enriching"), None).unwrap_err();
         match error {
@@ -609,10 +699,10 @@ mod tests {
         )
         .unwrap();
         let phases = loaded_phases(&project);
-        assert_eq!(phases.len(), 3);
+        assert_eq!(phases.len(), 4);
         assert!(!phases.iter().any(|p| p.name == "in_progress"));
-        assert_eq!(phases[1].name, "review");
-        assert_eq!(phases[2].name, "done");
+        assert_eq!(phases[2].name, "review");
+        assert_eq!(phases[3].name, "done");
     }
 
     #[test]
@@ -623,6 +713,21 @@ mod tests {
         let phases = loaded_phases(&project);
         let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
         assert_eq!(enriching.model, "haiku");
+    }
+
+    #[test]
+    fn set_model_changes_mandatory_phase_model() {
+        let (_temp_dir, project, _config) = setup();
+        let pending_args = vec!["pending".to_owned(), "opus".to_owned()];
+        run_phase_update(&project, None, None, None, None, Some(&pending_args)).unwrap();
+        let done_args = vec!["done".to_owned(), "sonnet".to_owned()];
+        run_phase_update(&project, None, None, None, None, Some(&done_args)).unwrap();
+
+        let phases = loaded_phases(&project);
+        let pending = phases.iter().find(|p| p.name == "pending").unwrap();
+        let done = phases.iter().find(|p| p.name == "done").unwrap();
+        assert_eq!(pending.model, "opus");
+        assert_eq!(done.model, "sonnet");
     }
 
     #[test]
@@ -677,7 +782,7 @@ mod tests {
         let (_temp_dir, project, _config) = setup();
         run_phase_update(&project, None, None, None, Some("in_progress"), None).unwrap();
         let phases = loaded_phases(&project);
-        assert_eq!(phases.len(), 2);
+        assert_eq!(phases.len(), 3);
     }
 
     #[test]
@@ -686,6 +791,8 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Task A", "", None, vec![]).unwrap();
         store.add_task("Task B", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-002").unwrap();
         let error =
             run_phase_update(&project, None, None, None, Some("enriching"), None).unwrap_err();
         match error {

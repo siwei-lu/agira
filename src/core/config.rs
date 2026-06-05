@@ -9,7 +9,10 @@ use thiserror::Error;
 
 use crate::core::global_config::GlobalConfig;
 
+pub const INITIAL_PHASE_NAME: &str = "pending";
 pub const TERMINAL_PHASE_NAME: &str = "done";
+const DEFAULT_INITIAL_PHASE_MODEL: &str = "sonnet";
+const DEFAULT_TERMINAL_PHASE_MODEL: &str = "haiku";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhaseConfig {
@@ -122,6 +125,7 @@ pub fn load_project_config(
             project_config.default_model.as_deref(),
         ),
     };
+    let phases = normalize_mandatory_phases(phases);
     validate_terminal_phase(&phases).map_err(|reason| ConfigError::Invalid {
         path: path.to_path_buf(),
         reason,
@@ -156,6 +160,37 @@ fn migrate_state_machine(
             PhaseConfig { name, model }
         })
         .collect()
+}
+
+pub fn normalize_mandatory_phases(phases: Vec<PhaseConfig>) -> Vec<PhaseConfig> {
+    let mut initial_phase = None;
+    let mut terminal_phase = None;
+    let mut middle_phases = Vec::new();
+
+    for phase in phases {
+        if phase.name == INITIAL_PHASE_NAME {
+            initial_phase.get_or_insert(phase);
+        } else if phase.name == TERMINAL_PHASE_NAME {
+            terminal_phase.get_or_insert(phase);
+        } else {
+            middle_phases.push(phase);
+        }
+    }
+
+    let initial_phase = initial_phase.unwrap_or_else(|| PhaseConfig {
+        name: INITIAL_PHASE_NAME.to_owned(),
+        model: DEFAULT_INITIAL_PHASE_MODEL.to_owned(),
+    });
+    let terminal_phase = terminal_phase.unwrap_or_else(|| PhaseConfig {
+        name: TERMINAL_PHASE_NAME.to_owned(),
+        model: DEFAULT_TERMINAL_PHASE_MODEL.to_owned(),
+    });
+
+    let mut normalized = Vec::with_capacity(middle_phases.len() + 2);
+    normalized.push(initial_phase);
+    normalized.extend(middle_phases);
+    normalized.push(terminal_phase);
+    normalized
 }
 
 pub fn validate_terminal_phase(phases: &[PhaseConfig]) -> Result<(), String> {
@@ -216,53 +251,62 @@ mod tests {
         .unwrap();
     }
 
-    fn write_config_with_terminal_phase(path: &Path, terminal_phase: &str) {
-        fs::write(
-            path,
-            format!(
-                r#"{{
-  "stack": "rust",
-  "phases": [{{"name":"enriching","model":"opus"}},{{"name":"{terminal_phase}","model":"haiku"}}],
-  "verification": {{ "commands": [] }},
-  "acceptance_testing": "cli"
-}}"#
-            ),
-        )
-        .unwrap();
-    }
-
     #[test]
-    fn new_format_loads_phases_directly() {
+    fn new_format_normalizes_missing_mandatory_phases() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
-        write_new_format_config(&path, "");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "phases": [{"name":"enriching","model":"opus"},{"name":"in_progress","model":"sonnet"}],
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        assert_eq!(config.phases.len(), 2);
-        assert_eq!(config.phases[0].name, "enriching");
-        assert_eq!(config.phases[0].model, "opus");
-        assert_eq!(config.phases[1].name, "done");
-        assert_eq!(config.phases[1].model, "haiku");
+        assert_eq!(config.phases.len(), 4);
+        assert_eq!(config.phases[0].name, "pending");
+        assert_eq!(config.phases[0].model, "sonnet");
+        assert_eq!(config.phases[1].name, "enriching");
+        assert_eq!(config.phases[1].model, "opus");
+        assert_eq!(config.phases[2].name, "in_progress");
+        assert_eq!(config.phases[2].model, "sonnet");
+        assert_eq!(config.phases[3].name, "done");
+        assert_eq!(config.phases[3].model, "haiku");
     }
 
     #[test]
-    fn new_format_rejects_non_done_terminal_phase() {
+    fn new_format_preserves_first_explicit_mandatory_models_without_duplication() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
-        write_config_with_terminal_phase(&path, "verifying");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "phases": [
+    {"name":"enriching","model":"opus"},
+    {"name":"pending","model":"haiku"},
+    {"name":"review","model":"sonnet"},
+    {"name":"done","model":"opus"},
+    {"name":"done","model":"haiku"},
+    {"name":"pending","model":"sonnet"}
+  ],
+  "verification": { "commands": [] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
 
-        let error = load_project_config(&path, &global_config(3)).unwrap_err();
+        let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        match error {
-            ConfigError::Invalid { reason, .. } => {
-                assert_eq!(
-                    reason,
-                    "last phase must be named 'done' (found 'verifying')"
-                );
-            }
-            other => panic!("expected invalid config, got: {other}"),
-        }
+        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["pending", "enriching", "review", "done"]);
+        assert_eq!(config.phases[0].model, "haiku");
+        assert_eq!(config.phases[3].model, "opus");
     }
 
     #[test]
@@ -273,15 +317,17 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        assert_eq!(config.phases.len(), 2);
-        assert_eq!(config.phases[0].name, "enriching");
+        assert_eq!(config.phases.len(), 3);
+        assert_eq!(config.phases[0].name, "pending");
         assert_eq!(config.phases[0].model, "sonnet");
-        assert_eq!(config.phases[1].name, "done");
+        assert_eq!(config.phases[1].name, "enriching");
         assert_eq!(config.phases[1].model, "sonnet");
+        assert_eq!(config.phases[2].name, "done");
+        assert_eq!(config.phases[2].model, "sonnet");
     }
 
     #[test]
-    fn old_format_rejects_non_done_terminal_phase_after_migration() {
+    fn old_format_without_done_normalizes_after_migration() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
         fs::write(
@@ -296,17 +342,10 @@ mod tests {
         )
         .unwrap();
 
-        let error = load_project_config(&path, &global_config(3)).unwrap_err();
+        let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        match error {
-            ConfigError::Invalid { reason, .. } => {
-                assert_eq!(
-                    reason,
-                    "last phase must be named 'done' (found 'verifying')"
-                );
-            }
-            other => panic!("expected invalid config, got: {other}"),
-        }
+        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["pending", "enriching", "verifying", "done"]);
     }
 
     #[test]

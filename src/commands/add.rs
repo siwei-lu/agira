@@ -151,6 +151,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -251,7 +255,7 @@ mod tests {
         let history = task.history.as_slice();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].from, None);
-        assert_eq!(history[0].to, "enriching");
+        assert_eq!(history[0].to, "pending");
         assert_eq!(history[0].reason, "task created");
         assert!(DateTime::parse_from_rfc3339(&history[0].timestamp).is_ok());
     }
@@ -340,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn config_load_and_invalid_config_errors() {
+    fn config_load_errors_and_empty_phase_list_normalization() {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
@@ -354,14 +358,9 @@ mod tests {
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        let error = run_add(&project, "Invalid config", None, None, &[]).unwrap_err();
-
-        match error {
-            AddError::InvalidConfig { reason, .. } => {
-                assert_eq!(reason, "phases must not be empty");
-            }
-            other => panic!("unexpected error: {other}"),
-        }
+        run_add(&project, "Mandatory-only config", None, None, &[]).unwrap();
+        let tasks_file = read_tasks(&project);
+        assert_eq!(tasks_file.tasks[0].state, "pending");
     }
 
     #[test]

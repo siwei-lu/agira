@@ -128,6 +128,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -198,11 +202,11 @@ mod tests {
         let (result, output) = capture_output(|| run_unblock(&project, "task-001"));
         result.unwrap();
 
-        assert_eq!(output, "task-001 unblocked: in_progress\n");
+        assert_eq!(output, "task-001 unblocked: enriching\n");
 
         let store = test_store(&temp_dir, &config);
         let task = store.get_task("task-001").unwrap();
-        assert_eq!(task.state, "in_progress");
+        assert_eq!(task.state, "enriching");
         assert!(task.blocked_at_phase.is_none());
         assert!(task.blocked_reason.is_none());
     }

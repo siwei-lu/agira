@@ -340,6 +340,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -469,9 +473,9 @@ mod tests {
         assert!(output.contains("Last Action"));
         assert!(output.contains("task-001"));
         assert!(output.contains("Implement status command"));
-        assert!(output.contains("enriching"));
-        assert!(!output.contains("✓ enriching"));
-        assert!(!output.contains("✗ enriching"));
+        assert!(output.contains("pending"));
+        assert!(!output.contains("✓ pending"));
+        assert!(!output.contains("✗ pending"));
     }
 
     #[test]
@@ -479,6 +483,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store.add_task("Finish status", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -686,13 +691,9 @@ mod tests {
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        let error = run_status(&project, false, None, 20, 0).unwrap_err();
-        match error {
-            StatusError::InvalidConfig { reason, .. } => {
-                assert_eq!(reason, "phases must not be empty");
-            }
-            other => panic!("unexpected error: {other}"),
-        }
+        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+        result.unwrap();
+        assert_eq!(output, format!("{NO_TASKS_MESSAGE}\n"));
     }
 
     #[test]

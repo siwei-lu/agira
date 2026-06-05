@@ -112,6 +112,7 @@ run = {hook_command:?}
         "cli",
     ]));
     run_ok(agira(home.path(), &repo).args(["task", "add", "Env hook task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "pending artifact"]));
     run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "artifact value"]));
 
     let contents = non_empty_file_contents_within(&hook_output, Duration::from_millis(500))
@@ -149,6 +150,7 @@ fn global_hook_registered_by_cli_fires_on_matching_task_transition() {
         &hook_path,
     ]));
     run_ok(agira(home.path(), &repo).args(["task", "add", "CLI global hook task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "pending"]));
     run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "complete"]));
 
     let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
@@ -199,7 +201,7 @@ run = {hook_command:?}
     assert_eq!(fields[0], "task-001");
     assert_eq!(fields[1], "Task added hook task");
     assert_eq!(fields[2], "description value");
-    assert_eq!(fields[3], "enriching");
+    assert_eq!(fields[3], "pending");
     assert_eq!(fields[4], "FM-012");
     assert_eq!(fields[5], "");
     assert_eq!(fields[6], "0");
@@ -208,7 +210,7 @@ run = {hook_command:?}
     assert_eq!(fields[9], "task-added-hook-repo");
     assert_eq!(fields[10], repo.canonicalize().unwrap().to_str().unwrap());
     assert_eq!(fields[11], "");
-    assert_eq!(fields[12], "enriching");
+    assert_eq!(fields[12], "pending");
     assert_eq!(fields[13], "");
 }
 

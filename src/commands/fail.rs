@@ -207,6 +207,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -306,13 +310,13 @@ mod tests {
 
         let store = test_store(&temp_dir, &config);
         let task = store.get_task("task-001").unwrap();
-        assert_eq!(task.state, "enriching");
+        assert_eq!(task.state, "pending");
         assert_eq!(task.retry_count, 1);
         assert_eq!(task.max_retries, 3);
 
         let last = task.history.last().unwrap();
-        assert_eq!(last.from.as_deref(), Some("in_progress"));
-        assert_eq!(last.to, "enriching");
+        assert_eq!(last.from.as_deref(), Some("enriching"));
+        assert_eq!(last.to, "pending");
         assert_eq!(last.reason, "retry 1/3: compilation error");
         assert!(DateTime::parse_from_rfc3339(&last.timestamp).is_ok());
     }
@@ -337,7 +341,7 @@ mod tests {
 
         let store = test_store(&temp_dir, &config);
         let task = store.get_task("task-001").unwrap();
-        assert_eq!(task.state, "enriching");
+        assert_eq!(task.state, "pending");
         assert_eq!(task.retry_count, 2);
         assert_eq!(
             task.history.last().unwrap().reason,
@@ -427,6 +431,7 @@ mod tests {
         store.add_task("First", "", None, vec![]).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
         let error = run_fail(&project, "task-001", Some("too late")).unwrap_err();
@@ -479,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_phases_returns_error() {
+    fn empty_phase_list_normalizes_to_mandatory_phases() {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
         let mut config = test_config();
@@ -488,13 +493,6 @@ mod tests {
 
         let error = run_fail(&project, "task-001", Some("x")).unwrap_err();
 
-        assert!(matches!(error, FailError::InvalidConfig { .. }));
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "invalid config {}: phases must not be empty",
-                project.state_dir.join("config.json").display()
-            )
-        );
+        assert!(matches!(error, FailError::TaskNotFound { id } if id == "task-001"));
     }
 }

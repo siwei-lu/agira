@@ -525,7 +525,6 @@ fn exit_code_for_init(error: &commands::InitError) -> ExitCode {
     match error {
         commands::InitError::MissingFlags { .. }
         | commands::InitError::InvalidPhases
-        | commands::InitError::InvalidTerminalPhase { .. }
         | commands::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
@@ -700,6 +699,9 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | UnknownModel { .. }
         | PhaseNotFound { .. }
         | DuplicatePhase { .. }
+        | MandatoryPhase { .. }
+        | CannotInsertBeforeInitial { .. }
+        | CannotInsertAfterTerminal { .. }
         | PhaseBusy { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }

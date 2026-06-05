@@ -7,7 +7,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::core::{
-    config::{Config, PhaseConfig, VerificationConfig, validate_terminal_phase},
+    config::{
+        Config, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, VerificationConfig,
+        normalize_mandatory_phases,
+    },
     project::Project,
 };
 
@@ -25,9 +28,6 @@ pub enum InitError {
         "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:sonnet)"
     )]
     InvalidPhases,
-
-    #[error("invalid phases: {reason}")]
-    InvalidTerminalPhase { reason: String },
 
     #[error("invalid acceptance-testing: use cli, api, ui, hybrid, or none")]
     InvalidAcceptanceTesting,
@@ -216,6 +216,10 @@ fn config_for_stack(
 fn default_phases() -> Vec<PhaseConfig> {
     vec![
         PhaseConfig {
+            name: INITIAL_PHASE_NAME.to_owned(),
+            model: "sonnet".to_owned(),
+        },
+        PhaseConfig {
             name: "enriching".to_owned(),
             model: "opus".to_owned(),
         },
@@ -228,7 +232,7 @@ fn default_phases() -> Vec<PhaseConfig> {
             model: "haiku".to_owned(),
         },
         PhaseConfig {
-            name: "done".to_owned(),
+            name: TERMINAL_PHASE_NAME.to_owned(),
             model: "haiku".to_owned(),
         },
     ]
@@ -454,15 +458,16 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-Reason about project complexity to propose a state machine. Each phase carries its model:
+Reason about project complexity to propose the middle of the state machine. Each phase carries its model.
+`pending` is always inserted first and `done` is always inserted last; include them only if you want to override their default models.
 - Design / enrichment phases → `opus` (reasoning-heavy, architecture decisions)
 - Implementation phases → `sonnet` (code generation, good cost/quality balance)
 - Verification / linting phases → `haiku` (fast, cheap, mechanical checks)
 
 Examples:
-- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku,done:haiku`
-- CLI tool or library: `in_progress:sonnet,verifying:haiku,done:haiku`
-- Prototype: `in_progress:sonnet,done:sonnet`
+- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku`
+- CLI tool or library: `in_progress:sonnet,verifying:haiku`
+- Prototype: `in_progress:sonnet`
 
 Present 2 options with a clear trade-off. Format: `phase:model,phase:model,...`
 
@@ -604,9 +609,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
     if phases.is_empty() {
         return Err(InitError::InvalidPhases);
     }
-    validate_terminal_phase(&phases)
-        .map_err(|reason| InitError::InvalidTerminalPhase { reason })?;
-    Ok(phases)
+    Ok(normalize_mandatory_phases(phases))
 }
 
 fn parse_verification_commands_flag(input: &str) -> Vec<String> {
@@ -684,8 +687,10 @@ mod tests {
         );
         assert_eq!(config.acceptance_testing, "cli");
         assert_eq!(config.max_retries, 5);
-        assert_eq!(config.phases[0].name, "enriching");
-        assert_eq!(config.phases[0].model, "opus");
+        assert_eq!(config.phases[0].name, "pending");
+        assert_eq!(config.phases[0].model, "sonnet");
+        assert_eq!(config.phases[1].name, "enriching");
+        assert_eq!(config.phases[1].model, "opus");
     }
 
     #[test]
@@ -740,27 +745,30 @@ mod tests {
     fn parse_phases_flag() {
         let phases =
             super::parse_phases_flag("enriching:opus,in_progress:sonnet,done:haiku").unwrap();
-        assert_eq!(phases.len(), 3);
-        assert_eq!(phases[0].name, "enriching");
-        assert_eq!(phases[0].model, "opus");
-        assert_eq!(phases[1].name, "in_progress");
-        assert_eq!(phases[1].model, "sonnet");
-        assert_eq!(phases[2].name, "done");
-        assert_eq!(phases[2].model, "haiku");
+        assert_eq!(phases.len(), 4);
+        assert_eq!(phases[0].name, "pending");
+        assert_eq!(phases[0].model, "sonnet");
+        assert_eq!(phases[1].name, "enriching");
+        assert_eq!(phases[1].model, "opus");
+        assert_eq!(phases[2].name, "in_progress");
+        assert_eq!(phases[2].model, "sonnet");
+        assert_eq!(phases[3].name, "done");
+        assert_eq!(phases[3].model, "haiku");
 
         let single = super::parse_phases_flag("done:haiku").unwrap();
-        assert_eq!(single[0].name, "done");
-        assert_eq!(single[0].model, "haiku");
+        assert_eq!(single.len(), 2);
+        assert_eq!(single[0].name, "pending");
+        assert_eq!(single[0].model, "sonnet");
+        assert_eq!(single[1].name, "done");
+        assert_eq!(single[1].model, "haiku");
 
-        match super::parse_phases_flag("enriching:opus,in_progress:sonnet").unwrap_err() {
-            InitError::InvalidTerminalPhase { reason } => {
-                assert_eq!(
-                    reason,
-                    "last phase must be named 'done' (found 'in_progress')"
-                );
-            }
-            other => panic!("expected InvalidTerminalPhase, got: {other}"),
-        }
+        let without_mandatory =
+            super::parse_phases_flag("enriching:opus,in_progress:sonnet").unwrap();
+        assert_eq!(without_mandatory.len(), 4);
+        assert_eq!(without_mandatory[0].name, "pending");
+        assert_eq!(without_mandatory[1].name, "enriching");
+        assert_eq!(without_mandatory[2].name, "in_progress");
+        assert_eq!(without_mandatory[3].name, "done");
 
         assert!(matches!(
             super::parse_phases_flag("in progress:sonnet"),

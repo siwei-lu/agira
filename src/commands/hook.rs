@@ -345,6 +345,10 @@ mod tests {
             stack: "rust".to_owned(),
             phases: vec![
                 PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: "sonnet".to_owned(),
+                },
+                PhaseConfig {
                     name: "enriching".to_owned(),
                     model: "opus".to_owned(),
                 },
@@ -624,6 +628,7 @@ mod tests {
                 "*".to_owned(),
                 "task_added".to_owned(),
                 "failed".to_owned(),
+                "pending".to_owned(),
                 "enriching".to_owned(),
                 "in_progress".to_owned(),
                 "verifying".to_owned(),
