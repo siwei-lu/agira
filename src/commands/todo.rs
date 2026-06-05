@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
-    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
+    hooks::{HookContext, dispatch_hooks, hooks_for_phase, resolve_debug_log},
     pick::{format_pick_output, select_next_task},
     project::Project,
     tasks::{StoreError, Task, TaskStore},
@@ -111,6 +111,7 @@ pub fn run_todo(
                 &project.project_hooks,
                 &resulting_state,
             );
+            let debug_log = resolve_debug_log(&project.state_dir);
             dispatch_hooks(
                 &hooks,
                 &HookContext::new(
@@ -121,6 +122,7 @@ pub fn run_todo(
                     &resulting_state,
                     artifact,
                 ),
+                debug_log.as_deref(),
             );
 
             if resulting_state == terminal_phase {

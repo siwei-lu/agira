@@ -1,9 +1,11 @@
 use std::{
-    fs, io,
+    fs::{self, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -38,6 +40,19 @@ pub struct HookContext {
     pub from_phase: String,
     pub to_phase: String,
     pub artifact: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct HookDebugEntry {
+    pub event: String,
+    pub task_id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub exit_status: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timestamp: String,
+    pub spawn_error: Option<String>,
 }
 
 impl HookContext {
@@ -220,29 +235,114 @@ pub fn hooks_for_phase(
     hooks_for_event(global_hooks, project_hooks, to_phase)
 }
 
-pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext) {
+pub fn resolve_debug_log(state_dir: &Path) -> Option<PathBuf> {
+    matches!(std::env::var("AGIRA_HOOK_DEBUG").as_deref(), Ok("1"))
+        .then(|| state_dir.join("hooks-debug.log"))
+}
+
+pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext, debug_log: Option<&Path>) {
     for hook in hooks {
-        if let Err(error) = Command::new("sh")
-            .arg("-c")
-            .arg(&hook.run)
-            .env("AGIRA_TASK_ID", &ctx.task_id)
-            .env("AGIRA_TASK_TITLE", &ctx.task_title)
-            .env("AGIRA_TASK_DESCRIPTION", &ctx.task_description)
-            .env("AGIRA_TASK_STATE", &ctx.task_state)
-            .env("AGIRA_TASK_PRD_MODULE_ID", &ctx.task_prd_module_id)
-            .env("AGIRA_TASK_DEPENDENCIES", &ctx.task_dependencies)
-            .env("AGIRA_TASK_RETRY_COUNT", &ctx.task_retry_count)
-            .env("AGIRA_TASK_MAX_RETRIES", &ctx.task_max_retries)
-            .env("AGIRA_TASK_CREATED_AT", &ctx.task_created_at)
-            .env("AGIRA_PROJECT_SLUG", &ctx.project_slug)
-            .env("AGIRA_PROJECT_PATH", &ctx.project_path)
-            .env("AGIRA_FROM_PHASE", &ctx.from_phase)
-            .env("AGIRA_TO_PHASE", &ctx.to_phase)
-            .env("AGIRA_ARTIFACT", &ctx.artifact)
-            .spawn()
-        {
+        match debug_log {
+            Some(path) => dispatch_hook_with_debug(hook, ctx, path),
+            None => dispatch_hook(hook, ctx),
+        }
+    }
+}
+
+fn dispatch_hook(hook: &HookEntry, ctx: &HookContext) {
+    if let Err(error) = hook_command(hook, ctx).spawn() {
+        eprintln!("warning: hook spawn failed: {error}");
+    }
+}
+
+fn dispatch_hook_with_debug(hook: &HookEntry, ctx: &HookContext, log_path: &Path) {
+    let mut command = hook_command(hook, ctx);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut entry = HookDebugEntry {
+        event: hook.on.clone(),
+        task_id: ctx.task_id.clone(),
+        command: hook.run.clone(),
+        pid: None,
+        exit_status: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        timestamp: Utc::now().to_rfc3339(),
+        spawn_error: None,
+    };
+
+    match command.spawn() {
+        Ok(child) => {
+            entry.pid = Some(child.id());
+            match child.wait_with_output() {
+                Ok(output) => {
+                    entry.exit_status = output.status.code();
+                    entry.stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                    entry.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                    entry.timestamp = Utc::now().to_rfc3339();
+                }
+                Err(error) => {
+                    entry.spawn_error = Some(format!("wait failed: {error}"));
+                    entry.timestamp = Utc::now().to_rfc3339();
+                    eprintln!("warning: hook wait failed: {error}");
+                }
+            }
+        }
+        Err(error) => {
+            entry.spawn_error = Some(error.to_string());
+            entry.timestamp = Utc::now().to_rfc3339();
             eprintln!("warning: hook spawn failed: {error}");
         }
+    }
+
+    append_hook_debug_entry(log_path, &entry);
+}
+
+fn hook_command(hook: &HookEntry, ctx: &HookContext) -> Command {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&hook.run)
+        .env("AGIRA_TASK_ID", &ctx.task_id)
+        .env("AGIRA_TASK_TITLE", &ctx.task_title)
+        .env("AGIRA_TASK_DESCRIPTION", &ctx.task_description)
+        .env("AGIRA_TASK_STATE", &ctx.task_state)
+        .env("AGIRA_TASK_PRD_MODULE_ID", &ctx.task_prd_module_id)
+        .env("AGIRA_TASK_DEPENDENCIES", &ctx.task_dependencies)
+        .env("AGIRA_TASK_RETRY_COUNT", &ctx.task_retry_count)
+        .env("AGIRA_TASK_MAX_RETRIES", &ctx.task_max_retries)
+        .env("AGIRA_TASK_CREATED_AT", &ctx.task_created_at)
+        .env("AGIRA_PROJECT_SLUG", &ctx.project_slug)
+        .env("AGIRA_PROJECT_PATH", &ctx.project_path)
+        .env("AGIRA_FROM_PHASE", &ctx.from_phase)
+        .env("AGIRA_TO_PHASE", &ctx.to_phase)
+        .env("AGIRA_ARTIFACT", &ctx.artifact);
+    command
+}
+
+fn append_hook_debug_entry(path: &Path, entry: &HookDebugEntry) {
+    let contents = match serde_json::to_string(entry) {
+        Ok(contents) => contents,
+        Err(error) => {
+            eprintln!("warning: hook debug log serialization failed: {error}");
+            return;
+        }
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            eprintln!("warning: hook debug log directory creation failed: {error}");
+            return;
+        }
+    }
+
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut file) => {
+            if let Err(error) = writeln!(file, "{contents}") {
+                eprintln!("warning: hook debug log write failed: {error}");
+            }
+        }
+        Err(error) => eprintln!("warning: hook debug log open failed: {error}"),
     }
 }
 
@@ -260,6 +360,7 @@ fn matching_hooks<'a>(
 mod tests {
     use std::{collections::BTreeMap, fs, thread, time::Duration};
 
+    use chrono::DateTime;
     use tempfile::TempDir;
 
     use super::*;
@@ -548,10 +649,80 @@ run = "echo failed"
             ),
         }];
 
-        dispatch_hooks(&hooks, &ctx);
+        dispatch_hooks(&hooks, &ctx, None);
 
         let contents = read_file_eventually(&output_path);
         assert_eq!(contents, temp_dir.path().to_string_lossy());
+    }
+
+    #[test]
+    fn test_debug_off_does_not_create_log_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let task = test_task();
+        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
+        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: "true".to_owned(),
+        }];
+
+        dispatch_hooks(&hooks, &ctx, None);
+
+        assert!(!debug_path.exists());
+    }
+
+    #[test]
+    fn test_debug_on_creates_log_with_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let task = test_task();
+        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "done", "");
+        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: "printf 'hook stdout'; printf 'hook stderr' >&2".to_owned(),
+        }];
+
+        dispatch_hooks(&hooks, &ctx, Some(&debug_path));
+
+        let entries = read_debug_entries(&debug_path);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.event, "done");
+        assert_eq!(entry.task_id, "task-001");
+        assert_eq!(
+            entry.command,
+            "printf 'hook stdout'; printf 'hook stderr' >&2"
+        );
+        assert!(entry.pid.is_some());
+        assert_eq!(entry.exit_status, Some(0));
+        assert_eq!(entry.stdout, "hook stdout");
+        assert_eq!(entry.stderr, "hook stderr");
+        assert!(entry.spawn_error.is_none());
+        DateTime::parse_from_rfc3339(&entry.timestamp).unwrap();
+    }
+
+    #[test]
+    fn test_debug_on_hook_exit_nonzero_logged() {
+        let temp_dir = TempDir::new().unwrap();
+        let task = test_task();
+        let ctx = HookContext::new(&task, "test-project", temp_dir.path(), "", "failed", "");
+        let debug_path = temp_dir.path().join("hooks-debug.log");
+        let hooks = vec![HookEntry {
+            on: "failed".to_owned(),
+            run: "printf 'before failure'; exit 7".to_owned(),
+        }];
+
+        dispatch_hooks(&hooks, &ctx, Some(&debug_path));
+
+        let entries = read_debug_entries(&debug_path);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.event, "failed");
+        assert_eq!(entry.task_id, "task-001");
+        assert_eq!(entry.exit_status, Some(7));
+        assert_eq!(entry.stdout, "before failure");
+        assert_eq!(entry.stderr, "");
+        assert!(entry.spawn_error.is_none());
     }
 
     fn test_task() -> Task {
@@ -582,5 +753,13 @@ run = "echo failed"
         }
 
         panic!("hook output was not written to {}", path.display());
+    }
+
+    fn read_debug_entries(path: &Path) -> Vec<HookDebugEntry> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
     }
 }
