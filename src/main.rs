@@ -45,7 +45,7 @@ enum Commands {
     },
     /// Manage lifecycle hooks
     #[command(
-        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task work --artifact' (empty if not provided)\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
     )]
     Hook {
         #[command(subcommand)]
@@ -99,7 +99,7 @@ enum HookCommands {
     List,
     /// Add a lifecycle hook
     #[command(
-        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task work --artifact' (empty if not provided)\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Add {
         /// Write the hook to ~/.agira/config.toml instead of the current project
@@ -139,7 +139,7 @@ enum TaskCommands {
         filter: Option<String>,
     },
     /// Print the current actionable task prompt, or advance it when --artifact is given
-    Work {
+    Todo {
         /// Path to a PRD file to inject as requirements context (print mode only)
         #[arg(long)]
         prd: Option<PathBuf>,
@@ -227,13 +227,13 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Work { prd, artifact } => match resolve_initialized_project() {
+            TaskCommands::Todo { prd, artifact } => match resolve_initialized_project() {
                 Ok(project) => {
-                    match commands::run_work(&project, prd.as_deref(), artifact.as_deref()) {
+                    match commands::run_todo(&project, prd.as_deref(), artifact.as_deref()) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");
-                            exit_code_for_work(&error)
+                            exit_code_for_todo(&error)
                         }
                     }
                 }
@@ -509,8 +509,8 @@ fn exit_code_for_status(error: &commands::StatusError) -> ExitCode {
     }
 }
 
-fn exit_code_for_work(error: &commands::WorkError) -> ExitCode {
-    use commands::WorkError::*;
+fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
+    use commands::TodoError::*;
 
     match error {
         NoActionableTask

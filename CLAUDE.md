@@ -34,7 +34,7 @@ agira/
 │       ├── self_update.rs — `agira update`
 │       ├── status.rs      — `agira task status`
 │       ├── update.rs      — `agira task update`
-│       └── work.rs        — `agira task work` (print prompt / advance with --artifact)
+│       └── todo.rs        — `agira task todo` (print prompt / advance with --artifact)
 ├── docs/
 │   ├── prd.md           — requirements; FM-IDs used to tag tasks
 │   └── conventions.md   — project taste decisions (error style, output format, etc.)
@@ -91,8 +91,8 @@ Phases: `enriching → in_progress → verifying → done` (or `→ failed` from
 ```sh
 agira task status              # show task table
 agira task status --json       # raw JSON
-agira task work                # print prompt for current task
-agira task work --artifact ... # advance current task with evidence
+agira task todo                # print prompt for current task
+agira task todo --artifact ... # advance current task with evidence
 agira task add "title" --description "..." --prd FM-001 --depends-on task-001,task-002
 agira task update task-001 --title "new title"
 agira task fail task-001 --reason "..."

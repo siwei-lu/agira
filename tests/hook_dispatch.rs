@@ -73,7 +73,7 @@ fn non_empty_file_contents_within(path: &Path, timeout: Duration) -> Option<Stri
 }
 
 #[test]
-fn work_artifact_dispatches_hook_with_env_vars() {
+fn todo_artifact_dispatches_hook_with_env_vars() {
     let home = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("Hook Repo");
@@ -112,7 +112,7 @@ run = {hook_command:?}
         "cli",
     ]));
     run_ok(agira(home.path(), &repo).args(["task", "add", "Env hook task"]));
-    run_ok(agira(home.path(), &repo).args(["task", "work", "--artifact", "artifact value"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "artifact value"]));
 
     let contents = non_empty_file_contents_within(&hook_output, Duration::from_millis(500))
         .expect("hook did not write output within 500ms");
@@ -148,7 +148,7 @@ fn global_hook_registered_by_cli_fires_on_matching_task_transition() {
         &hook_path,
     ]));
     run_ok(agira(home.path(), &repo).args(["task", "add", "CLI global hook task"]));
-    run_ok(agira(home.path(), &repo).args(["task", "work", "--artifact", "complete"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "complete"]));
 
     let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
         .expect("global hook registered by CLI did not write output within 2s");

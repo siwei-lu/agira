@@ -7,7 +7,7 @@ use crate::core::{
     tasks::{Task, TaskPhase},
 };
 
-const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"` or provide requirements with `agira task work --prd <path>`";
+const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"` or provide requirements with `agira task todo --prd <path>`";
 const BLOCKED_STATE: &str = "blocked";
 const FAILED_STATE: &str = "failed";
 
@@ -142,7 +142,7 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
     ));
 
     subagent.push_str(&format!(
-        "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task work --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
+        "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task todo --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
         task.id
     ));
 
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_contains_work_command() {
+    fn task_prompt_contains_todo_command() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
@@ -461,7 +461,7 @@ mod tests {
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        assert!(prompt.contains("agira task work --artifact"));
+        assert!(prompt.contains("agira task todo --artifact"));
     }
 
     #[test]
@@ -498,7 +498,7 @@ mod tests {
         assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
         assert!(prompt.contains("The configured model is `opus`"));
         assert!(!prompt.contains("Once the subagent finishes"));
-        assert!(!prompt.contains("call `agira task work --artifact"));
+        assert!(!prompt.contains("call `agira task todo --artifact"));
         assert!(!prompt.contains("1. Spawn a subagent"));
         assert!(!prompt.contains("2. Pass the content"));
         assert!(!prompt.contains("3. Once the subagent finishes"));

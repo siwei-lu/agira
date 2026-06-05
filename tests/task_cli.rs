@@ -38,8 +38,8 @@ fn project_state_dir(home: &Path) -> PathBuf {
 fn task_subcommands_require_initialized_project() {
     let cases: &[&[&str]] = &[
         &["task", "status"],
-        &["task", "work"],
-        &["task", "work", "--artifact", "done"],
+        &["task", "todo"],
+        &["task", "todo", "--artifact", "done"],
         &["task", "fail", "task-001", "--reason", "failed"],
         &["task", "block", "task-001", "--reason", "blocked"],
         &["task", "unblock", "task-001"],

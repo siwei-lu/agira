@@ -14,7 +14,7 @@ use crate::core::{
 };
 
 const NO_TASKS_MESSAGE: &str =
-    "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.";
+    "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.";
 const TITLE_LIMIT: usize = 40;
 const LAST_ACTION_LIMIT: usize = 30;
 const STATE_LIMIT: usize = 13;
@@ -433,7 +433,7 @@ mod tests {
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.\n"
         );
     }
 
@@ -447,7 +447,7 @@ mod tests {
         result.unwrap();
         assert_eq!(
             output,
-            "No tasks. Run `agira task add` or `agira task work --prd <path>` to get started.\n"
+            "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.\n"
         );
     }
 
