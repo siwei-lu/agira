@@ -129,6 +129,11 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
     }
 
     subagent.push_str(&format!(
+        "\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block {} --reason \"<explanation>\"`",
+        task.id
+    ));
+
+    subagent.push_str(&format!(
         "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task work --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
         task.id
     ));
@@ -380,6 +385,25 @@ mod tests {
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
         assert!(prompt.contains("agira task work --artifact"));
+    }
+
+    #[test]
+    fn task_prompt_contains_checkpoint_block_instruction() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Clarify requirements", "", None, vec![])
+            .unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("not confident about a decision"));
+        assert!(prompt.contains("human input is required"));
+        assert!(prompt.contains("Blocking is the correct escalation path"));
+        assert!(prompt.contains("not a last resort"));
+        assert!(prompt.contains("agira task block task-001 --reason \"<explanation>\""));
     }
 
     #[test]
