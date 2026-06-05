@@ -341,6 +341,8 @@ mod tests {
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
             global_config: GlobalConfig::default(),
+            global_hooks: crate::core::hooks::HookConfig::default(),
+            project_hooks: crate::core::hooks::HookConfig::default(),
         }
     }
 
@@ -381,6 +383,8 @@ mod tests {
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
             global_config: GlobalConfig::default(),
+            global_hooks: crate::core::hooks::HookConfig::default(),
+            project_hooks: crate::core::hooks::HookConfig::default(),
         };
         let err = run_phase_get(&project).unwrap_err();
         assert!(matches!(err, PhaseGetError::NotFound { .. }));

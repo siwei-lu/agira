@@ -241,6 +241,8 @@ mod tests {
             slug: "test".to_owned(),
             state_dir: temp_dir.path().to_path_buf(),
             global_config: GlobalConfig::default(),
+            global_hooks: crate::core::hooks::HookConfig::default(),
+            project_hooks: crate::core::hooks::HookConfig::default(),
         }
     }
 
@@ -276,6 +278,8 @@ mod tests {
             slug: "test".to_owned(),
             state_dir: state_dir.path().to_path_buf(),
             global_config: GlobalConfig::default(),
+            global_hooks: crate::core::hooks::HookConfig::default(),
+            project_hooks: crate::core::hooks::HookConfig::default(),
         };
         let config = test_config();
         write_config(&project, &config);

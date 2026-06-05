@@ -373,9 +373,8 @@ fn exit_code_for(error: &ProjectError) -> ExitCode {
     match error {
         ProjectError::NotInGitRepository
         | ProjectError::CreateStateDir(_, _)
-        | ProjectError::GlobalConfig(crate::core::GlobalConfigError::Parse { .. }) => {
-            ExitCode::from(1)
-        }
+        | ProjectError::GlobalConfig(crate::core::GlobalConfigError::Parse { .. })
+        | ProjectError::HookConfig(crate::core::HookConfigError::Parse { .. }) => ExitCode::from(1),
         _ => ExitCode::from(2),
     }
 }

@@ -6,7 +6,10 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::core::global_config::{GlobalConfig, GlobalConfigError, load_or_create};
+use crate::core::{
+    global_config::{GlobalConfig, GlobalConfigError, load_or_create},
+    hooks::{HookConfig, HookConfigError, load_hooks},
+};
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -14,6 +17,8 @@ pub struct Project {
     pub slug: String,
     pub state_dir: PathBuf,
     pub global_config: GlobalConfig,
+    pub global_hooks: HookConfig,
+    pub project_hooks: HookConfig,
 }
 
 #[derive(Debug, Error)]
@@ -41,6 +46,9 @@ pub enum ProjectError {
 
     #[error(transparent)]
     GlobalConfig(#[from] GlobalConfigError),
+
+    #[error(transparent)]
+    HookConfig(#[from] HookConfigError),
 }
 
 pub fn resolve_project() -> Result<Project, ProjectError> {
@@ -59,6 +67,7 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
     fs::create_dir_all(agira_root)
         .map_err(|error| ProjectError::CreateStateDir(agira_root.to_path_buf(), error))?;
     let global_config = load_or_create(agira_root)?;
+    let global_hooks = load_hooks(&agira_root.join("config.toml"))?;
 
     let base_slug = slugify(&git_root_basename(&git_root));
     let source_path_content = source_path_content(&git_root);
@@ -78,12 +87,15 @@ pub fn resolve_project_from(start_dir: &Path, agira_root: &Path) -> Result<Proje
             }
         }
     };
+    let project_hooks = load_hooks(&state_dir.join("hooks.toml"))?;
 
     let project = Project {
         git_root,
         slug,
         state_dir,
         global_config,
+        global_hooks,
+        project_hooks,
     };
     debug_assert_eq!(
         project.state_dir.file_name().and_then(|name| name.to_str()),
@@ -223,6 +235,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::core::hooks::HookEntry;
+
     use super::*;
 
     #[test]
@@ -288,5 +302,54 @@ mod tests {
         assert_eq!(first.slug, "same");
         assert_eq!(second.slug, expected_second_slug);
         assert_ne!(first.slug, second.slug);
+    }
+
+    #[test]
+    fn resolve_project_loads_global_and_project_hooks() {
+        let parent = TempDir::new().unwrap();
+        let agira_root = TempDir::new().unwrap();
+        let git_root = parent.path().join("hooked-project");
+
+        fs::create_dir(&git_root).unwrap();
+        fs::create_dir(git_root.join(".git")).unwrap();
+        fs::write(
+            agira_root.path().join("config.toml"),
+            r#"
+default_max_retries = 5
+
+[[hooks]]
+on = "done"
+run = "echo global"
+"#,
+        )
+        .unwrap();
+
+        let first = resolve_project_from(&git_root, agira_root.path()).unwrap();
+        fs::write(
+            first.state_dir.join("hooks.toml"),
+            r#"
+[[hooks]]
+on = "*"
+run = "echo project"
+"#,
+        )
+        .unwrap();
+
+        let project = resolve_project_from(&git_root, agira_root.path()).unwrap();
+
+        assert_eq!(
+            project.global_hooks.hooks,
+            vec![HookEntry {
+                on: "done".to_owned(),
+                run: "echo global".to_owned(),
+            }]
+        );
+        assert_eq!(
+            project.project_hooks.hooks,
+            vec![HookEntry {
+                on: "*".to_owned(),
+                run: "echo project".to_owned(),
+            }]
+        );
     }
 }
