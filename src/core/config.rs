@@ -11,13 +11,12 @@ use crate::core::global_config::GlobalConfig;
 
 pub const INITIAL_PHASE_NAME: &str = "pending";
 pub const TERMINAL_PHASE_NAME: &str = "done";
-const DEFAULT_INITIAL_PHASE_MODEL: &str = "sonnet";
-const DEFAULT_TERMINAL_PHASE_MODEL: &str = "haiku";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhaseConfig {
     pub name: String,
-    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -152,11 +151,17 @@ fn migrate_state_machine(
     state_machine
         .into_iter()
         .map(|name| {
-            let model = models
-                .and_then(|m| m.get(&name))
-                .map(String::as_str)
-                .unwrap_or(fallback)
-                .to_owned();
+            // Mandatory phases have no model in the new schema.
+            let model = if name == INITIAL_PHASE_NAME || name == TERMINAL_PHASE_NAME {
+                None
+            } else {
+                let m = models
+                    .and_then(|m| m.get(&name))
+                    .map(String::as_str)
+                    .unwrap_or(fallback)
+                    .to_owned();
+                Some(m)
+            };
             PhaseConfig { name, model }
         })
         .collect()
@@ -177,14 +182,26 @@ pub fn normalize_mandatory_phases(phases: Vec<PhaseConfig>) -> Vec<PhaseConfig> 
         }
     }
 
-    let initial_phase = initial_phase.unwrap_or_else(|| PhaseConfig {
-        name: INITIAL_PHASE_NAME.to_owned(),
-        model: DEFAULT_INITIAL_PHASE_MODEL.to_owned(),
-    });
-    let terminal_phase = terminal_phase.unwrap_or_else(|| PhaseConfig {
-        name: TERMINAL_PHASE_NAME.to_owned(),
-        model: DEFAULT_TERMINAL_PHASE_MODEL.to_owned(),
-    });
+    // Mandatory phases have no model — they are transition phases, not AI-driven phases.
+    // Strip any model that might have been set on them (e.g. from legacy config or user override).
+    let initial_phase = initial_phase
+        .map(|p| PhaseConfig {
+            name: p.name,
+            model: None,
+        })
+        .unwrap_or_else(|| PhaseConfig {
+            name: INITIAL_PHASE_NAME.to_owned(),
+            model: None,
+        });
+    let terminal_phase = terminal_phase
+        .map(|p| PhaseConfig {
+            name: p.name,
+            model: None,
+        })
+        .unwrap_or_else(|| PhaseConfig {
+            name: TERMINAL_PHASE_NAME.to_owned(),
+            model: None,
+        });
 
     let mut normalized = Vec::with_capacity(middle_phases.len() + 2);
     normalized.push(initial_phase);
@@ -228,7 +245,7 @@ mod tests {
             format!(
                 r#"{{
   "stack": "rust",
-  "phases": [{{"name":"enriching","model":"opus"}},{{"name":"done","model":"haiku"}}],
+  "phases": [{{"name":"enriching","model":"opus"}},{{"name":"done"}}],
   "verification": {{ "commands": [] }},
   "acceptance_testing": "cli"{fields}
 }}"#
@@ -270,19 +287,20 @@ mod tests {
 
         assert_eq!(config.phases.len(), 4);
         assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, "sonnet");
+        assert_eq!(config.phases[0].model, None);
         assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, "opus");
+        assert_eq!(config.phases[1].model, Some("opus".to_owned()));
         assert_eq!(config.phases[2].name, "in_progress");
-        assert_eq!(config.phases[2].model, "sonnet");
+        assert_eq!(config.phases[2].model, Some("sonnet".to_owned()));
         assert_eq!(config.phases[3].name, "done");
-        assert_eq!(config.phases[3].model, "haiku");
+        assert_eq!(config.phases[3].model, None);
     }
 
     #[test]
-    fn new_format_preserves_first_explicit_mandatory_models_without_duplication() {
+    fn new_format_strips_model_from_mandatory_phases() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
+        // Even if a model is provided for pending/done in the JSON, it is stripped.
         fs::write(
             &path,
             r#"{
@@ -305,8 +323,9 @@ mod tests {
 
         let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["pending", "enriching", "review", "done"]);
-        assert_eq!(config.phases[0].model, "haiku");
-        assert_eq!(config.phases[3].model, "opus");
+        // Mandatory phases always have no model regardless of what the JSON says.
+        assert_eq!(config.phases[0].model, None);
+        assert_eq!(config.phases[3].model, None);
     }
 
     #[test]
@@ -319,11 +338,11 @@ mod tests {
 
         assert_eq!(config.phases.len(), 3);
         assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, "sonnet");
+        assert_eq!(config.phases[0].model, None);
         assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, "sonnet");
+        assert_eq!(config.phases[1].model, Some("sonnet".to_owned()));
         assert_eq!(config.phases[2].name, "done");
-        assert_eq!(config.phases[2].model, "sonnet");
+        assert_eq!(config.phases[2].model, None);
     }
 
     #[test]
@@ -377,11 +396,11 @@ mod tests {
             phases: vec![
                 PhaseConfig {
                     name: "enriching".to_owned(),
-                    model: "opus".to_owned(),
+                    model: Some("opus".to_owned()),
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
-                    model: "haiku".to_owned(),
+                    model: None,
                 },
             ],
             verification: VerificationConfig { commands: vec![] },
