@@ -218,7 +218,7 @@ fn compare_completed_at(left: &str, right: &str) -> Ordering {
 }
 
 fn format_non_actionable_summary(tasks: &[Task]) -> String {
-    let mut output = "# Agira Task Summary\n\nNo actionable tasks found. All remaining tasks are blocked or complete.\n\n## Non-actionable Tasks".to_owned();
+    let mut output = "# Agira Task Summary\n\nNo actionable tasks found. All remaining tasks are blocked, failed, or complete.\n\n## Non-actionable Tasks".to_owned();
     for task in tasks {
         output.push_str(&format!("\n- {}: {} ({})", task.id, task.title, task.state));
     }
@@ -394,18 +394,21 @@ mod tests {
     }
 
     #[test]
-    fn non_actionable_summary_explains_remaining_tasks_are_blocked_or_complete() {
+    fn non_actionable_summary_explains_remaining_tasks_are_blocked_failed_or_complete() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
         store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store.add_task("Failed task", "", None, vec![]).unwrap();
         store.block_task("task-001", "waiting").unwrap();
+        store.fail_task("task-002", "broken").unwrap();
 
         let output = format_pick_output(&config, store.all_tasks(), None, None);
 
-        assert!(output.contains("All remaining tasks are blocked or complete."));
+        assert!(output.contains("All remaining tasks are blocked, failed, or complete."));
         assert!(output.contains("task-001: Blocked task (blocked)"));
+        assert!(output.contains("task-002: Failed task (failed)"));
     }
 
     #[test]

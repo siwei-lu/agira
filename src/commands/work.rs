@@ -21,7 +21,7 @@ const DIRTY_WORKING_TREE_MESSAGE: &str =
 
 #[derive(Debug, Error)]
 pub enum WorkError {
-    #[error("no actionable task — all remaining tasks are blocked or complete")]
+    #[error("no actionable task — all remaining tasks are blocked, failed, or complete")]
     NoActionableTask,
 
     #[error("artifact must not be empty")]
@@ -455,6 +455,37 @@ mod tests {
     }
 
     #[test]
+    fn with_artifact_skips_blocked_current_task() {
+        let (temp_dir, project, config) = setup();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Blocked current task", "", None, vec![])
+            .unwrap();
+        store
+            .add_task("Next actionable task", "", None, vec![])
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let (result, output) = capture_output(|| run_work(&project, None, Some("next artifact")));
+
+        result.unwrap();
+        assert!(output.contains("task-002 → in_progress"));
+
+        let store = test_store(&temp_dir, &config);
+        let blocked_task = store.get_task("task-001").unwrap();
+        assert_eq!(blocked_task.state, "blocked");
+        assert!(blocked_task.phases.is_empty());
+
+        let next_task = store.get_task("task-002").unwrap();
+        assert_eq!(next_task.state, "in_progress");
+        assert_eq!(
+            next_task.phases.get("enriching").unwrap().artifact,
+            "next artifact"
+        );
+    }
+
+    #[test]
     fn with_artifact_terminal_shows_commit_and_next_task() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
@@ -501,7 +532,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "no actionable task — all remaining tasks are blocked or complete"
+            "no actionable task — all remaining tasks are blocked, failed, or complete"
         );
         assert!(matches!(error, WorkError::NoActionableTask));
     }
