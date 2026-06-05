@@ -81,7 +81,7 @@ fn format_decomposition_prompt(prd_content: &str) -> String {
     )
 }
 
-fn format_task_prompt(task: &Task, config: &Config, just_done: Option<(&str, &str)>) -> String {
+fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &str)>) -> String {
     let model = config
         .phases
         .iter()
@@ -133,18 +133,12 @@ fn format_task_prompt(task: &Task, config: &Config, just_done: Option<(&str, &st
         task.id
     ));
 
-    let steps = if let Some((done_id, done_title)) = just_done {
-        format!(
-            "1. Commit all changes from {done_id} \"{done_title}\" with a descriptive commit message.\n2. Spawn a subagent using model `{model}`.\nThe configured model is `{model}` — escalate to a higher-tier model if the task complexity warrants it.\n3. Pass the content between the delimiters below as the subagent's prompt.\n4. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
-        )
-    } else {
-        format!(
-            "1. Spawn a subagent using model `{model}`.\nThe configured model is `{model}` — escalate to a higher-tier model if the task complexity warrants it.\n2. Pass the content between the delimiters below as the subagent's prompt.\n3. Once the subagent finishes, call `agira task work --artifact \"<subagent summary>\"` with a concise summary of what it did."
-        )
-    };
+    let steps = format!(
+        "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Spawn a subagent using model `{model}` with that problem statement and the delimited prompt below."
+    );
 
     format!(
-        "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform the work yourself.\n\n{steps}\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
+        "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
     )
 }
 
@@ -352,6 +346,12 @@ mod tests {
         assert!(prompt.contains("# Agira Task Prompt"));
         assert!(prompt.contains("- Agent role: sonnet"));
         assert!(prompt.contains("The configured model is `sonnet`"));
+        assert!(prompt.contains("Do NOT perform this work yourself"));
+        assert!(prompt.contains("do not read files"));
+        assert!(prompt.contains("explore the codebase"));
+        assert!(prompt.contains("run commands"));
+        assert!(prompt.contains("try to understand the problem before delegating"));
+        assert!(prompt.contains("The subagent is responsible for all investigation"));
     }
 
     #[test]
@@ -392,15 +392,19 @@ mod tests {
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
-        assert!(prompt.contains("1. Spawn a subagent"));
+        assert!(prompt.contains("1. Read the task title and description"));
+        assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
+        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
         assert!(prompt.contains("The configured model is `opus`"));
-        assert!(prompt.contains("2. Pass the content"));
-        assert!(prompt.contains("3. Once the subagent finishes"));
-        assert!(!prompt.contains("Commit all changes"));
+        assert!(!prompt.contains("Once the subagent finishes"));
+        assert!(!prompt.contains("call `agira task work --artifact"));
+        assert!(!prompt.contains("1. Spawn a subagent"));
+        assert!(!prompt.contains("2. Pass the content"));
+        assert!(!prompt.contains("3. Once the subagent finishes"));
     }
 
     #[test]
-    fn task_prompt_with_just_done_includes_commit_step() {
+    fn task_prompt_just_done_does_not_add_orchestrator_commands() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
@@ -413,11 +417,13 @@ mod tests {
             Some(("task-000", "Previous Task")),
         );
 
-        assert!(prompt.contains("1. Commit all changes from task-000 \"Previous Task\""));
-        assert!(prompt.contains("2. Spawn a subagent"));
-        assert!(prompt.contains("The configured model is `opus`"));
-        assert!(prompt.contains("3. Pass the content"));
-        assert!(prompt.contains("4. Once the subagent finishes"));
+        assert!(!prompt.contains("Commit all changes"));
+        assert!(!prompt.contains("task-000 \"Previous Task\""));
+        assert!(prompt.contains("1. Read the task title and description"));
+        assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
+        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
+        assert!(!prompt.contains("Once the subagent finishes"));
+        assert!(!prompt.contains("4. Once the subagent finishes"));
     }
 
     #[test]
