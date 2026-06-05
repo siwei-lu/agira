@@ -107,6 +107,19 @@ enum TaskCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Mark a task as blocked
+    Block {
+        /// Task ID to block (e.g. task-001)
+        id: String,
+        /// Reason the task is blocked
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Resume a blocked task
+    Unblock {
+        /// Task ID to unblock (e.g. task-001)
+        id: String,
+    },
     /// Add a new task to the project
     Add {
         /// Task title
@@ -187,6 +200,32 @@ fn main() -> ExitCode {
                     Err(error) => {
                         eprintln!("error: {error}");
                         exit_code_for_fail(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Block { id, reason } => match resolve_project() {
+                Ok(project) => match commands::run_block(&project, &id, reason.as_deref()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_block(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Unblock { id } => match resolve_project() {
+                Ok(project) => match commands::run_unblock(&project, &id) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_unblock(&error)
                     }
                 },
                 Err(error) => {
@@ -395,6 +434,46 @@ fn exit_code_for_fail(error: &commands::FailError) -> ExitCode {
         | TaskNotFound { .. }
         | AlreadyFailed { .. }
         | AlreadyTerminal { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_block(error: &commands::BlockError) -> ExitCode {
+    use commands::BlockError::*;
+
+    match error {
+        MissingReason
+        | EmptyReason
+        | TaskNotFound { .. }
+        | AlreadyTerminal { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_unblock(error: &commands::UnblockError) -> ExitCode {
+    use commands::UnblockError::*;
+
+    match error {
+        TaskNotFound { .. }
+        | NotBlocked { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),

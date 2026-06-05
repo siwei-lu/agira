@@ -239,7 +239,9 @@ fn format_title(title: &str) -> String {
 }
 
 fn format_state(state: &str, terminal_phase: &str) -> String {
-    let display = if state == "failed" {
+    let display = if state == "blocked" {
+        "⊘ blocked".to_owned()
+    } else if state == "failed" {
         "✗ failed".to_owned()
     } else if state == terminal_phase {
         format!("✓ {state}")
@@ -494,6 +496,21 @@ mod tests {
 
         result.unwrap();
         assert!(output.contains("✗ failed"));
+    }
+
+    #[test]
+    fn blocked_task_shows_blocked_prefix() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Blocked task", "", None, vec![]).unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+
+        let (result, output) = capture_output(|| run_status(&project, false, None, 20, 0));
+
+        result.unwrap();
+        assert!(output.contains("⊘ blocked"));
+        assert!(!output.contains("✓ blocked"));
+        assert!(!output.contains("✗ blocked"));
     }
 
     #[test]

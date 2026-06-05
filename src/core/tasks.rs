@@ -30,6 +30,10 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_at_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prd_module_id: Option<String>,
     pub dependencies: Vec<String>,
@@ -66,6 +70,12 @@ pub enum StoreError {
 
     #[error("task is already terminal")]
     AlreadyTerminal,
+
+    #[error("task is already blocked")]
+    AlreadyBlocked,
+
+    #[error("task is not blocked")]
+    NotBlocked,
 
     #[error("task {id} is {state} and cannot be updated")]
     CannotUpdateTerminal { id: String, state: String },
@@ -177,6 +187,8 @@ impl TaskStore {
             title: title.to_owned(),
             description: description.to_owned(),
             state: first_phase.clone(),
+            blocked_at_phase: None,
+            blocked_reason: None,
             prd_module_id,
             dependencies,
             retry_count: 0,
@@ -319,6 +331,82 @@ impl TaskStore {
             to: "failed".to_owned(),
             timestamp: Utc::now().to_rfc3339(),
             reason: reason.to_owned(),
+        });
+
+        self.save(tasks_file)
+    }
+
+    pub fn block_task(&mut self, id: &str, reason: &str) -> Result<(), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task_index = tasks_file
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .ok_or(StoreError::NotFound)?;
+        let previous_state = tasks_file.tasks[task_index].state.clone();
+
+        if previous_state == "blocked" {
+            return Err(StoreError::AlreadyBlocked);
+        }
+
+        if previous_state == "failed" || previous_state == self.terminal_phase {
+            return Err(StoreError::AlreadyTerminal);
+        }
+
+        if !self
+            .state_machine
+            .iter()
+            .any(|state| state == &previous_state)
+        {
+            return Err(StoreError::InvalidTransition {
+                from: previous_state,
+                to: "blocked".to_owned(),
+            });
+        }
+
+        let task = &mut tasks_file.tasks[task_index];
+        task.state = "blocked".to_owned();
+        task.blocked_at_phase = Some(previous_state.clone());
+        task.blocked_reason = Some(reason.to_owned());
+        task.history.push(HistoryEntry {
+            from: Some(previous_state),
+            to: "blocked".to_owned(),
+            timestamp: Utc::now().to_rfc3339(),
+            reason: reason.to_owned(),
+        });
+
+        self.save(tasks_file)
+    }
+
+    pub fn unblock_task(&mut self, id: &str) -> Result<(), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task_index = tasks_file
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .ok_or(StoreError::NotFound)?;
+
+        if tasks_file.tasks[task_index].state != "blocked" {
+            return Err(StoreError::NotBlocked);
+        }
+
+        let target_state = tasks_file.tasks[task_index]
+            .blocked_at_phase
+            .clone()
+            .ok_or_else(|| StoreError::InvalidTransition {
+                from: "blocked".to_owned(),
+                to: String::new(),
+            })?;
+
+        let task = &mut tasks_file.tasks[task_index];
+        task.state = target_state.clone();
+        task.blocked_at_phase = None;
+        task.blocked_reason = None;
+        task.history.push(HistoryEntry {
+            from: Some("blocked".to_owned()),
+            to: target_state,
+            timestamp: Utc::now().to_rfc3339(),
+            reason: "unblocked".to_owned(),
         });
 
         self.save(tasks_file)
@@ -714,6 +802,111 @@ mod tests {
 
         let error = store.next_phase("task-002").unwrap_err();
         assert!(matches!(error, StoreError::DependencyBlocked { .. }));
+    }
+
+    #[test]
+    fn block_task_sets_blocked_metadata_and_history() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.block_task("task-001", "waiting on api").unwrap();
+        let task = store.get_task("task-001").unwrap();
+
+        assert_eq!(task.state, "blocked");
+        assert_eq!(task.blocked_at_phase.as_deref(), Some("pending"));
+        assert_eq!(task.blocked_reason.as_deref(), Some("waiting on api"));
+        let last = task.history.last().unwrap();
+        assert_eq!(last.from.as_deref(), Some("pending"));
+        assert_eq!(last.to, "blocked");
+        assert_eq!(last.reason, "waiting on api");
+        assert!(DateTime::parse_from_rfc3339(&last.timestamp).is_ok());
+    }
+
+    #[test]
+    fn block_task_rejects_terminal_done() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let error = store.block_task("task-001", "reason").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyTerminal));
+    }
+
+    #[test]
+    fn block_task_rejects_failed() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.fail_task("task-001", "failed").unwrap();
+
+        let error = store.block_task("task-001", "reason").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyTerminal));
+    }
+
+    #[test]
+    fn block_task_rejects_already_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.block_task("task-001", "first reason").unwrap();
+
+        let error = store.block_task("task-001", "second reason").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyBlocked));
+    }
+
+    #[test]
+    fn block_unknown_task_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let error = store.block_task("task-999", "reason").unwrap_err();
+        assert!(matches!(error, StoreError::NotFound));
+    }
+
+    #[test]
+    fn unblock_task_restores_phase_and_clears_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+        store.unblock_task("task-001").unwrap();
+        let task = store.get_task("task-001").unwrap();
+
+        assert_eq!(task.state, "enriching");
+        assert!(task.blocked_at_phase.is_none());
+        assert!(task.blocked_reason.is_none());
+        let last = task.history.last().unwrap();
+        assert_eq!(last.from.as_deref(), Some("blocked"));
+        assert_eq!(last.to, "enriching");
+        assert_eq!(last.reason, "unblocked");
+    }
+
+    #[test]
+    fn unblock_non_blocked_task_returns_not_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store.add_task("First", "", None, vec![]).unwrap();
+
+        let error = store.unblock_task("task-001").unwrap_err();
+        assert!(matches!(error, StoreError::NotBlocked));
+    }
+
+    #[test]
+    fn unblock_unknown_task_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let error = store.unblock_task("task-999").unwrap_err();
+        assert!(matches!(error, StoreError::NotFound));
     }
 
     #[test]
