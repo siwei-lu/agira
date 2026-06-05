@@ -44,6 +44,9 @@ enum Commands {
         command: PhaseCommands,
     },
     /// Manage lifecycle hooks
+    #[command(
+        long_about = "Manage lifecycle hooks.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID       task ID (e.g. task-001)\n  AGIRA_TASK_TITLE    task title\n  AGIRA_PROJECT_SLUG  lowercased git-root basename\n  AGIRA_FROM_PHASE    phase the task is leaving (empty string on first advance)\n  AGIRA_TO_PHASE      phase the task is entering\n  AGIRA_ARTIFACT      --artifact text from 'agira task work --artifact' (empty if not provided)\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+    )]
     Hook {
         #[command(subcommand)]
         command: HookCommands,
@@ -95,6 +98,9 @@ enum HookCommands {
     /// List effective lifecycle hooks
     List,
     /// Add a lifecycle hook
+    #[command(
+        after_help = "Environment variables injected into every hook script:\n\n  AGIRA_TASK_ID       task ID (e.g. task-001)\n  AGIRA_TASK_TITLE    task title\n  AGIRA_PROJECT_SLUG  lowercased git-root basename\n  AGIRA_FROM_PHASE    phase the task is leaving (empty string on first advance)\n  AGIRA_TO_PHASE      phase the task is entering\n  AGIRA_ARTIFACT      --artifact text from 'agira task work --artifact' (empty if not provided)\n\nExample:\n\n  agira hook add done echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+    )]
     Add {
         /// Write the hook to ~/.agira/config.toml instead of the current project
         #[arg(long = "global")]

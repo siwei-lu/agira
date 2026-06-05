@@ -12,6 +12,10 @@ fn agira(home: &Path, repo: &Path) -> Command {
     command
 }
 
+fn agira_bin() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_agira"))
+}
+
 fn run_ok(command: &mut Command) -> Output {
     let output = command.output().unwrap();
 
@@ -158,4 +162,47 @@ fn hook_add_unknown_phase_exits_nonzero_with_unknown_hook_event() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(stderr.contains("unknown hook event: review"));
+}
+
+#[test]
+fn hook_add_help_documents_injected_env_vars() {
+    let output = agira_bin()
+        .args(["hook", "add", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hook add --help exited with non-zero status"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("AGIRA_TASK_ID"),
+        "expected AGIRA_TASK_ID in hook add --help output"
+    );
+    assert!(
+        stdout.contains("AGIRA_TO_PHASE"),
+        "expected AGIRA_TO_PHASE in hook add --help output"
+    );
+}
+
+#[test]
+fn hook_help_documents_injected_env_vars() {
+    let output = agira_bin().args(["hook", "--help"]).output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "hook --help exited with non-zero status"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("AGIRA_TASK_ID"),
+        "expected AGIRA_TASK_ID in hook --help output"
+    );
+    assert!(
+        stdout.contains("AGIRA_TO_PHASE"),
+        "expected AGIRA_TO_PHASE in hook --help output"
+    );
 }
