@@ -127,6 +127,7 @@ enum HookCommands {
         #[arg(long = "global")]
         global: bool,
         /// Hook event name: *, task_added, failed, or a configured phase
+        #[arg(value_name = "event")]
         event: String,
         /// Replacement shell command to run for the hook
         #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]

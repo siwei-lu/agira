@@ -11,6 +11,12 @@ fn help_stdout(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+fn has_uppercase_placeholder_start(out: &str) -> bool {
+    out.as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'<' && pair[1].is_ascii_uppercase())
+}
+
 #[test]
 fn task_help_uses_lowercase_command_placeholder() {
     let out = help_stdout(&["task"]);
@@ -47,6 +53,19 @@ fn hook_help_uses_lowercase_command_placeholder() {
     assert!(
         !out.contains("<COMMAND>"),
         "found uppercase <COMMAND> in 'agira hook --help'"
+    );
+}
+
+#[test]
+fn hook_update_help_uses_lowercase_event_placeholder() {
+    let out = help_stdout(&["hook", "update"]);
+    assert!(
+        out.contains("<event>"),
+        "expected lowercase <event> in 'agira hook update --help', got:\n{out}"
+    );
+    assert!(
+        !has_uppercase_placeholder_start(&out),
+        "found uppercase placeholder matching '<[A-Z]' in 'agira hook update --help', got:\n{out}"
     );
 }
 
