@@ -91,6 +91,17 @@ fn hook_add_creates_project_hooks_file_and_list_shows_project_hook() {
 }
 
 #[test]
+fn hook_add_accepts_task_added_event() {
+    let (home, _workspace, repo) = setup_repo();
+
+    run_ok(agira(home.path(), &repo).args(["hook", "add", "task_added", "printf", "created"]));
+
+    let contents = fs::read_to_string(project_hooks_path(home.path())).unwrap();
+    assert!(contents.contains("on = \"task_added\""));
+    assert!(contents.contains("run = \"printf created\""));
+}
+
+#[test]
 fn hook_add_global_writes_user_config_and_list_shows_global_hook() {
     let (home, _workspace, repo) = setup_repo();
 
@@ -182,6 +193,14 @@ fn hook_add_help_documents_injected_env_vars() {
         "expected AGIRA_TASK_ID in hook add --help output"
     );
     assert!(
+        stdout.contains("task_added"),
+        "expected task_added in hook add --help output"
+    );
+    assert!(
+        stdout.contains("AGIRA_TASK_DESCRIPTION"),
+        "expected AGIRA_TASK_DESCRIPTION in hook add --help output"
+    );
+    assert!(
         stdout.contains("AGIRA_TO_PHASE"),
         "expected AGIRA_TO_PHASE in hook add --help output"
     );
@@ -200,6 +219,14 @@ fn hook_help_documents_injected_env_vars() {
     assert!(
         stdout.contains("AGIRA_TASK_ID"),
         "expected AGIRA_TASK_ID in hook --help output"
+    );
+    assert!(
+        stdout.contains("task_added"),
+        "expected task_added in hook --help output"
+    );
+    assert!(
+        stdout.contains("AGIRA_TASK_DESCRIPTION"),
+        "expected AGIRA_TASK_DESCRIPTION in hook --help output"
     );
     assert!(
         stdout.contains("AGIRA_TO_PHASE"),

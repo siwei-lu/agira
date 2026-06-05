@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::DateTime;
 use tempfile::TempDir;
 
 fn agira(home: &Path, repo: &Path) -> Command {
@@ -153,4 +154,87 @@ fn global_hook_registered_by_cli_fires_on_matching_task_transition() {
         .expect("global hook registered by CLI did not write output within 2s");
 
     assert_eq!(contents, "global-hook-fired");
+}
+
+#[test]
+fn task_added_hook_receives_new_task_env_vars() {
+    let (home, _workspace, repo) = setup_repo("Task Added Hook Repo");
+    let hooks_path = home
+        .path()
+        .join(".agira")
+        .join("task-added-hook-repo")
+        .join("hooks.toml");
+    let hook_output = home.path().join("task-added-hook-output.txt");
+    let hook_command = format!(
+        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_TASK_DESCRIPTION|$AGIRA_TASK_STATE|$AGIRA_TASK_PRD_MODULE_ID|$AGIRA_TASK_DEPENDENCIES|$AGIRA_TASK_RETRY_COUNT|$AGIRA_TASK_MAX_RETRIES|$AGIRA_TASK_CREATED_AT|$AGIRA_PROJECT_SLUG|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {}",
+        shell_quote(&hook_output)
+    );
+    fs::write(
+        hooks_path,
+        format!(
+            r#"[[hooks]]
+on = "task_added"
+run = {hook_command:?}
+"#
+        ),
+    )
+    .unwrap();
+
+    run_ok(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "Task added hook task",
+        "--description",
+        "description value",
+        "--prd",
+        "FM-012",
+    ]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("task_added hook did not write output within 2s");
+    let fields: Vec<&str> = contents.trim_end().split('|').collect();
+
+    assert_eq!(fields.len(), 13);
+    assert_eq!(fields[0], "task-001");
+    assert_eq!(fields[1], "Task added hook task");
+    assert_eq!(fields[2], "description value");
+    assert_eq!(fields[3], "enriching");
+    assert_eq!(fields[4], "FM-012");
+    assert_eq!(fields[5], "");
+    assert_eq!(fields[6], "0");
+    assert_eq!(fields[7], "3");
+    DateTime::parse_from_rfc3339(fields[8]).unwrap();
+    assert_eq!(fields[9], "task-added-hook-repo");
+    assert_eq!(fields[10], "");
+    assert_eq!(fields[11], "enriching");
+    assert_eq!(fields[12], "");
+}
+
+#[test]
+fn wildcard_hook_fires_when_task_is_added() {
+    let (home, _workspace, repo) = setup_repo("Wildcard Task Added Repo");
+    let hooks_path = home
+        .path()
+        .join(".agira")
+        .join("wildcard-task-added-repo")
+        .join("hooks.toml");
+    let hook_output = home.path().join("wildcard-task-added-output.txt");
+    let hook_command = format!("printf wildcard > {}", shell_quote(&hook_output));
+    fs::write(
+        hooks_path,
+        format!(
+            r#"[[hooks]]
+on = "*"
+run = {hook_command:?}
+"#
+        ),
+    )
+    .unwrap();
+
+    run_ok(agira(home.path(), &repo).args(["task", "add", "Wildcard task added hook"]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("wildcard hook did not write output for task_added within 2s");
+
+    assert_eq!(contents, "wildcard");
 }

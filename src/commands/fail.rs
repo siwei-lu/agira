@@ -78,7 +78,6 @@ fn fail_task_flow(
         .get_task(id)
         .ok_or_else(|| FailError::TaskNotFound { id: id.to_owned() })?;
     let current_state = task.state.clone();
-    let task_title = task.title.clone();
     let retry_count = task.retry_count;
     let max_retries = task.max_retries;
 
@@ -99,8 +98,9 @@ fn fail_task_flow(
             Ok(result) => result,
             Err(error) => return Err(map_store_error(error, store, id)),
         };
-        let to_phase = store.get_task(id).unwrap().state.clone();
-        dispatch_task_hooks(project, id, &task_title, &current_state, &to_phase, "");
+        let task = store.get_task(id).unwrap();
+        let to_phase = task.state.clone();
+        dispatch_task_hooks(project, task, &current_state, &to_phase, "");
         print_fail_output(&format!(
             "{id} retrying ({new_retry_count}/{max_retries}): {reason}"
         ));
@@ -109,7 +109,8 @@ fn fail_task_flow(
         if let Err(error) = store.fail_task(id, &failure_reason) {
             return Err(map_store_error(error, store, id));
         }
-        dispatch_task_hooks(project, id, &task_title, &current_state, "failed", "");
+        let task = store.get_task(id).unwrap();
+        dispatch_task_hooks(project, task, &current_state, "failed", "");
         print_fail_output(&format!("{id} failed — max retries reached"));
     }
 
@@ -118,8 +119,7 @@ fn fail_task_flow(
 
 fn dispatch_task_hooks(
     project: &Project,
-    task_id: &str,
-    task_title: &str,
+    task: &crate::core::tasks::Task,
     from_phase: &str,
     to_phase: &str,
     artifact: &str,
@@ -127,14 +127,7 @@ fn dispatch_task_hooks(
     let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
     dispatch_hooks(
         &hooks,
-        &HookContext {
-            task_id,
-            task_title,
-            project_slug: &project.slug,
-            from_phase,
-            to_phase,
-            artifact,
-        },
+        &HookContext::new(task, &project.slug, from_phase, to_phase, artifact),
     );
 }
 

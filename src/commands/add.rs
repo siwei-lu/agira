@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    hooks::{HookContext, TASK_ADDED_EVENT, dispatch_hooks, hooks_for_event},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -56,6 +57,7 @@ pub fn run_add(
 
     let mut store = TaskStore::new(&project.state_dir, &config)?;
     add_task_flow(
+        project,
         &mut store,
         title,
         description.unwrap_or(""),
@@ -74,6 +76,7 @@ fn map_config_error(error: ConfigError) -> AddError {
 }
 
 fn add_task_flow(
+    project: &Project,
     store: &mut TaskStore,
     title: &str,
     description: &str,
@@ -85,9 +88,22 @@ fn add_task_flow(
         Err(error) => return Err(map_store_error(error)),
     };
 
+    dispatch_task_added_hooks(project, &task);
     print_add_output(&format!("added {}: {}", task.id, task.title));
 
     Ok(())
+}
+
+fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task) {
+    let hooks = hooks_for_event(
+        &project.global_hooks,
+        &project.project_hooks,
+        TASK_ADDED_EVENT,
+    );
+    dispatch_hooks(
+        &hooks,
+        &HookContext::new(task, &project.slug, "", &task.state, ""),
+    );
 }
 
 fn map_store_error(error: StoreError) -> AddError {
@@ -351,11 +367,19 @@ mod tests {
     #[test]
     fn add_task_flow_maps_unknown_dependency_without_saving() {
         let temp_dir = TempDir::new().unwrap();
+        let project = test_project(&temp_dir);
         let config = test_config();
         let mut store = TaskStore::new(temp_dir.path(), &config).unwrap();
 
-        let error = add_task_flow(&mut store, "Blocked", "", None, vec!["task-999".to_owned()])
-            .unwrap_err();
+        let error = add_task_flow(
+            &project,
+            &mut store,
+            "Blocked",
+            "",
+            None,
+            vec!["task-999".to_owned()],
+        )
+        .unwrap_err();
 
         assert!(matches!(
             error,

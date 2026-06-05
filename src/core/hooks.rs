@@ -7,6 +7,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::core::tasks::Task;
+
+pub const TASK_ADDED_EVENT: &str = "task_added";
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HookEntry {
     pub on: String,
@@ -19,13 +23,46 @@ pub struct HookConfig {
     pub hooks: Vec<HookEntry>,
 }
 
-pub struct HookContext<'a> {
-    pub task_id: &'a str,
-    pub task_title: &'a str,
-    pub project_slug: &'a str,
-    pub from_phase: &'a str,
-    pub to_phase: &'a str,
-    pub artifact: &'a str,
+pub struct HookContext {
+    pub task_id: String,
+    pub task_title: String,
+    pub task_description: String,
+    pub task_state: String,
+    pub task_prd_module_id: String,
+    pub task_dependencies: String,
+    pub task_retry_count: String,
+    pub task_max_retries: String,
+    pub task_created_at: String,
+    pub project_slug: String,
+    pub from_phase: String,
+    pub to_phase: String,
+    pub artifact: String,
+}
+
+impl HookContext {
+    pub fn new(
+        task: &Task,
+        project_slug: &str,
+        from_phase: &str,
+        to_phase: &str,
+        artifact: &str,
+    ) -> Self {
+        Self {
+            task_id: task.id.clone(),
+            task_title: task.title.clone(),
+            task_description: task.description.clone(),
+            task_state: task.state.clone(),
+            task_prd_module_id: task.prd_module_id.clone().unwrap_or_default(),
+            task_dependencies: task.dependencies.join(","),
+            task_retry_count: task.retry_count.to_string(),
+            task_max_retries: task.max_retries.to_string(),
+            task_created_at: task.created_at.clone(),
+            project_slug: project_slug.to_owned(),
+            from_phase: from_phase.to_owned(),
+            to_phase: to_phase.to_owned(),
+            artifact: artifact.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -153,12 +190,23 @@ fn write_hooks_file(path: &Path, contents: String) -> Result<(), HookConfigError
 fn collect_hooks(
     agira_root: &Path,
     project_slug: &str,
-    to_phase: &str,
+    event: &str,
 ) -> Result<Vec<HookEntry>, HookConfigError> {
     let global_hooks = load_hooks(&agira_root.join("config.toml"))?;
     let project_hooks = load_hooks(&agira_root.join(project_slug).join("hooks.toml"))?;
 
-    Ok(hooks_for_phase(&global_hooks, &project_hooks, to_phase))
+    Ok(hooks_for_event(&global_hooks, &project_hooks, event))
+}
+
+pub fn hooks_for_event(
+    global_hooks: &HookConfig,
+    project_hooks: &HookConfig,
+    event: &str,
+) -> Vec<HookEntry> {
+    matching_hooks(global_hooks, event)
+        .chain(matching_hooks(project_hooks, event))
+        .cloned()
+        .collect()
 }
 
 pub fn hooks_for_phase(
@@ -166,23 +214,27 @@ pub fn hooks_for_phase(
     project_hooks: &HookConfig,
     to_phase: &str,
 ) -> Vec<HookEntry> {
-    matching_hooks(global_hooks, to_phase)
-        .chain(matching_hooks(project_hooks, to_phase))
-        .cloned()
-        .collect()
+    hooks_for_event(global_hooks, project_hooks, to_phase)
 }
 
-pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext<'_>) {
+pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext) {
     for hook in hooks {
         if let Err(error) = Command::new("sh")
             .arg("-c")
             .arg(&hook.run)
-            .env("AGIRA_TASK_ID", ctx.task_id)
-            .env("AGIRA_TASK_TITLE", ctx.task_title)
-            .env("AGIRA_PROJECT_SLUG", ctx.project_slug)
-            .env("AGIRA_FROM_PHASE", ctx.from_phase)
-            .env("AGIRA_TO_PHASE", ctx.to_phase)
-            .env("AGIRA_ARTIFACT", ctx.artifact)
+            .env("AGIRA_TASK_ID", &ctx.task_id)
+            .env("AGIRA_TASK_TITLE", &ctx.task_title)
+            .env("AGIRA_TASK_DESCRIPTION", &ctx.task_description)
+            .env("AGIRA_TASK_STATE", &ctx.task_state)
+            .env("AGIRA_TASK_PRD_MODULE_ID", &ctx.task_prd_module_id)
+            .env("AGIRA_TASK_DEPENDENCIES", &ctx.task_dependencies)
+            .env("AGIRA_TASK_RETRY_COUNT", &ctx.task_retry_count)
+            .env("AGIRA_TASK_MAX_RETRIES", &ctx.task_max_retries)
+            .env("AGIRA_TASK_CREATED_AT", &ctx.task_created_at)
+            .env("AGIRA_PROJECT_SLUG", &ctx.project_slug)
+            .env("AGIRA_FROM_PHASE", &ctx.from_phase)
+            .env("AGIRA_TO_PHASE", &ctx.to_phase)
+            .env("AGIRA_ARTIFACT", &ctx.artifact)
             .spawn()
         {
             eprintln!("warning: hook spawn failed: {error}");
@@ -192,12 +244,12 @@ pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext<'_>) {
 
 fn matching_hooks<'a>(
     config: &'a HookConfig,
-    to_phase: &'a str,
+    event: &'a str,
 ) -> impl Iterator<Item = &'a HookEntry> {
     config
         .hooks
         .iter()
-        .filter(move |hook| hook.on == "*" || hook.on == to_phase)
+        .filter(move |hook| hook.on == "*" || hook.on == event)
 }
 
 #[cfg(test)]

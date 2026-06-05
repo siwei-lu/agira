@@ -94,17 +94,18 @@ pub fn run_work(
 
             let mut store = TaskStore::new(&project.state_dir, &config)?;
 
-            let (task_id, task_title) = {
+            let task_id = {
                 let current_task = select_next_task(store.all_tasks(), &config)
                     .ok_or(WorkError::NoActionableTask)?;
-                (current_task.id.clone(), current_task.title.clone())
+                current_task.id.clone()
             };
 
             let completed_at = Utc::now().to_rfc3339();
             let from_phase = store.record_phase_artifact(&task_id, artifact, completed_at)?;
             store.next_phase(&task_id)?;
 
-            let resulting_state = store.get_task(&task_id).unwrap().state.clone();
+            let resulting_task = store.get_task(&task_id).unwrap().clone();
+            let resulting_state = resulting_task.state.clone();
             let hooks = hooks_for_phase(
                 &project.global_hooks,
                 &project.project_hooks,
@@ -112,25 +113,28 @@ pub fn run_work(
             );
             dispatch_hooks(
                 &hooks,
-                &HookContext {
-                    task_id: &task_id,
-                    task_title: &task_title,
-                    project_slug: &project.slug,
-                    from_phase: &from_phase,
-                    to_phase: &resulting_state,
+                &HookContext::new(
+                    &resulting_task,
+                    &project.slug,
+                    &from_phase,
+                    &resulting_state,
                     artifact,
-                },
+                ),
             );
 
             if resulting_state == terminal_phase {
                 print_work_output(&format!("{task_id} done ✓"));
                 let convention = read_recent_commits(&project.git_root);
-                print_work_output(&commit_prompt(&task_id, &task_title, convention.as_deref()));
+                print_work_output(&commit_prompt(
+                    &task_id,
+                    &resulting_task.title,
+                    convention.as_deref(),
+                ));
                 let next_output = format_pick_output(
                     &config,
                     store.all_tasks(),
                     None,
-                    Some((&task_id, &task_title)),
+                    Some((&task_id, &resulting_task.title)),
                 );
                 print_work_output(&next_output);
             } else {
