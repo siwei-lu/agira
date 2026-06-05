@@ -113,6 +113,7 @@ pub fn run_todo(
             );
             dispatch_hooks(
                 &hooks,
+                &resulting_state,
                 &HookContext::new(
                     &resulting_task,
                     &project.slug,

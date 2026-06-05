@@ -108,6 +108,7 @@ fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task)
     );
     dispatch_hooks(
         &hooks,
+        TASK_ADDED_EVENT,
         &HookContext::new(
             task,
             &project.slug,

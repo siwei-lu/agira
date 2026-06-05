@@ -127,6 +127,7 @@ fn dispatch_task_hooks(
     let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
     dispatch_hooks(
         &hooks,
+        to_phase,
         &HookContext::new(
             task,
             &project.slug,

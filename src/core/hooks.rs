@@ -242,8 +242,25 @@ fn hook_debug_enabled(hook_debug: bool) -> bool {
     hook_debug || matches!(std::env::var("AGIRA_HOOK_DEBUG").as_deref(), Ok("1"))
 }
 
-pub fn dispatch_hooks(hooks: &[HookEntry], ctx: &HookContext, hook_debug: bool) {
+pub fn dispatch_hooks(hooks: &[HookEntry], event: &str, ctx: &HookContext, hook_debug: bool) {
     let debug_log = hook_debug_enabled(hook_debug).then(|| ctx.state_dir.join("hook-debug.log"));
+
+    if let (true, Some(path)) = (hooks.is_empty(), debug_log.as_deref()) {
+        append_hook_debug_entry(
+            path,
+            &HookDebugEntry {
+                spawned_at: Utc::now().to_rfc3339(),
+                event: event.to_owned(),
+                task_id: ctx.task_id.clone(),
+                command: String::new(),
+                spawn_result: "no_matching_hooks".to_owned(),
+                pid: None,
+                exit_status: None,
+                stdout: None,
+                stderr: None,
+            },
+        );
+    }
 
     for hook in hooks {
         match debug_log.as_deref() {
@@ -658,7 +675,7 @@ run = "echo failed"
             ),
         }];
 
-        dispatch_hooks(&hooks, &ctx, false);
+        dispatch_hooks(&hooks, "done", &ctx, false);
 
         let contents = read_file_eventually(&output_path);
         assert_eq!(contents, temp_dir.path().to_string_lossy());
@@ -685,7 +702,7 @@ run = "echo failed"
             run: "true".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, false);
+        dispatch_hooks(&hooks, "done", &ctx, false);
 
         assert!(!debug_path.exists());
     }
@@ -711,7 +728,7 @@ run = "echo failed"
             run: "printf 'hook stdout'; printf 'hook stderr' >&2".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, false);
+        dispatch_hooks(&hooks, "done", &ctx, false);
 
         let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
@@ -752,11 +769,98 @@ run = "echo failed"
             run: "true".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, true);
+        dispatch_hooks(&hooks, "done", &ctx, true);
 
         let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["event"], "done");
+    }
+
+    #[test]
+    fn debug_mode_empty_hooks_logs_no_matching_hooks() {
+        let _env = HookDebugEnvGuard::set(Some("1"));
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
+        let hooks: Vec<HookEntry> = Vec::new();
+
+        dispatch_hooks(&hooks, "done", &ctx, false);
+
+        let entries = read_debug_values(&debug_path);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_debug_keys(entry);
+        assert_eq!(entry["event"], "done");
+        assert_eq!(entry["task_id"], "task-001");
+        assert_eq!(entry["command"], "");
+        assert_eq!(entry["spawn_result"], "no_matching_hooks");
+        assert!(entry["pid"].is_null());
+        assert!(entry["exit_status"].is_null());
+        assert!(entry["stdout"].is_null());
+        assert!(entry["stderr"].is_null());
+        DateTime::parse_from_rfc3339(entry["spawned_at"].as_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn default_mode_empty_hooks_creates_no_log_file() {
+        let _env = HookDebugEnvGuard::set(None);
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
+        let hooks: Vec<HookEntry> = Vec::new();
+
+        dispatch_hooks(&hooks, "done", &ctx, false);
+
+        assert!(!debug_path.exists());
+    }
+
+    #[test]
+    fn debug_mode_task_added_empty_hooks_logs_task_added_event() {
+        let _env = HookDebugEnvGuard::set(Some("1"));
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "pending",
+            "",
+        );
+        let debug_path = state_dir.join("hook-debug.log");
+        let hooks: Vec<HookEntry> = Vec::new();
+
+        dispatch_hooks(&hooks, TASK_ADDED_EVENT, &ctx, false);
+
+        let entries = read_debug_values(&debug_path);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_debug_keys(entry);
+        assert_eq!(entry["event"], TASK_ADDED_EVENT);
+        assert_ne!(entry["event"], ctx.to_phase);
+        assert_eq!(entry["spawn_result"], "no_matching_hooks");
     }
 
     #[test]
@@ -780,7 +884,7 @@ run = "echo failed"
             run: "invalid\0command".to_owned(),
         }];
 
-        dispatch_hooks(&hooks, &ctx, false);
+        dispatch_hooks(&hooks, "failed", &ctx, false);
 
         let entries = read_debug_values(&debug_path);
         assert_eq!(entries.len(), 1);
