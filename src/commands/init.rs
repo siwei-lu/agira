@@ -25,7 +25,7 @@ pub enum InitError {
     MissingFlags { missing: Vec<String> },
 
     #[error(
-        "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:sonnet)"
+        "invalid phases: use comma-separated phase:model pairs (e.g. enriching:opus,in_progress:codex); phase names and model labels must be non-empty and contain no whitespace"
     )]
     InvalidPhases,
 
@@ -458,15 +458,16 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-Reason about project complexity to propose only the middle of the state machine. Each phase carries its model.
+Reason about project complexity to propose only the middle of the state machine. Each phase carries a freeform agent/model label.
+Model labels are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
 `pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.
-- Design / enrichment phases → `opus` (reasoning-heavy, architecture decisions)
-- Implementation phases → `sonnet` (code generation, good cost/quality balance)
-- Verification / linting phases → `haiku` (fast, cheap, mechanical checks)
+- Design / enrichment phases → `opus` or another reasoning-heavy agent label
+- Implementation phases → `sonnet`, `codex`, or another code execution label
+- Verification / linting phases → `haiku` or another fast mechanical-check label
 
 Examples:
 - PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku`
-- CLI tool or library: `in_progress:sonnet,verifying:haiku`
+- CLI tool or library: `in_progress:codex,verifying:haiku`
 - Prototype: `in_progress:sonnet`
 
 Present 2 options with a clear trade-off. Format: `phase:model,phase:model,...`
@@ -851,6 +852,8 @@ mod tests {
         assert!(prompt.contains("Write the whole file, not just an appended block."));
         assert!(!prompt.contains("agira-context"));
         assert!(prompt.contains("phase:model"));
+        assert!(prompt.contains("freeform agent/model label"));
+        assert!(prompt.contains("codex"));
         assert!(prompt.contains("`pending` and `done` are built-in phases"));
         assert!(prompt.contains("Do not define, include, or reference them in `--phases`"));
         assert!(!prompt.contains("--models"));
