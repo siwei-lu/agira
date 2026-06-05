@@ -9,6 +9,7 @@ use thiserror::Error;
 struct ProjectEntry {
     name: String,
     state_dir: PathBuf,
+    source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -76,17 +77,35 @@ fn list_initialized_projects(agira_root: &Path) -> Result<Vec<ProjectEntry>, Pro
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
-        projects.push(ProjectEntry { name, state_dir });
+        let source_path = read_source_path(&state_dir);
+        projects.push(ProjectEntry {
+            name,
+            state_dir,
+            source_path,
+        });
     }
 
     projects.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(projects)
 }
 
+fn read_source_path(state_dir: &Path) -> Option<PathBuf> {
+    let content = fs::read_to_string(state_dir.join(".source_path")).ok()?;
+    let trimmed = content.trim_end_matches('\n');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
 fn format_project_list(projects: &[ProjectEntry]) -> String {
     projects
         .iter()
-        .map(|project| format!("{}  {}", project.name, project.state_dir.display()))
+        .map(|project| {
+            let display_path = project.source_path.as_deref().unwrap_or(&project.state_dir);
+            format!("{}  {}", project.name, display_path.display())
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -121,12 +140,36 @@ mod tests {
                 ProjectEntry {
                     name: "alpha".to_owned(),
                     state_dir: alpha,
+                    source_path: None,
                 },
                 ProjectEntry {
                     name: "zebra".to_owned(),
                     state_dir: zebra,
+                    source_path: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn list_initialized_projects_reads_source_path_when_present() {
+        let agira_root = TempDir::new().unwrap();
+        let myproject = agira_root.path().join("myproject");
+
+        fs::create_dir(&myproject).unwrap();
+        fs::write(myproject.join("config.json"), "{}").unwrap();
+        fs::write(
+            myproject.join(".source_path"),
+            "/Users/alice/workspace/myproject\n",
+        )
+        .unwrap();
+
+        let projects = list_initialized_projects(agira_root.path()).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].source_path,
+            Some(PathBuf::from("/Users/alice/workspace/myproject"))
         );
     }
 
@@ -153,10 +196,25 @@ mod tests {
     }
 
     #[test]
-    fn format_project_list_outputs_name_and_full_state_dir() {
+    fn format_project_list_outputs_source_path_when_present() {
         let project = ProjectEntry {
             name: "alpha".to_owned(),
             state_dir: PathBuf::from("/tmp/.agira/alpha"),
+            source_path: Some(PathBuf::from("/Users/alice/workspace/alpha")),
+        };
+
+        assert_eq!(
+            format_project_list(&[project]),
+            "alpha  /Users/alice/workspace/alpha"
+        );
+    }
+
+    #[test]
+    fn format_project_list_falls_back_to_state_dir_when_no_source_path() {
+        let project = ProjectEntry {
+            name: "alpha".to_owned(),
+            state_dir: PathBuf::from("/tmp/.agira/alpha"),
+            source_path: None,
         };
 
         assert_eq!(format_project_list(&[project]), "alpha  /tmp/.agira/alpha");
