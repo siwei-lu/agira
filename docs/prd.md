@@ -41,7 +41,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
 - When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
   1. Instruct the agent to scan the repo root for stack markers (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`) and derive sensible defaults
-  2. List each flag and its purpose; for `--phases`, explain that `pending` is always first and `done` is always last, and include model recommendations per phase type: pending → `sonnet`, enriching (design/planning) → `opus`, in_progress (implementation) → `sonnet`, verifying (mechanical checks) → `haiku`, done → `haiku`; agent should confirm or override with the user
+  2. List each flag and its purpose; for `--phases`, explain that `pending` is always first and `done` is always last, and include model recommendations for middle phases: `enriching` (design/planning) → `opus`, `in_progress` (implementation) → `sonnet`, `accepting` (independent review) → `sonnet`, and `verifying` (mechanical checks) → `haiku`; require the agent to present the full resulting state machine in `pending -> ... -> done` form; teach the phase principle that each middle phase is one subagent handoff, so prefer fewer phases and add phases only when the project genuinely needs focused context; explain that each middle phase should have a duty paragraph and duties are set after init with `agira phase update --set-duty <phase> "<text>"`; agent should confirm or override with the user
   3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every required flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1:model1,phase2:model2,...> ...`)
 - Partial flag sets (some but not all required flags present) exit 1 with: `error: agira init requires all flags or none; missing: --<flag> [--<flag> ...]`
 - `max_retries` is not a flag; it is read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
@@ -308,6 +308,9 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 8 — 2026-06-07
+- FM-002: init prompt now teaches phase principle + per-phase duties, fixes built-in-phase --phases wording, requires full state-machine presentation; default recommended chain grows to pending,enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku,done
+
 ### Round 7 — 2026-06-07
 - FM-002: remove --acceptance-testing flag and the acceptance_testing config field (superseded by per-phase duties); existing config.json still loads (field read and discarded)
 

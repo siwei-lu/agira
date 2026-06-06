@@ -208,6 +208,11 @@ fn default_phases() -> Vec<PhaseConfig> {
             duty: None,
         },
         PhaseConfig {
+            name: "accepting".to_owned(),
+            model: Some("sonnet".to_owned()),
+            duty: None,
+        },
+        PhaseConfig {
             name: "verifying".to_owned(),
             model: Some("haiku".to_owned()),
             duty: None,
@@ -398,22 +403,42 @@ Name the detected language and primary framework. If the repo is a monorepo or h
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
-**`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.**
+**`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not include them in the --phases flag value; configure only the workflow phases between them.**
 
 Reason about project complexity to propose only the middle of the state machine. Each phase may carry a freeform agent/model label.
 Model labels are optional. When present, they are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
 A bare phase name is valid when the phase should be model-less in config. If a project config later defines `default_model`, prompt generation can use that default for non-mandatory bare phases.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
+- Independent review / acceptance phases → `sonnet`, `codex`, or another code-aware label
 - Verification / linting phases → `haiku` or another fast mechanical-check label
 
+Principle of phases:
+- Each middle phase is one dedicated subagent invocation.
+- Add a phase only when that step genuinely needs its own focused context.
+- The principle is to prefer fewer phases because each handoff has cost.
+- A simple CLI tool or library often needs only `in_progress + verifying`.
+- Reserve multi-phase pipelines for projects that genuinely need spec elaboration and/or independent review.
+
+Present the full resulting state machine to the user, including built-ins, in arrow form:
+`pending -> [chosen phases] -> done`
+
 Examples:
-- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,reviewing:sonnet,verifying:haiku`
+- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku`
 - CLI tool or library: `in_progress:codex,verifying:haiku`
 - Prototype with explicit model: `in_progress:sonnet`
 - Prototype using a configured default model: `in_progress`
 
 Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],...`
+
+**Phase duties**
+Each middle phase should carry a `duty` paragraph that states what the subagent does and what evidence or artifact it must produce. Duties are not set in `agira init`; after init, set them with:
+
+```sh
+agira phase update --set-duty <phase> "<text>"
+```
+
+Do not set duties on `pending` or `done`; they are mandatory phases and reject duties.
 
 **`--verification-commands`**
 From your scan and required start proof, propose exact commands. Prefer commands found in
@@ -433,8 +458,14 @@ mentions a requirements document.
 Present ALL findings and recommendations in ONE message. Ask the user only where a decision is genuinely ambiguous (multiple reasonable options); confirm unambiguous values inline without a question.
 
 Include the scan findings that matter, the required start proof, the recommended flag values,
-and 2–3 concrete alternatives only where the choice is not obvious. Ask for decisions with
-specific options, not an open-ended "what would you like?"
+the full state machine in `pending -> ... -> done` form, and 2–3 concrete alternatives only
+where the choice is not obvious. Ask for decisions with specific options, not an open-ended
+"what would you like?"
+
+Ask how they verify a feature is truly complete for this project: screenshots for frontend,
+API request/response for backend, stdout/stderr for CLI, or other proof of correctness.
+Ask what evidence each phase should deliver, then draft a suitable `duty` paragraph per
+middle phase for the user to confirm.
 
 ## Step 5 — Run agira init
 
@@ -448,7 +479,17 @@ agira init \
   [--prd-path <path>]
 ```
 
-## Step 6 — Write CLAUDE.md
+## Step 6 — Set phase duties
+
+After running `agira init`, run one command per meaningful middle phase:
+
+```sh
+agira phase update --set-duty <phase> "<draft duty>"
+```
+
+Use only duties the user confirmed. Do not run this for `pending` or `done`.
+
+## Step 7 — Write CLAUDE.md
 
 After running `agira init`, update `CLAUDE.md` in the repo root so future AI agents can work
 in this repo with minimal rediscovery.
@@ -656,6 +697,15 @@ mod tests {
         assert_eq!(config.phases[0].model, None);
         assert_eq!(config.phases[1].name, "enriching");
         assert_eq!(config.phases[1].model, Some("opus".to_owned()));
+        assert_eq!(config.phases.len(), 6);
+        assert!(config.phases.iter().all(|phase| phase.duty.is_none()));
+        assert_eq!(config.phases[2].name, "in_progress");
+        assert_eq!(config.phases[2].model, Some("sonnet".to_owned()));
+        assert_eq!(config.phases[3].name, "accepting");
+        assert_eq!(config.phases[3].model, Some("sonnet".to_owned()));
+        assert_eq!(config.phases[4].name, "verifying");
+        assert_eq!(config.phases[4].model, Some("haiku".to_owned()));
+        assert_eq!(config.phases[5].name, "done");
     }
 
     #[test]
@@ -816,7 +866,15 @@ mod tests {
         assert!(prompt.contains("codex"));
         assert!(prompt.contains("`pending` and `done` are built-in phases"));
         assert!(prompt.contains("**`pending` and `done`"));
-        assert!(prompt.contains("Do not define, include, or reference them in `--phases`"));
+        assert!(prompt.contains("Do not include them in the --phases flag value"));
+        assert!(prompt.contains("pending -> "));
+        assert!(prompt.contains("-> done"));
+        assert!(prompt.contains("--set-duty"));
+        assert!(prompt.contains("duty"));
+        assert!(prompt.contains("one dedicated subagent"));
+        assert!(prompt.contains("prefer fewer phases"));
+        assert!(prompt.contains("in_progress + verifying"));
+        assert!(prompt.contains("truly complete for this project"));
         assert!(!prompt.contains("--models"));
         assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
         assert!(prompt.contains("This step is required, not optional."));
@@ -836,6 +894,8 @@ mod tests {
         assert!(prompt.contains("Never put a raw semicolon"));
         let removed_acceptance_flag = format!("--{}-{}", "acceptance", "testing");
         assert!(!prompt.contains(&removed_acceptance_flag));
+        let removed_acceptance_testing_phrase = format!("{} {}", "acceptance", "test");
+        assert!(!prompt.contains(&removed_acceptance_testing_phrase));
     }
 
     #[test]
