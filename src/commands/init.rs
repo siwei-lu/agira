@@ -23,7 +23,7 @@ pub enum InitError {
     MissingFlags { missing: Vec<String> },
 
     #[error(
-        "invalid phases: use comma-separated phase names or phase:model pairs (e.g. enriching,in_progress:codex); phase names and model labels must be non-empty and contain no whitespace"
+        "invalid phases: use comma-separated phase names or phase:model pairs (e.g. enriching,in_progress:codex); phase names and model labels must be non-empty"
     )]
     InvalidPhases,
 
@@ -409,7 +409,7 @@ stacks, ask which part agira is being set up for before continuing.
 **`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not include them in the --phases flag value; configure only the workflow phases between them.**
 
 Reason about project complexity to propose only the middle of the state machine. Each phase may carry a freeform agent/model label.
-Model labels are optional. When present, they are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
+Model labels are optional. When present, they are arbitrary non-empty text (whitespace allowed), such as `opus`, `sonnet`, `haiku`, `codex`, `dispatch -a codex`, or a project-specific executor label.
 A bare phase name is valid when the phase should be model-less in config. If a project config later defines `default_model`, prompt generation can use that default for non-mandatory bare phases.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
@@ -592,11 +592,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                 Some((name, model)) => {
                     let name = name.trim();
                     let model = model.trim();
-                    if name.is_empty()
-                        || model.is_empty()
-                        || name.chars().any(char::is_whitespace)
-                        || model.chars().any(char::is_whitespace)
-                    {
+                    if name.is_empty() || model.is_empty() {
                         Err(InitError::InvalidPhases)
                     } else {
                         Ok(PhaseConfig {
@@ -606,17 +602,11 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                         })
                     }
                 }
-                None => {
-                    if pair.chars().any(char::is_whitespace) {
-                        Err(InitError::InvalidPhases)
-                    } else {
-                        Ok(PhaseConfig {
-                            name: pair.to_owned(),
-                            model: None,
-                            duty: None,
-                        })
-                    }
-                }
+                None => Ok(PhaseConfig {
+                    name: pair.to_owned(),
+                    model: None,
+                    duty: None,
+                }),
             }
         })
         .collect();
@@ -771,10 +761,14 @@ mod tests {
         assert_eq!(with_bare_phase[2].name, "in_progress");
         assert_eq!(with_bare_phase[2].model, Some("codex".to_owned()));
 
-        assert!(matches!(
-            super::parse_phases_flag("in progress:sonnet"),
-            Err(InitError::InvalidPhases)
-        ));
+        let with_spaced_model = super::parse_phases_flag("in_progress:dispatch -a codex").unwrap();
+        assert_eq!(with_spaced_model.len(), 3);
+        assert_eq!(with_spaced_model[1].name, "in_progress");
+        assert_eq!(
+            with_spaced_model[1].model,
+            Some("dispatch -a codex".to_owned())
+        );
+
         assert!(matches!(
             super::parse_phases_flag(""),
             Err(InitError::InvalidPhases)
@@ -785,6 +779,10 @@ mod tests {
         ));
         assert!(matches!(
             super::parse_phases_flag("enriching:"),
+            Err(InitError::InvalidPhases)
+        ));
+        assert!(matches!(
+            super::parse_phases_flag("enriching:   "),
             Err(InitError::InvalidPhases)
         ));
     }

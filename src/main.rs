@@ -81,7 +81,7 @@ enum PhaseCommands {
     Get,
     /// Add, insert, remove, or update phases in the state machine
     Update {
-        /// Phase to add: bare name (e.g. review) or name:model (e.g. review:codex); labels cannot contain whitespace
+        /// Phase to add: bare name (e.g. review) or name:model (e.g. review:codex)
         #[arg(long, value_name = "add")]
         add: Option<String>,
         /// Insert the new phase after this existing phase

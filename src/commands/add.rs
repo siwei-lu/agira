@@ -181,7 +181,7 @@ fn validate_phase_name(name: &str) -> Result<(), String> {
 }
 
 fn is_valid_phase_label(label: &str) -> bool {
-    !label.is_empty() && !label.chars().any(char::is_whitespace)
+    !label.trim().is_empty()
 }
 
 fn add_task_flow(
@@ -371,6 +371,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_with_spaced_model_label() {
+        let phases = parse_phases("pending,in_progress:dispatch -a codex,done").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert_eq!(phases[1].model.as_deref(), Some("dispatch -a codex"));
+    }
+
+    #[test]
     fn normalize_prepends_pending() {
         let phases = parse_phases("in_progress:sonnet,done").unwrap();
 
@@ -418,6 +426,9 @@ mod tests {
 
         let error = parse_phases(":opus").unwrap_err();
         assert!(error.contains("empty phase name"));
+
+        let error = parse_phases("   :opus").unwrap_err();
+        assert!(error.contains("invalid phase name"));
     }
 
     #[test]
@@ -432,6 +443,9 @@ mod tests {
         let error = parse_phases("enriching:").unwrap_err();
 
         assert!(error.contains("empty model"));
+
+        let error = parse_phases("enriching:   ").unwrap_err();
+        assert!(error.contains("invalid model"));
     }
 
     #[test]

@@ -48,13 +48,11 @@ pub enum PhaseUpdateError {
     ConflictingPositionFlags,
 
     #[error(
-        "invalid --add format: use phase or phase:model (e.g. review or review:codex); phase and model labels must be non-empty and contain no whitespace"
+        "invalid --add format: use phase or phase:model (e.g. review or review:codex); phase and model labels must be non-empty"
     )]
     InvalidAddFormat,
 
-    #[error(
-        "invalid model label: {model}; model labels must be non-empty and contain no whitespace"
-    )]
+    #[error("invalid model label: {model}; model labels must be non-empty")]
     InvalidModelLabel { model: String },
 
     #[error("phase not found: {name}")]
@@ -407,7 +405,7 @@ fn run_phase_update_inner(
 
 fn parse_phase_model_arg(input: &str) -> Result<(&str, Option<&str>), PhaseUpdateError> {
     if let Some((name, model)) = input.split_once(':') {
-        // Colon present: both parts must be non-empty and whitespace-free.
+        // Colon present: both parts must be non-empty.
         if is_valid_phase_label(name) && is_valid_phase_label(model) {
             Ok((name, Some(model)))
         } else {
@@ -424,7 +422,7 @@ fn parse_phase_model_arg(input: &str) -> Result<(&str, Option<&str>), PhaseUpdat
 }
 
 fn is_valid_phase_label(label: &str) -> bool {
-    !label.is_empty() && !label.chars().any(char::is_whitespace)
+    !label.trim().is_empty()
 }
 
 fn is_mandatory_phase(name: &str) -> bool {
@@ -701,7 +699,7 @@ mod tests {
     fn invalid_add_format_returns_error() {
         let (_temp_dir, project, _config) = setup();
         // Bare phase name ("review") is now valid; only truly malformed inputs are rejected.
-        for bad_input in [":sonnet", "review:", "review sonnet", "review:son net"] {
+        for bad_input in [":sonnet", "review:", "   ", "review:   "] {
             let error =
                 run_phase_update(&project, Some(bad_input), None, None, None, None).unwrap_err();
             assert!(
@@ -745,7 +743,7 @@ mod tests {
 
     #[test]
     fn add_accepts_freeform_model_labels() {
-        for model in ["codex", "dispatch-codex", "my_agent"] {
+        for model in ["codex", "dispatch-codex", "my_agent", "dispatch -a codex"] {
             let (_temp_dir, project, _config) = setup();
             let add_arg = format!("review:{model}");
             run_phase_update(&project, Some(&add_arg), None, Some("done"), None, None).unwrap();
@@ -753,6 +751,14 @@ mod tests {
             let review = phases.iter().find(|p| p.name == "review").unwrap();
             assert_eq!(review.model, Some(model.to_owned()));
         }
+    }
+
+    #[test]
+    fn parse_phase_model_arg_accepts_spaced_model_label() {
+        let (name, model) = parse_phase_model_arg("reviewing:dispatch -a codex").unwrap();
+
+        assert_eq!(name, "reviewing");
+        assert_eq!(model, Some("dispatch -a codex"));
     }
 
     #[test]
@@ -1179,23 +1185,23 @@ mod tests {
     #[test]
     fn set_model_accepts_freeform_model_labels() {
         let (_temp_dir, project, _config) = setup();
-        let args = vec!["enriching".to_owned(), "my_agent".to_owned()];
+        let args = vec!["enriching".to_owned(), "dispatch -a codex".to_owned()];
         run_phase_update(&project, None, None, None, None, Some(&args)).unwrap();
         let phases = loaded_phases(&project);
         let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
-        assert_eq!(enriching.model, Some("my_agent".to_owned()));
+        assert_eq!(enriching.model, Some("dispatch -a codex".to_owned()));
     }
 
     #[test]
-    fn set_model_rejects_empty_or_whitespace_model_labels() {
-        for bad_model in ["", "my agent"] {
+    fn set_model_rejects_empty_model_labels() {
+        for bad_model in ["", "   "] {
             let (_temp_dir, project, _config) = setup();
             let args = vec!["enriching".to_owned(), bad_model.to_owned()];
             let error =
                 run_phase_update(&project, None, None, None, None, Some(&args)).unwrap_err();
             assert!(
                 matches!(error, PhaseUpdateError::InvalidModelLabel { model } if model == bad_model),
-                "expected InvalidModelLabel for model '{bad_model}'"
+                "expected InvalidModelLabel for empty model"
             );
         }
     }
