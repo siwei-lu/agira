@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -60,8 +61,8 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     }
 
     if !has_required_flags(&flags) {
-        let _defaults = scan_project(&project.git_root, project.global_config.default_max_retries);
-        print!("{}", bare_invocation_prompt());
+        let defaults = scan_project(&project.git_root, project.global_config.default_max_retries);
+        print!("{}", bare_invocation_prompt(&defaults));
         return Ok(());
     }
 
@@ -392,14 +393,18 @@ fn dependency_matches(name: &str, markers: &[&str]) -> bool {
     })
 }
 
-fn bare_invocation_prompt() -> &'static str {
-    r#"# agira init — agent setup required
+fn bare_invocation_prompt(defaults: &Config) -> String {
+    let mut prompt = String::from(
+        r#"# agira init — agent setup required
 
 `agira init` was called without flags. Your job: scan this repo, prove the project can
 start locally, reason about what you find, recommend configuration, interview the user,
 then call `agira init` with all flags filled in.
 
-## Step 1 — Scan the repo
+"#,
+    );
+    prompt.push_str(&auto_detected_defaults_block(defaults));
+    prompt.push_str(r#"## Step 1 — Scan the repo
 
 Read and record findings from each of the following before asking the user anything:
 
@@ -413,10 +418,10 @@ Read and record findings from each of the following before asking the user anyth
 2. **Build / test / lint commands** — read `package.json` scripts section, any `Makefile`,
    CI configs (`.github/workflows/`, `.gitlab-ci.yml`). Record the exact commands.
 
-3. **Run / start instructions** — find and read the project's local run instructions:
-   README files, docs, `package.json` scripts (`dev`, `start`, `serve`), `Makefile`,
+3. **Run / start instructions** — SCAN ONLY — read the run instructions, do NOT execute here.
+   Check README files, docs, `package.json` scripts (`dev`, `start`, `serve`), `Makefile`,
    `Cargo.toml`, `pyproject.toml`, Docker Compose files, Procfiles, or framework config.
-   Record the exact start command, expected port or URL, and any documented env setup.
+   Record documented start commands, expected ports or URLs, and any env setup.
 
 4. **Project structure** — list top-level directories and key source files to understand
    whether this is a CLI, library, API, full-stack app, or something else.
@@ -432,38 +437,39 @@ Read and record findings from each of the following before asking the user anyth
 ## Step 2 — Prove the project starts (REQUIRED)
 
 After scanning and before recommending flags, you MUST make a real local start/run attempt.
-This step is required, not optional. Do not proceed to `agira init` until the project starts successfully, unless you have a concrete blocker that requires user input.
+This step is required, not optional. This is where you EXECUTE the start, using what Step 1.3 found.
+Do not proceed to `agira init` until the project starts successfully, unless you have a concrete blocker that requires user input.
 
 1. Choose the most appropriate run command from the instructions you found.
 2. Install missing dependencies using the repo's declared package manager or build tool.
 3. Resolve environment issues when possible: read `.env.example` or docs, set documented
    non-secret defaults, choose a free supported port, and fix missing generated files.
    Do not invent secrets; ask the user if a real credential is required.
-4. Actually start the dev server, API, CLI, or app. For long-running servers, start them
-   only long enough to verify readiness, then stop the process unless the user asks to
-   keep it running.
+4. Branch by project type:
+   - CLI/library → build, then run a smoke invocation (e.g. `--help` or a sample command) and capture output.
+   - server/UI/API → start the process, hit the health endpoint or render a page, capture the listening URL/response, then stop the process.
 5. Confirm success with concrete evidence: listening URL, health endpoint, rendered page,
    CLI output, or equivalent smoke check.
 
-Record the exact start command, required env setup, port or URL, and verification evidence.
+Record the start command, required env setup, port or URL, and verification evidence.
 These findings must feed into `--verification-commands`, `--acceptance-testing`, and
 `CLAUDE.md`.
 
 ## Step 3 — Reason and recommend
 
-After scanning, reason about each flag. For each one, propose 2–3 concrete options ranked by
-fit, with a brief justification. **Do not just show a value and ask "confirm or override?"** —
-the user expects analysis, not confirmation dialogs.
+After scanning and Step 2 proof, reason about each flag. Propose concrete options ranked by
+fit, with a brief justification.
 
 **`--stack`**
 Name the detected language and primary framework. If the repo is a monorepo or has multiple
 stacks, ask which part agira is being set up for before continuing.
 
 **`--phases`**
+**`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.**
+
 Reason about project complexity to propose only the middle of the state machine. Each phase may carry a freeform agent/model label.
 Model labels are optional. When present, they are arbitrary non-empty text with no whitespace, such as `opus`, `sonnet`, `haiku`, `codex`, or a project-specific executor label.
 A bare phase name is valid when the phase should be model-less in config. If a project config later defines `default_model`, prompt generation can use that default for non-mandatory bare phases.
-`pending` and `done` are built-in phases that are automatically present: agira inserts `pending` first and `done` last. Do not define, include, or reference them in `--phases`; configure only the workflow phases between them.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
 - Verification / linting phases → `haiku` or another fast mechanical-check label
@@ -480,9 +486,9 @@ Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],.
 From your scan and required start proof, propose exact commands. Prefer commands found in
 CI or Makefile over anything you infer. Include the confirmed project-start smoke command
 or wrapper command, plus any setup command required before acceptance testing can run.
-Use semicolons only as command separators; do not put raw semicolons inside an individual
-command. If a reliable start check requires multiple shell operations, prefer an existing
-single project script or Makefile target and list that.
+**Separate commands with semicolons (`cmd1;cmd2;cmd3`). Never put a raw semicolon inside a single command.**
+If a reliable start check requires multiple shell operations, prefer an existing single
+project script or Makefile target and list that.
 Format: `cmd1;cmd2;cmd3`
 
 **`--acceptance-testing`**
@@ -500,14 +506,11 @@ mentions a requirements document.
 
 ## Step 4 — Interview the user
 
-Present your findings, required start proof, and recommendations, one flag at a time. For each:
-1. State what the scan found (one line)
-2. State your recommendation and why (one or two lines)
-3. Offer 2–3 concrete alternatives when the choice isn't obvious
-4. Ask for a decision — not an open-ended "what would you like?"
+Present ALL findings and recommendations in ONE message. Ask the user only where a decision is genuinely ambiguous (multiple reasonable options); confirm unambiguous values inline without a question.
 
-If the scan clearly determined a value with no ambiguity, confirm it in a single line and
-move on. Only dwell on decisions where multiple options are genuinely reasonable.
+Include the scan findings that matter, the required start proof, the recommended flag values,
+and 2–3 concrete alternatives only where the choice is not obvious. Ask for decisions with
+specific options, not an open-ended "what would you like?"
 
 ## Step 5 — Run agira init
 
@@ -524,14 +527,16 @@ agira init \
 
 ## Step 6 — Write CLAUDE.md
 
-After running `agira init`, write a **complete** `CLAUDE.md` in the repo root that captures
-all project context gathered in Steps 1–4. The goal is a file any AI agent can read to start
-working in this repo immediately — not a bounded annotation.
+After running `agira init`, update `CLAUDE.md` in the repo root so future AI agents can work
+in this repo with minimal rediscovery.
+
+Preserve all human-authored sections verbatim. Use scan findings ONLY to fill MISSING sections; never overwrite or rewrite existing content. If a required section already exists, leave it as-is.
+Keep CLAUDE.md concise — one line per point; no prose paragraphs where a bullet suffices.
 
 **If CLAUDE.md does not exist:** create it from scratch.
 
-**If CLAUDE.md exists:** read its current contents first, then write a new version that folds
-in what was there (preserving any useful project-specific guidance) and adds everything below.
+**If CLAUDE.md exists:** read its current contents first, then add only missing required
+sections or missing bullets without rewriting existing content.
 
 The CLAUDE.md must cover all of these at minimum:
 
@@ -543,9 +548,47 @@ The CLAUDE.md must cover all of these at minimum:
 - **PRD** — relative path if a requirements document was confirmed; omit otherwise
 - **Development workflow** — any conventions captured in existing config (current CLAUDE.md,
   `.claude/settings.json`, CI files, Makefile, etc.)
+"#);
+    prompt
+}
 
-Write the whole file, not just an appended block.
-"#
+fn auto_detected_defaults_block(defaults: &Config) -> String {
+    let mut block = String::new();
+
+    if defaults.stack != "unknown" {
+        let commands = if defaults.verification.commands.is_empty() {
+            "none found, derive from CI/scripts".to_owned()
+        } else {
+            defaults.verification.commands.join(";")
+        };
+
+        write!(
+            &mut block,
+            r#"## agira's auto-detected defaults
+
+**agira auto-detected these defaults; verify them, don't blindly trust them. Treat them as a starting point for Step 3 recommendations.**
+
+- `stack={stack}`
+- `--verification-commands` candidate: `{commands}`
+- `acceptance_testing={acceptance_testing}` (`--acceptance-testing={acceptance_testing}`)
+
+"#,
+            stack = defaults.stack,
+            commands = commands,
+            acceptance_testing = defaults.acceptance_testing
+        )
+        .expect("writing to String cannot fail");
+    } else {
+        block.push_str(
+            r#"## agira's auto-detected defaults
+
+**agira could not auto-detect reliable defaults for this repo. Investigate from the markers below, derive verification commands from CI/scripts, and decide acceptance testing only after Step 2 proves what starts.**
+
+"#,
+        );
+    }
+
+    block
 }
 
 fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
@@ -861,17 +904,28 @@ mod tests {
 
     #[test]
     fn bare_invocation_prompt() {
-        let prompt = super::bare_invocation_prompt();
+        let config = config_for_stack(
+            "rust",
+            vec![
+                "cargo fmt -- --check".to_owned(),
+                "cargo clippy -- -D warnings".to_owned(),
+                "cargo test".to_owned(),
+            ],
+            "cli",
+            5,
+        );
+        let prompt = super::bare_invocation_prompt(&config);
 
         assert!(prompt.contains("```sh\nagira init \\\n"));
         assert!(prompt.contains("CLAUDE.md"));
-        assert!(prompt.contains("Write the whole file, not just an appended block."));
+        assert!(prompt.contains("never overwrite"));
         assert!(!prompt.contains("agira-context"));
         assert!(prompt.contains("Model labels are optional."));
         assert!(prompt.contains("phase[:model]"));
         assert!(prompt.contains("freeform agent/model label"));
         assert!(prompt.contains("codex"));
         assert!(prompt.contains("`pending` and `done` are built-in phases"));
+        assert!(prompt.contains("**`pending` and `done`"));
         assert!(prompt.contains("Do not define, include, or reference them in `--phases`"));
         assert!(!prompt.contains("--models"));
         assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
@@ -883,6 +937,23 @@ mod tests {
         assert!(prompt.contains("confirmed project-start smoke command"));
         assert!(prompt.contains("Reason from what you successfully started, not markers alone"));
         assert!(prompt.contains("Local run/start"));
+        assert!(prompt.contains("rust"));
+        assert!(prompt.contains("cargo fmt -- --check;cargo clippy -- -D warnings"));
+        assert!(prompt.contains("ONE message"));
+        assert!(prompt.contains("CLI"));
+        assert!(prompt.contains("smoke"));
+        assert!(prompt.contains("server"));
+        assert!(prompt.contains("endpoint"));
+        assert!(prompt.contains("Never put a raw semicolon"));
+    }
+
+    #[test]
+    fn bare_invocation_prompt_unknown_defaults_use_fallback() {
+        let config = config_for_stack("unknown", vec![], "none", 3);
+        let prompt = super::bare_invocation_prompt(&config);
+
+        assert!(!prompt.contains("stack=unknown"));
+        assert!(prompt.contains("could not auto-detect"));
     }
 
     #[test]
