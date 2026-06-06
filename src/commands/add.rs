@@ -172,7 +172,7 @@ mod tests {
 
     use super::*;
     use crate::core::{
-        config::{Config, PhaseConfig, VerificationConfig},
+        config::{Config, PhaseConfig},
         global_config::GlobalConfig,
         tasks::{TaskStore, TasksFile},
     };
@@ -198,7 +198,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         }
     }
@@ -225,7 +224,6 @@ mod tests {
             r#"{
   "stack": "rust",
   "phases": [{"name":"enriching","model":"opus"},{"name":"done","model":"haiku"}],
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )

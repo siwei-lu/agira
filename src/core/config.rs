@@ -27,7 +27,6 @@ pub struct Config {
     pub phases: Vec<PhaseConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
-    pub verification: VerificationConfig,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
 }
@@ -40,11 +39,6 @@ impl Config {
 
 fn default_max_retries() -> u32 {
     3
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct VerificationConfig {
-    pub commands: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -81,7 +75,6 @@ struct ProjectConfigFile {
     state_machine: Option<Vec<String>>,
     #[serde(default)]
     models: Option<BTreeMap<String, String>>,
-    verification: VerificationConfig,
     #[serde(default)]
     #[allow(dead_code)]
     acceptance_testing: Option<String>,
@@ -137,7 +130,6 @@ pub fn load_project_config(
         stack: project_config.stack,
         phases,
         default_model,
-        verification: project_config.verification,
         max_retries: project_config
             .max_retries
             .unwrap_or(global_config.default_max_retries),
@@ -257,7 +249,6 @@ mod tests {
                 r#"{{
   "stack": "rust",
   "phases": [{{"name":"enriching","model":"opus"}},{{"name":"done"}}],
-  "verification": {{ "commands": [] }},
   "acceptance_testing": "cli"{fields}
 }}"#
             ),
@@ -272,7 +263,6 @@ mod tests {
   "stack": "rust",
   "state_machine": ["enriching", "done"],
   "models": {},
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -348,7 +338,6 @@ mod tests {
             r#"{
   "stack": "rust",
   "phases": [{"name":"enriching","model":"opus"},{"name":"in_progress","model":"sonnet"}],
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -384,7 +373,6 @@ mod tests {
     {"name":"done","model":"haiku"},
     {"name":"pending","model":"sonnet"}
   ],
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -426,7 +414,6 @@ mod tests {
   "stack": "rust",
   "state_machine": ["enriching", "verifying"],
   "models": {},
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -450,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn project_config_legacy_acceptance_field_is_backward_compatible() {
+    fn legacy_verification_key_ignored_on_read() {
         let temp_dir = TempDir::new().unwrap();
         let legacy_path = temp_dir.path().join("legacy-config.json");
         fs::write(
@@ -466,24 +453,8 @@ mod tests {
 
         let legacy_config = load_project_config(&legacy_path, &global_config(3)).unwrap();
         assert_eq!(legacy_config.stack, "rust");
-        assert_eq!(legacy_config.verification.commands, ["cargo test"]);
+        assert_eq!(legacy_config.phases[1].name, "in_progress");
         assert_eq!(legacy_config.max_retries, 3);
-
-        let current_path = temp_dir.path().join("current-config.json");
-        fs::write(
-            &current_path,
-            r#"{
-  "stack": "rust",
-  "phases": [{"name":"in_progress","model":"sonnet"}],
-  "verification": { "commands": ["cargo test"] }
-}"#,
-        )
-        .unwrap();
-
-        let current_config = load_project_config(&current_path, &global_config(4)).unwrap();
-        assert_eq!(current_config.stack, "rust");
-        assert_eq!(current_config.verification.commands, ["cargo test"]);
-        assert_eq!(current_config.max_retries, 4);
     }
 
     #[test]
@@ -519,7 +490,6 @@ mod tests {
   "state_machine": ["enriching", "done"],
   "models": {},
   "default_model": "opus",
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -549,7 +519,6 @@ mod tests {
     {"name":"triage"},
     {"name":"in_progress","model":"sonnet"}
   ],
-  "verification": { "commands": [] },
   "acceptance_testing": "cli"
 }"#,
         )
@@ -591,7 +560,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         };
 

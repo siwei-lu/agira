@@ -9,8 +9,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{
-        Config, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, VerificationConfig,
-        normalize_mandatory_phases,
+        Config, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, normalize_mandatory_phases,
     },
     project::Project,
 };
@@ -43,8 +42,14 @@ pub enum InitError {
 pub struct InitFlags {
     pub stack: Option<String>,
     pub phases: Option<String>,
-    pub verification_commands: Option<String>,
 }
+
+struct ScanResult {
+    config: Config,
+    commands: Vec<String>,
+}
+
+const CANONICAL_VERIFYING_DUTY_EXAMPLE: &str = "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance.";
 
 pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     let missing = detect_missing_flags(&flags);
@@ -55,7 +60,10 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
 
     if !has_required_flags(&flags) {
         let defaults = scan_project(&project.git_root, project.global_config.default_max_retries);
-        print!("{}", bare_invocation_prompt(&defaults));
+        print!(
+            "{}",
+            bare_invocation_prompt(&defaults.config, &defaults.commands)
+        );
         return Ok(());
     }
 
@@ -70,11 +78,6 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
         stack: stack.to_owned(),
         phases: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
         default_model: None,
-        verification: VerificationConfig {
-            commands: parse_verification_commands_flag(
-                flags.verification_commands.as_deref().unwrap_or_default(),
-            ),
-        },
         max_retries: project.global_config.default_max_retries,
     };
 
@@ -82,9 +85,9 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     write_config(&config_path, &config)
 }
 
-fn scan_project(git_root: &Path, max_retries: u32) -> Config {
+fn scan_project(git_root: &Path, max_retries: u32) -> ScanResult {
     if git_root.join("Cargo.toml").exists() {
-        return config_for_stack(
+        return scan_result_for_stack(
             "rust",
             vec![
                 "cargo fmt -- --check".to_owned(),
@@ -100,7 +103,7 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
     }
 
     if git_root.join("go.mod").exists() {
-        return config_for_stack(
+        return scan_result_for_stack(
             "go",
             vec![
                 "test -z \"$(gofmt -l .)\"".to_owned(),
@@ -112,7 +115,7 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
     }
 
     if git_root.join("pyproject.toml").exists() {
-        return config_for_stack(
+        return scan_result_for_stack(
             "python",
             vec![
                 "python -m ruff format --check .".to_owned(),
@@ -124,21 +127,21 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
     }
 
     if git_root.join("pom.xml").exists() {
-        return config_for_stack("java", vec!["mvn verify".to_owned()], max_retries);
+        return scan_result_for_stack("java", vec!["mvn verify".to_owned()], max_retries);
     }
 
     if git_root.join("build.gradle").exists() || git_root.join("build.gradle.kts").exists() {
-        return config_for_stack("java", vec!["./gradlew test".to_owned()], max_retries);
+        return scan_result_for_stack("java", vec!["./gradlew test".to_owned()], max_retries);
     }
 
     if git_root.join("pubspec.yaml").exists() {
         return scan_pubspec_project(git_root, max_retries);
     }
 
-    config_for_stack("unknown", Vec::new(), max_retries)
+    scan_result_for_stack("unknown", Vec::new(), max_retries)
 }
 
-fn scan_package_json_project(git_root: &Path, max_retries: u32) -> Config {
+fn scan_package_json_project(git_root: &Path, max_retries: u32) -> ScanResult {
     let package_json = read_package_json(&git_root.join("package.json"));
     let package_manager = detect_package_manager(git_root, package_json.as_ref());
     let stack = if is_typescript_project(git_root, package_json.as_ref()) {
@@ -148,14 +151,14 @@ fn scan_package_json_project(git_root: &Path, max_retries: u32) -> Config {
     };
     let commands = package_commands(package_manager, package_json.as_ref());
 
-    config_for_stack(stack, commands, max_retries)
+    scan_result_for_stack(stack, commands, max_retries)
 }
 
-fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
+fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> ScanResult {
     let contents = fs::read_to_string(git_root.join("pubspec.yaml")).unwrap_or_default();
 
     if contents.contains("flutter:") || contents.contains("sdk: flutter") {
-        config_for_stack(
+        scan_result_for_stack(
             "flutter",
             vec![
                 "dart format --output=none --set-exit-if-changed .".to_owned(),
@@ -165,7 +168,7 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
             max_retries,
         )
     } else {
-        config_for_stack(
+        scan_result_for_stack(
             "dart",
             vec![
                 "dart format --output=none --set-exit-if-changed .".to_owned(),
@@ -177,12 +180,18 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
     }
 }
 
-fn config_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -> Config {
+fn scan_result_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -> ScanResult {
+    ScanResult {
+        config: config_for_stack(stack, max_retries),
+        commands,
+    }
+}
+
+fn config_for_stack(stack: &str, max_retries: u32) -> Config {
     Config {
         stack: stack.to_owned(),
         phases: default_phases(),
         default_model: None,
-        verification: VerificationConfig { commands },
         max_retries,
     }
 }
@@ -329,7 +338,7 @@ fn default_package_commands(package_manager: PackageManager) -> Vec<String> {
     }
 }
 
-fn bare_invocation_prompt(defaults: &Config) -> String {
+fn bare_invocation_prompt(defaults: &Config, commands: &[String]) -> String {
     let mut prompt = String::from(
         r#"# agira init — agent setup required
 
@@ -339,7 +348,7 @@ then call `agira init` with all flags filled in.
 
 "#,
     );
-    prompt.push_str(&auto_detected_defaults_block(defaults));
+    prompt.push_str(&auto_detected_defaults_block(defaults, commands));
     prompt.push_str(r#"## Step 1 — Scan the repo
 
 Read and record findings from each of the following before asking the user anything:
@@ -385,7 +394,7 @@ Do not proceed to `agira init` until the project starts successfully, unless you
    CLI output, or equivalent smoke check.
 
 Record the start command, required env setup, port or URL, and verification evidence.
-These findings must feed into `--verification-commands` and `CLAUDE.md`.
+These findings must feed into the verifying phase duty and `CLAUDE.md`.
 
 ## Step 3 — Reason and recommend
 
@@ -436,14 +445,12 @@ For an enriching phase, a good default duty is: "Rewrite the task description as
 
 Do not set duties on `pending` or `done`; they are mandatory phases and reject duties.
 
-**`--verification-commands`**
-From your scan and required start proof, propose exact commands. Prefer commands found in
-CI or Makefile over anything you infer. Include the confirmed project-start smoke command
-or wrapper command.
-**Separate commands with semicolons (`cmd1;cmd2;cmd3`). Never put a raw semicolon inside a single command.**
-If a reliable start check requires multiple shell operations, prefer an existing single
-project script or Makefile target and list that.
-Format: `cmd1;cmd2;cmd3`
+**Verifying phase duty commands**
+From your scan and required start proof, propose exact commands to embed in the verifying phase duty.
+Prefer commands found in CI or Makefile over anything you infer. Include the confirmed project-start smoke command
+or wrapper command when it is part of final verification.
+If a reliable check requires multiple shell operations, prefer an existing single project script
+or Makefile target and describe that in the duty.
 
 ## Step 4 — Interview the user
 
@@ -466,8 +473,7 @@ Once all values are confirmed, call:
 ```sh
 agira init \
   --stack <stack> \
-  --phases <phase[:model],...> \
-  --verification-commands <cmd1;cmd2;...>
+  --phases <phase[:model],...>
 ```
 
 ## Step 6 — Set phase duties
@@ -479,6 +485,12 @@ agira phase update --set-duty <phase> "<draft duty>"
 ```
 
 Use only duties the user confirmed. Do not run this for `pending` or `done`.
+For the verifying phase, the duty should include embedding verification commands in the verifying phase duty.
+Use this canonical verifying-duty example when it fits: "#
+    );
+    prompt.push_str(CANONICAL_VERIFYING_DUTY_EXAMPLE);
+    prompt.push_str(
+        r#"
 
 ## Step 7 — Write CLAUDE.md
 
@@ -502,18 +514,19 @@ The CLAUDE.md must cover all of these at minimum:
 - **Commit conventions** — pattern from `git log`; omit if no consistent pattern was found
 - **Development workflow** — any conventions captured in existing config (current CLAUDE.md,
   `.claude/settings.json`, CI files, Makefile, etc.)
-"#);
+"#,
+    );
     prompt
 }
 
-fn auto_detected_defaults_block(defaults: &Config) -> String {
+fn auto_detected_defaults_block(defaults: &Config, commands: &[String]) -> String {
     let mut block = String::new();
 
     if defaults.stack != "unknown" {
-        let commands = if defaults.verification.commands.is_empty() {
+        let commands = if commands.is_empty() {
             "none found, derive from CI/scripts".to_owned()
         } else {
-            defaults.verification.commands.join(";")
+            commands.join(";")
         };
 
         write!(
@@ -523,7 +536,7 @@ fn auto_detected_defaults_block(defaults: &Config) -> String {
 **agira auto-detected these defaults; verify them, don't blindly trust them. Treat them as a starting point for Step 3 recommendations.**
 
 - `stack={stack}`
-- `--verification-commands` candidate: `{commands}`
+- suggested verifying-phase duty commands: `{commands}`
 
 "#,
             stack = defaults.stack,
@@ -547,10 +560,6 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
     let required = [
         ("--stack", flags.stack.as_ref()),
         ("--phases", flags.phases.as_ref()),
-        (
-            "--verification-commands",
-            flags.verification_commands.as_ref(),
-        ),
     ];
 
     if required.iter().all(|(_, value)| value.is_none())
@@ -567,7 +576,7 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
 }
 
 fn has_required_flags(flags: &InitFlags) -> bool {
-    flags.stack.is_some() && flags.phases.is_some() && flags.verification_commands.is_some()
+    flags.stack.is_some() && flags.phases.is_some()
 }
 
 fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
@@ -619,21 +628,6 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
     Ok(normalize_mandatory_phases(phases))
 }
 
-fn parse_verification_commands_flag(input: &str) -> Vec<String> {
-    let trimmed = input.trim();
-
-    if trimmed == "none" {
-        Vec::new()
-    } else {
-        trimmed
-            .split(';')
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .map(ToOwned::to_owned)
-            .collect()
-    }
-}
-
 fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
     let bytes = serde_json::to_vec_pretty(config).map_err(InitError::Serialize)?;
     let temporary_path = path.with_extension("json.tmp");
@@ -664,42 +658,48 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("Cargo.toml"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 5);
+        let result = scan_project(git_root.path(), 5);
 
-        assert_eq!(config.stack, "rust");
+        assert_eq!(result.config.stack, "rust");
         assert_eq!(
-            config.verification.commands,
+            result.commands,
             [
                 "cargo fmt -- --check",
                 "cargo clippy -- -D warnings",
                 "cargo test"
             ]
         );
-        assert_eq!(config.max_retries, 5);
-        assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, None);
-        assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, Some("opus".to_owned()));
-        assert_eq!(config.phases.len(), 6);
-        assert!(config.phases.iter().all(|phase| phase.duty.is_none()));
-        assert_eq!(config.phases[2].name, "in_progress");
-        assert_eq!(config.phases[2].model, Some("sonnet".to_owned()));
-        assert_eq!(config.phases[3].name, "accepting");
-        assert_eq!(config.phases[3].model, Some("sonnet".to_owned()));
-        assert_eq!(config.phases[4].name, "verifying");
-        assert_eq!(config.phases[4].model, Some("haiku".to_owned()));
-        assert_eq!(config.phases[5].name, "done");
+        assert_eq!(result.config.max_retries, 5);
+        assert_eq!(result.config.phases[0].name, "pending");
+        assert_eq!(result.config.phases[0].model, None);
+        assert_eq!(result.config.phases[1].name, "enriching");
+        assert_eq!(result.config.phases[1].model, Some("opus".to_owned()));
+        assert_eq!(result.config.phases.len(), 6);
+        assert!(
+            result
+                .config
+                .phases
+                .iter()
+                .all(|phase| phase.duty.is_none())
+        );
+        assert_eq!(result.config.phases[2].name, "in_progress");
+        assert_eq!(result.config.phases[2].model, Some("sonnet".to_owned()));
+        assert_eq!(result.config.phases[3].name, "accepting");
+        assert_eq!(result.config.phases[3].model, Some("sonnet".to_owned()));
+        assert_eq!(result.config.phases[4].name, "verifying");
+        assert_eq!(result.config.phases[4].model, Some("haiku".to_owned()));
+        assert_eq!(result.config.phases[5].name, "done");
     }
 
     #[test]
     fn slug_defaults_for_unknown() {
         let git_root = TempDir::new().unwrap();
 
-        let config = scan_project(git_root.path(), 4);
+        let result = scan_project(git_root.path(), 4);
 
-        assert_eq!(config.stack, "unknown");
-        assert!(config.verification.commands.is_empty());
-        assert_eq!(config.max_retries, 4);
+        assert_eq!(result.config.stack, "unknown");
+        assert!(result.commands.is_empty());
+        assert_eq!(result.config.max_retries, 4);
     }
 
     #[test]
@@ -707,10 +707,10 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("pom.xml"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3);
+        let result = scan_project(git_root.path(), 3);
 
-        assert_eq!(config.stack, "java");
-        assert_eq!(config.verification.commands, ["mvn verify"]);
+        assert_eq!(result.config.stack, "java");
+        assert_eq!(result.commands, ["mvn verify"]);
     }
 
     #[test]
@@ -718,10 +718,10 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("build.gradle"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3);
+        let result = scan_project(git_root.path(), 3);
 
-        assert_eq!(config.stack, "java");
-        assert_eq!(config.verification.commands, ["./gradlew test"]);
+        assert_eq!(result.config.stack, "java");
+        assert_eq!(result.commands, ["./gradlew test"]);
     }
 
     #[test]
@@ -729,10 +729,10 @@ mod tests {
         let git_root = TempDir::new().unwrap();
         fs::write(git_root.path().join("build.gradle.kts"), "").unwrap();
 
-        let config = scan_project(git_root.path(), 3);
+        let result = scan_project(git_root.path(), 3);
 
-        assert_eq!(config.stack, "java");
-        assert_eq!(config.verification.commands, ["./gradlew test"]);
+        assert_eq!(result.config.stack, "java");
+        assert_eq!(result.commands, ["./gradlew test"]);
     }
 
     #[test]
@@ -790,52 +790,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_verification_commands_flag() {
-        assert!(super::parse_verification_commands_flag("none").is_empty());
-        assert_eq!(
-            super::parse_verification_commands_flag(" cargo test ; cargo fmt ; ; "),
-            ["cargo test", "cargo fmt"]
-        );
-        assert_eq!(
-            super::parse_verification_commands_flag("cargo test"),
-            ["cargo test"]
-        );
-    }
-
-    #[test]
     fn detect_missing_flags() {
         let all_present = InitFlags {
             stack: Some("rust".to_owned()),
             phases: Some("done:haiku".to_owned()),
-            verification_commands: Some("cargo test".to_owned()),
         };
         assert!(super::detect_missing_flags(&all_present).is_empty());
 
         let partial = InitFlags {
             stack: Some("rust".to_owned()),
-            phases: Some("done:haiku".to_owned()),
-            verification_commands: None,
+            phases: None,
         };
-        assert_eq!(
-            super::detect_missing_flags(&partial),
-            ["--verification-commands"]
-        );
+        assert_eq!(super::detect_missing_flags(&partial), ["--phases"]);
 
         assert!(super::detect_missing_flags(&InitFlags::default()).is_empty());
     }
 
     #[test]
     fn bare_invocation_prompt() {
-        let config = config_for_stack(
-            "rust",
-            vec![
-                "cargo fmt -- --check".to_owned(),
-                "cargo clippy -- -D warnings".to_owned(),
-                "cargo test".to_owned(),
-            ],
-            5,
-        );
-        let prompt = super::bare_invocation_prompt(&config);
+        let config = config_for_stack("rust", 5);
+        let commands = vec![
+            "cargo fmt -- --check".to_owned(),
+            "cargo clippy -- -D warnings".to_owned(),
+            "cargo test".to_owned(),
+        ];
+        let prompt = super::bare_invocation_prompt(&config, &commands);
 
         assert!(prompt.contains("```sh\nagira init \\\n"));
         assert!(prompt.contains("CLAUDE.md"));
@@ -870,13 +849,19 @@ mod tests {
         assert!(prompt.contains("confirmed project-start smoke command"));
         assert!(prompt.contains("Local run/start"));
         assert!(prompt.contains("rust"));
-        assert!(prompt.contains("cargo fmt -- --check;cargo clippy -- -D warnings"));
+        assert!(prompt.contains(
+            "suggested verifying-phase duty commands: `cargo fmt -- --check;cargo clippy -- -D warnings;cargo test`"
+        ));
+        assert!(prompt.contains("embedding verification commands in the verifying phase duty"));
+        assert!(prompt.contains(
+            "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance."
+        ));
+        assert!(!prompt.contains("--verification-commands"));
         assert!(prompt.contains("ONE message"));
         assert!(prompt.contains("CLI"));
         assert!(prompt.contains("smoke"));
         assert!(prompt.contains("server"));
         assert!(prompt.contains("endpoint"));
-        assert!(prompt.contains("Never put a raw semicolon"));
         let removed_acceptance_flag = format!("--{}-{}", "acceptance", "testing");
         assert!(!prompt.contains(&removed_acceptance_flag));
         let removed_acceptance_testing_phrase = format!("{} {}", "acceptance", "test");
@@ -885,8 +870,8 @@ mod tests {
 
     #[test]
     fn bare_invocation_prompt_unknown_defaults_use_fallback() {
-        let config = config_for_stack("unknown", vec![], 3);
-        let prompt = super::bare_invocation_prompt(&config);
+        let config = config_for_stack("unknown", 3);
+        let prompt = super::bare_invocation_prompt(&config, &[]);
 
         assert!(!prompt.contains("stack=unknown"));
         assert!(prompt.contains("could not auto-detect"));
@@ -896,15 +881,7 @@ mod tests {
     fn write_config_produces_valid_json() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
-        let config = config_for_stack(
-            "rust",
-            vec![
-                "cargo fmt -- --check".to_owned(),
-                "cargo clippy -- -D warnings".to_owned(),
-                "cargo test".to_owned(),
-            ],
-            5,
-        );
+        let config = config_for_stack("rust", 5);
 
         write_config(&path, &config).unwrap();
 
@@ -915,7 +892,7 @@ mod tests {
         assert!(value.get("phases").is_some());
         assert!(value.get("state_machine").is_none());
         assert!(value.get("models").is_none());
-        assert!(value.get("verification").is_some());
+        assert!(value.get("verification").is_none());
         let legacy_acceptance_key = format!("{}_{}", "acceptance", "testing");
         assert!(value.get(&legacy_acceptance_key).is_none());
         assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));

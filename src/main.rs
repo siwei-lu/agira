@@ -32,8 +32,6 @@ enum Commands {
         stack: Option<String>,
         #[arg(long, value_name = "phases")]
         phases: Option<String>,
-        #[arg(long = "verification-commands", value_name = "verification-commands")]
-        verification_commands: Option<String>,
     },
     /// Manage workflow phases
     #[command(subcommand_value_name = "command")]
@@ -493,25 +491,16 @@ fn main() -> ExitCode {
                 }
             },
         },
-        Commands::Init {
-            stack,
-            phases,
-            verification_commands,
-        } => match resolve_project() {
-            Ok(project) => match commands::run_init(
-                &project,
-                commands::InitFlags {
-                    stack,
-                    phases,
-                    verification_commands,
-                },
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for_init(&error)
+        Commands::Init { stack, phases } => match resolve_project() {
+            Ok(project) => {
+                match commands::run_init(&project, commands::InitFlags { stack, phases }) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_init(&error)
+                    }
                 }
-            },
+            }
             Err(error) => {
                 eprintln!("error: {error}");
                 exit_code_for(&error)

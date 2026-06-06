@@ -33,10 +33,9 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Dependencies:** FM-001
 **Description:** One-time project setup. Accepts required configuration flags plus optional `--prd-path` and writes `~/.agira/<slug>/config.json` non-interactively. When called with no flags, instead of running an interactive interview it emits a Markdown agent-prompt to stdout that instructs the calling agent to scan the repo, interview the user for each value, and re-invoke `agira init` with all flags filled in. Does NOT write any files into the target repo.
 **Constraints:**
-- Flags (the first three are required when any flag is present; bare invocation with none is valid — see below):
+- Flags (both are required when any flag is present; bare invocation with none is valid — see below):
   - `--stack <name>` — one of: `rust`, `typescript`, `javascript`, `go`, `python`, `dart`, `flutter`, `unknown`
   - `--phases <phase1:model1,phase2:model2,...>` — ordered comma-separated `phase:model` pairs for the middle workflow phases; phase name has no spaces; model is a Claude model shortname (e.g. `opus`, `sonnet`, `haiku`); minimum one pair; `pending` and `done` are mandatory and auto-inserted if omitted
-  - `--verification-commands <cmd1;cmd2;...>` — semicolon-separated shell commands, or the literal string `none` for an empty list
   - `--prd-path <path>` — optional; omit to leave `prd_path` absent from config
 - When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
 - When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
@@ -47,10 +46,10 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - `max_retries` is not a flag; it is read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
 - No TTY requirement — the command is fully non-interactive in both the flag-driven and bare-invocation paths
 **Acceptance Criteria:**
-- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku" --verification-commands "cargo fmt -- --check;cargo test"` writes a valid `config.json` with `phases` as an array of `{name, model}` objects ordered `pending,enriching,in_progress,verifying,done` and exits 0
-- `agira init --stack rust --phases "in_progress:sonnet,verifying:haiku" --verification-commands none` writes a `config.json` with `verification.commands: []` and auto-inserted `pending`/`done` phases, then exits 0
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku"` writes a valid `config.json` with `phases` as an array of `{name, model}` objects ordered `pending,enriching,in_progress,verifying,done` and exits 0
+- `agira init --stack rust --phases "in_progress:sonnet,verifying:haiku"` writes a `config.json` without a `verification` key and with auto-inserted `pending`/`done` phases, then exits 0
 - `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent including per-phase model recommendations, and a fenced `sh` block with the `agira init` command template; exits 0
-- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --verification-commands`
+- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases`
 - Re-running `agira init` with all flags when config already exists overwrites it silently; `agira task status` reflects the new config
 - `agira init --stack rust ... --prd-path docs/prd.md` writes `prd_path: "docs/prd.md"` into config; omitting `--prd-path` leaves the key absent
 - `agira init --phases "enriching:badmodel"` exits 1 with `error: unknown model: badmodel` (valid shortnames: `opus`, `sonnet`, `haiku`)
@@ -90,7 +89,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - If all tasks are in terminal-done state, outputs a completion summary listing all tasks with their IDs, titles, and final artifacts, then exits 0
 - If no tasks exist and `--prd` is given, outputs a decomposition prompt instructing the agent to break the PRD into tasks using `agira task add`
 - If no tasks exist and `--prd` is absent, prints to stdout: `No tasks found. Add tasks with \`agira task add "<title>"\` or provide requirements with \`agira task work --prd <path>\``
-- The prompt must include: task id and title, current phase name and agent role (from config), task description, phase duty if the current phase config defines one, acceptance criteria if the `phases` object has prior enrichment data, the verification commands if the current phase is a verification phase, and the exact command(s) to call to advance state
+- The prompt must include: task id and title, current phase name and agent role (from config), task description, phase duty if the current phase config defines one, acceptance criteria if the `phases` object has prior enrichment data, and the exact command(s) to call to advance state. Verification commands belong in the verifying phase duty when a project wants them in the prompt.
 - Output contains no ANSI escape sequences (verified by piping through `cat -v`)
 - Exits 0 in all non-error cases; exits 1 only on config/file read errors
 **Acceptance Criteria:**
@@ -200,7 +199,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Constraints:**
 - The prompt emitted by `agira task work` is split into two logical sections separated by a visible delimiter (`--- SUBAGENT PROMPT ---` / `--- END SUBAGENT PROMPT ---`):
   1. **Orchestrator preamble** (before the delimiter): instructs the calling agent that it is the orchestrator, must NOT perform the work itself, must spawn a generic subagent using the model specified in this phase's config (`phase.model`), pass the subagent prompt verbatim, collect the subagent's output, and call `agira task work --artifact "<subagent summary>"` when done
-  2. **Subagent prompt** (between the delimiters): the task instructions the subagent will receive — task id, title, current phase name, description, acceptance criteria (if prior enrichment exists), verification commands (if this is a verification phase), and the exact `agira task work --artifact` command the orchestrator should call after
+  2. **Subagent prompt** (between the delimiters): the task instructions the subagent will receive — task id, title, current phase name, description, phase duty if configured, acceptance criteria (if prior enrichment exists), and the exact `agira task work --artifact` command the orchestrator should call after
 - The orchestrator preamble includes the model shortname from `config.phases[current].model` (e.g. `opus`, `sonnet`, `haiku`) so the calling agent knows which model to use when spawning the subagent
 - The format must be stable and machine-parseable: the delimiter lines are exact ASCII strings on their own lines
 - No ANSI escape sequences anywhere in the output

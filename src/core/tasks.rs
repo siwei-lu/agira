@@ -571,7 +571,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::core::config::{PhaseConfig, VerificationConfig};
+    use crate::core::config::PhaseConfig;
 
     fn test_config() -> Config {
         Config {
@@ -594,7 +594,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         }
     }

@@ -40,8 +40,6 @@ fn setup_repo(name: &str) -> (TempDir, TempDir, std::path::PathBuf) {
         "rust",
         "--phases",
         "enriching:sonnet,done:sonnet",
-        "--verification-commands",
-        "none",
     ]));
 
     (home, workspace, repo)
@@ -104,8 +102,6 @@ run = {hook_command:?}
         "rust",
         "--phases",
         "enriching:sonnet,done:sonnet",
-        "--verification-commands",
-        "none",
     ]));
     run_ok(agira(home.path(), &repo).args(["task", "add", "Env hook task"]));
     run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "pending artifact"]));

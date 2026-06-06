@@ -144,17 +144,6 @@ fn format_task_prompt(
         ));
     }
 
-    if is_verification_phase(&task.state, config) {
-        subagent.push_str("\n\n## Verification Commands");
-        if config.verification.commands.is_empty() {
-            subagent.push_str("\nNo verification commands configured.");
-        } else {
-            for command in &config.verification.commands {
-                subagent.push_str(&format!("\n- `{command}`"));
-            }
-        }
-    }
-
     if task.state == INITIAL_PHASE_NAME {
         subagent.push_str("\n\n## Pending Phase\nThis task is currently in the pending phase. You are expected to accept the task and advance it, not just read it. You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase.");
     }
@@ -223,10 +212,6 @@ fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a Tas
         .collect()
 }
 
-fn is_verification_phase(phase: &str, config: &Config) -> bool {
-    phase.to_ascii_lowercase().contains("verif") || !config.verification.commands.is_empty()
-}
-
 fn format_completion_summary(tasks: &[Task]) -> String {
     let mut completed_tasks: Vec<&Task> = tasks.iter().collect();
     completed_tasks.sort_by_key(|task| task_id_number(&task.id));
@@ -288,7 +273,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::core::config::{PhaseConfig, VerificationConfig};
+    use crate::core::config::PhaseConfig;
     use crate::core::tasks::TaskStore;
 
     fn test_config() -> Config {
@@ -322,7 +307,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         }
     }
@@ -904,7 +888,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         };
         let mut store = test_store(&temp_dir, &config);
@@ -1034,7 +1017,6 @@ mod tests {
                 },
             ],
             default_model: Some("codex".to_owned()),
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         };
         let mut store = test_store(&temp_dir, &config);
@@ -1079,7 +1061,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         };
         let mut store = test_store(&temp_dir, &config);
@@ -1284,13 +1265,39 @@ mod tests {
     }
 
     #[test]
-    fn verification_phase_detection() {
-        let config = test_config();
-        let mut config_with_commands = test_config();
-        config_with_commands.verification.commands = vec!["cargo test".to_owned()];
+    fn verifying_task_prompt_does_not_include_verification_commands_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        let duty = "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance.";
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "verifying")
+            .unwrap()
+            .duty = Some(duty.to_owned());
+        let mut store = test_store(&temp_dir, &config);
 
-        assert!(is_verification_phase("verifying", &config));
-        assert!(is_verification_phase("enriching", &config_with_commands));
-        assert!(!is_verification_phase("enriching", &config));
+        store
+            .add_task(
+                "Verify work",
+                "Run final verification for the implemented change.",
+                vec![],
+                None,
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains(duty));
+        assert!(!prompt.contains("## Verification Commands"));
     }
 }

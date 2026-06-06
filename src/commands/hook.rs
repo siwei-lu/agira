@@ -332,7 +332,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::core::{
-        config::{Config, PhaseConfig, VerificationConfig, load_project_config},
+        config::{Config, PhaseConfig, load_project_config},
         global_config::GlobalConfig,
         hooks::{HookConfig, HookEntry, load_hooks},
         project::Project,
@@ -371,7 +371,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         }
     }

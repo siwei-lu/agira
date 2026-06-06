@@ -118,7 +118,7 @@ mod tests {
 
     use super::*;
     use crate::core::{
-        config::{Config, PhaseConfig, VerificationConfig},
+        config::{Config, PhaseConfig},
         global_config::GlobalConfig,
         tasks::TaskStore,
     };
@@ -149,7 +149,6 @@ mod tests {
                 },
             ],
             default_model: None,
-            verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
         }
     }
