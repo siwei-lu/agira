@@ -105,6 +105,12 @@ enum PhaseCommands {
         /// Clear the model from an existing non-mandatory phase
         #[arg(long = "clear-model", value_name = "phase")]
         clear_model: Option<String>,
+        /// Set the duty paragraph on an existing non-mandatory phase: --set-duty <phase> <duty>
+        #[arg(long, num_args = 2, value_names = ["phase", "duty"])]
+        set_duty: Option<Vec<String>>,
+        /// Clear the duty from an existing non-mandatory phase
+        #[arg(long = "clear-duty", value_name = "phase")]
+        clear_duty: Option<String>,
     },
 }
 
@@ -555,6 +561,8 @@ fn main() -> ExitCode {
                 remove,
                 set_model,
                 clear_model,
+                set_duty,
+                clear_duty,
             } => match resolve_project() {
                 Ok(project) => match commands::run_phase_update_with_clear_model(
                     &project,
@@ -564,6 +572,8 @@ fn main() -> ExitCode {
                     remove.as_deref(),
                     set_model.as_deref(),
                     clear_model.as_deref(),
+                    set_duty.as_deref(),
+                    clear_duty.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -923,6 +933,7 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | DuplicatePhase { .. }
         | MandatoryPhase { .. }
         | MandatoryPhaseNoModel { .. }
+        | MandatoryPhaseDuty { .. }
         | CannotInsertBeforeInitial { .. }
         | CannotInsertAfterTerminal { .. }
         | PhaseBusy { .. }

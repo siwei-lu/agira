@@ -39,7 +39,9 @@ pub enum PhaseGetError {
 
 #[derive(Debug, Error)]
 pub enum PhaseUpdateError {
-    #[error("at least one of --add, --remove, --set-model, or --clear-model is required")]
+    #[error(
+        "at least one of --add, --remove, --set-model, --clear-model, --set-duty, or --clear-duty is required"
+    )]
     NoOperation,
 
     #[error("--after and --before cannot be used together")]
@@ -68,6 +70,11 @@ pub enum PhaseUpdateError {
         "cannot set model on mandatory phase '{name}': pending and done are transition phases with no model"
     )]
     MandatoryPhaseNoModel { name: String },
+
+    #[error(
+        "cannot set duty on mandatory phase '{name}': pending and done are transition phases with no duty"
+    )]
+    MandatoryPhaseDuty { name: String },
 
     #[error("cannot insert before mandatory initial phase '{name}'")]
     CannotInsertBeforeInitial { name: String },
@@ -136,9 +143,12 @@ fn run_phase_update(
     remove: Option<&str>,
     set_model: Option<&[String]>,
 ) -> Result<(), PhaseUpdateError> {
-    run_phase_update_inner(project, add, after, before, remove, set_model, None)
+    run_phase_update_inner(
+        project, add, after, before, remove, set_model, None, None, None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_phase_update_with_clear_model(
     project: &Project,
     add: Option<&str>,
@@ -147,10 +157,23 @@ pub fn run_phase_update_with_clear_model(
     remove: Option<&str>,
     set_model: Option<&[String]>,
     clear_model: Option<&str>,
+    set_duty: Option<&[String]>,
+    clear_duty: Option<&str>,
 ) -> Result<(), PhaseUpdateError> {
-    run_phase_update_inner(project, add, after, before, remove, set_model, clear_model)
+    run_phase_update_inner(
+        project,
+        add,
+        after,
+        before,
+        remove,
+        set_model,
+        clear_model,
+        set_duty,
+        clear_duty,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_phase_update_inner(
     project: &Project,
     add: Option<&str>,
@@ -159,8 +182,16 @@ fn run_phase_update_inner(
     remove: Option<&str>,
     set_model: Option<&[String]>,
     clear_model: Option<&str>,
+    set_duty: Option<&[String]>,
+    clear_duty: Option<&str>,
 ) -> Result<(), PhaseUpdateError> {
-    if add.is_none() && remove.is_none() && set_model.is_none() && clear_model.is_none() {
+    if add.is_none()
+        && remove.is_none()
+        && set_model.is_none()
+        && clear_model.is_none()
+        && set_duty.is_none()
+        && clear_duty.is_none()
+    {
         return Err(PhaseUpdateError::NoOperation);
     }
 
@@ -276,6 +307,33 @@ fn run_phase_update_inner(
         }
     }
 
+    if let Some(sd) = set_duty {
+        let phase_name = &sd[0];
+        if is_mandatory_phase(phase_name) {
+            return Err(PhaseUpdateError::MandatoryPhaseDuty {
+                name: phase_name.clone(),
+            });
+        }
+        if !config.phases.iter().any(|p| &p.name == phase_name) {
+            return Err(PhaseUpdateError::PhaseNotFound {
+                name: phase_name.clone(),
+            });
+        }
+    }
+
+    if let Some(phase_name) = clear_duty {
+        if is_mandatory_phase(phase_name) {
+            return Err(PhaseUpdateError::MandatoryPhaseDuty {
+                name: phase_name.to_owned(),
+            });
+        }
+        if !config.phases.iter().any(|p| p.name == phase_name) {
+            return Err(PhaseUpdateError::PhaseNotFound {
+                name: phase_name.to_owned(),
+            });
+        }
+    }
+
     let mut new_phases = config.phases.clone();
 
     if let Some(remove) = remove {
@@ -308,6 +366,25 @@ fn run_phase_update_inner(
         for p in &mut new_phases {
             if p.name == phase_name {
                 p.model = None;
+                break;
+            }
+        }
+    }
+
+    if let Some(sd) = set_duty {
+        let (phase_name, duty) = (&sd[0], &sd[1]);
+        for p in &mut new_phases {
+            if &p.name == phase_name {
+                p.duty = Some(duty.clone());
+                break;
+            }
+        }
+    }
+
+    if let Some(phase_name) = clear_duty {
+        for p in &mut new_phases {
+            if p.name == phase_name {
+                p.duty = None;
                 break;
             }
         }
@@ -838,11 +915,204 @@ mod tests {
             None,
             None,
             Some("enriching"),
+            None,
+            None,
         )
         .unwrap();
         let phases = loaded_phases(&project);
         let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
         assert_eq!(enriching.model, None);
+    }
+
+    #[test]
+    fn set_duty_changes_existing_phase_duty() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec![
+            "enriching".to_owned(),
+            "Clarify requirements before implementation".to_owned(),
+        ];
+        run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&args),
+            None,
+        )
+        .unwrap();
+
+        let phases = loaded_phases(&project);
+        let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
+        assert_eq!(
+            enriching.duty,
+            Some("Clarify requirements before implementation".to_owned())
+        );
+    }
+
+    #[test]
+    fn clear_duty_unsets_existing_phase_duty() {
+        let (_temp_dir, project, mut config) = setup();
+        config.phases[1].duty = Some("Clarify requirements".to_owned());
+        write_config(&project, &config);
+
+        run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("enriching"),
+        )
+        .unwrap();
+
+        let phases = loaded_phases(&project);
+        let enriching = phases.iter().find(|p| p.name == "enriching").unwrap();
+        assert_eq!(enriching.duty, None);
+    }
+
+    #[test]
+    fn set_and_clear_duty_on_pending_return_error() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["pending".to_owned(), "Route new work".to_owned()];
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&args),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, PhaseUpdateError::MandatoryPhaseDuty { name } if name == "pending")
+        );
+
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("pending"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, PhaseUpdateError::MandatoryPhaseDuty { name } if name == "pending")
+        );
+    }
+
+    #[test]
+    fn set_and_clear_duty_on_done_return_error() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["done".to_owned(), "Archive finished work".to_owned()];
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&args),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            PhaseUpdateError::MandatoryPhaseDuty { name } if name == "done"
+        ));
+
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("done"),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            PhaseUpdateError::MandatoryPhaseDuty { name } if name == "done"
+        ));
+    }
+
+    #[test]
+    fn set_and_clear_duty_unknown_phase_return_error() {
+        let (_temp_dir, project, _config) = setup();
+        let args = vec!["nonexistent".to_owned(), "Review implementation".to_owned()];
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&args),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
+
+        let error = run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("nonexistent"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_duty_and_set_model_together() {
+        let (_temp_dir, project, _config) = setup();
+        let model_args = vec!["in_progress".to_owned(), "opus".to_owned()];
+        let duty_args = vec![
+            "in_progress".to_owned(),
+            "Implement the accepted plan".to_owned(),
+        ];
+        run_phase_update_inner(
+            &project,
+            None,
+            None,
+            None,
+            None,
+            Some(&model_args),
+            None,
+            Some(&duty_args),
+            None,
+        )
+        .unwrap();
+
+        let phases = loaded_phases(&project);
+        let in_progress = phases.iter().find(|p| p.name == "in_progress").unwrap();
+        assert_eq!(in_progress.model, Some("opus".to_owned()));
+        assert_eq!(
+            in_progress.duty,
+            Some("Implement the accepted plan".to_owned())
+        );
     }
 
     #[test]
@@ -856,6 +1126,8 @@ mod tests {
             None,
             None,
             Some("nonexistent"),
+            None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
@@ -872,6 +1144,8 @@ mod tests {
             None,
             None,
             Some("pending"),
+            None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -936,12 +1210,19 @@ mod tests {
         let original = fs::read_to_string(&config_path).unwrap();
         let original_value: serde_json::Value = serde_json::from_str(&original).unwrap();
 
-        run_phase_update(
+        let args = vec![
+            "enriching".to_owned(),
+            "Clarify requirements before implementation".to_owned(),
+        ];
+        run_phase_update_inner(
             &project,
-            Some("review:sonnet"),
             None,
-            Some("done"),
             None,
+            None,
+            None,
+            None,
+            None,
+            Some(&args),
             None,
         )
         .unwrap();
