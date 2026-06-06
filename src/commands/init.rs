@@ -432,6 +432,8 @@ Each middle phase should carry a `duty` paragraph that states what the subagent 
 agira phase update --set-duty <phase> "<text>"
 ```
 
+For an enriching phase, a good default duty is: "Rewrite the task description as a complete spec with sections: ## Goal, ## Acceptance Criteria, ## Constraints. Persist with agira task update <id> --description \"...\", then advance."
+
 Do not set duties on `pending` or `done`; they are mandatory phases and reject duties.
 
 **`--verification-commands`**
@@ -850,6 +852,10 @@ mod tests {
         assert!(prompt.contains("-> done"));
         assert!(prompt.contains("--set-duty"));
         assert!(prompt.contains("duty"));
+        assert!(prompt.contains("Rewrite the task description as a complete spec"));
+        assert!(prompt.contains("## Goal"));
+        assert!(prompt.contains("## Acceptance Criteria"));
+        assert!(prompt.contains("## Constraints"));
         assert!(prompt.contains("one dedicated subagent"));
         assert!(prompt.contains("prefer fewer phases"));
         assert!(prompt.contains("in_progress + verifying"));

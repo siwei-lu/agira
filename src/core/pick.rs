@@ -102,6 +102,14 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
         }
     ));
 
+    if description_warning_applies(task, config) {
+        let description_len = task.description.chars().count();
+        subagent.push_str(&format!(
+            "\n\n## Description Quality Warning\nThis description is short ({description_len} chars). If the enriching phase did not produce a complete spec, update it before proceeding:\n  agira task update {} --description \"<complete spec>\"\nOr block for clarification:\n  agira task block {} --reason \"description too thin to implement\"",
+            task.id, task.id
+        ));
+    }
+
     if let Some(duty) = duty {
         subagent.push_str(&format!("\n\n## Phase Duty\n{duty}"));
     }
@@ -159,6 +167,17 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
         // No effective model: return subagent prompt directly without orchestrator wrapper.
         subagent
     }
+}
+
+fn description_warning_applies(task: &Task, config: &Config) -> bool {
+    let short = task.description.chars().count() < 150;
+    let post_enriching = match phase_index("enriching", config) {
+        Some(enriching_index) => phase_index(&task.state, config)
+            .is_some_and(|current_index| current_index > enriching_index),
+        None => task.state != INITIAL_PHASE_NAME,
+    };
+
+    short && post_enriching
 }
 
 fn effective_phase_model<'a>(
@@ -533,6 +552,194 @@ mod tests {
         let acceptance_index = prompt.find("## Acceptance Criteria").unwrap();
 
         assert!(duty_index < acceptance_index);
+    }
+
+    #[test]
+    fn warning_shown_for_thin_desc_post_enriching() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Implement pick", "thin description", vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("## Description Quality Warning"));
+        assert!(prompt.contains("chars)"));
+        assert!(prompt.contains("agira task update task-001 --description"));
+        assert!(
+            prompt.contains(
+                "agira task block task-001 --reason \"description too thin to implement\""
+            )
+        );
+    }
+
+    #[test]
+    fn no_warning_for_long_desc_post_enriching() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let description = "x".repeat(150);
+
+        store
+            .add_task("Implement pick", &description, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Description Quality Warning"));
+    }
+
+    #[test]
+    fn description_warning_boundary_is_strictly_less_than_150_chars() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let description_149 = "x".repeat(149);
+        let description_150 = "y".repeat(150);
+
+        store
+            .add_task("Short boundary", &description_149, vec![], None)
+            .unwrap();
+        store
+            .add_task("Long boundary", &description_150, vec![], None)
+            .unwrap();
+        for id in ["task-001", "task-002"] {
+            store.next_phase(id).unwrap();
+            store.next_phase(id).unwrap();
+        }
+
+        let short_prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let long_prompt = format_task_prompt(store.get_task("task-002").unwrap(), &config, None);
+
+        assert!(short_prompt.contains("## Description Quality Warning"));
+        assert!(!long_prompt.contains("## Description Quality Warning"));
+    }
+
+    #[test]
+    fn no_warning_in_enriching_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Enrich task", "thin description", vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Description Quality Warning"));
+    }
+
+    #[test]
+    fn no_warning_in_pending_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Pending task", "thin description", vec![], None)
+            .unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Description Quality Warning"));
+    }
+
+    #[test]
+    fn empty_desc_post_enriching_warns() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Empty description", "", vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("## Description Quality Warning"));
+        assert!(prompt.contains("(0 chars"));
+    }
+
+    #[test]
+    fn warning_placed_after_description_before_phase_duty() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "in_progress")
+            .unwrap()
+            .duty = Some("implement the task".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Ordered sections", "thin description", vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let description_index = prompt.find("## Description").unwrap();
+        let warning_index = prompt.find("## Description Quality Warning").unwrap();
+        let duty_index = prompt.find("## Phase Duty").unwrap();
+
+        assert!(description_index < warning_index);
+        assert!(warning_index < duty_index);
+    }
+
+    #[test]
+    fn enriching_absent_branch_warns_after_pending_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Config {
+            stack: "rust".to_owned(),
+            phases: vec![
+                PhaseConfig {
+                    name: "pending".to_owned(),
+                    model: None,
+                    duty: None,
+                },
+                PhaseConfig {
+                    name: "in_progress".to_owned(),
+                    model: Some("sonnet".to_owned()),
+                    duty: None,
+                },
+                PhaseConfig {
+                    name: "done".to_owned(),
+                    model: None,
+                    duty: None,
+                },
+            ],
+            default_model: None,
+            verification: VerificationConfig { commands: vec![] },
+            max_retries: 3,
+        };
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("In progress task", "thin description", vec![], None)
+            .unwrap();
+        store
+            .add_task("Pending task", "thin description", vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let in_progress_prompt =
+            format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let pending_prompt = format_task_prompt(store.get_task("task-002").unwrap(), &config, None);
+
+        assert!(in_progress_prompt.contains("## Description Quality Warning"));
+        assert!(!pending_prompt.contains("## Description Quality Warning"));
     }
 
     #[test]
