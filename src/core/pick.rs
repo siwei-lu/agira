@@ -1,4 +1,5 @@
 use std::cmp::{Ordering, Reverse};
+use std::path::Path;
 
 use chrono::{DateTime, FixedOffset};
 
@@ -15,6 +16,7 @@ pub(crate) fn format_pick_output(
     config: &Config,
     tasks: &[Task],
     just_done: Option<(&str, &str)>,
+    state_dir: &Path,
 ) -> String {
     if tasks.is_empty() {
         return NO_TASKS_MESSAGE.to_owned();
@@ -25,7 +27,7 @@ pub(crate) fn format_pick_output(
     }
 
     if let Some(task) = select_next_task(tasks, config) {
-        return format_task_prompt(task, config, just_done);
+        return format_task_prompt(task, config, just_done, state_dir);
     }
 
     format_non_actionable_summary(tasks)
@@ -79,7 +81,12 @@ fn is_all_done(tasks: &[Task], config: &Config) -> bool {
             .is_some_and(|terminal| tasks.iter().all(|task| task.state == terminal))
 }
 
-fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &str)>) -> String {
+fn format_task_prompt(
+    task: &Task,
+    config: &Config,
+    _just_done: Option<(&str, &str)>,
+    state_dir: &Path,
+) -> String {
     let phase_cfg = config.phases.iter().find(|p| p.name == task.state);
     let model: Option<&str> = phase_cfg.and_then(|p| effective_phase_model(p, config));
     let duty = phase_cfg
@@ -127,6 +134,14 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
                 phase.completed_at
             ));
         }
+    }
+
+    if task.state != INITIAL_PHASE_NAME && task.state != TERMINAL_PHASE_NAME {
+        let attachments_path = state_dir.join("attachments").join(&task.id);
+        subagent.push_str(&format!(
+            "\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n{}/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.",
+            attachments_path.display()
+        ));
     }
 
     if is_verification_phase(&task.state, config) {
@@ -322,7 +337,7 @@ mod tests {
         let config = test_config();
         let store = test_store(&temp_dir, &config);
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
 
         assert_eq!(output, NO_TASKS_MESSAGE);
     }
@@ -437,7 +452,7 @@ mod tests {
         store.block_task("task-001", "waiting").unwrap();
         store.fail_task("task-002", "broken").unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
 
         assert!(output.contains("All remaining tasks are blocked, failed, or complete."));
         assert!(output.contains("task-001: Blocked task (blocked)"));
@@ -454,7 +469,12 @@ mod tests {
         store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("# Agira Orchestrator Instructions"));
         assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
@@ -485,7 +505,12 @@ mod tests {
         store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("## Phase Duty"));
         assert!(prompt.contains("investigate and write a plan"));
@@ -500,7 +525,12 @@ mod tests {
         store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Phase Duty"));
     }
@@ -520,7 +550,12 @@ mod tests {
         store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Phase Duty"));
     }
@@ -547,11 +582,119 @@ mod tests {
             .unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
         let duty_index = prompt.find("## Phase Duty").unwrap();
         let acceptance_index = prompt.find("## Acceptance Criteria").unwrap();
 
         assert!(duty_index < acceptance_index);
+    }
+
+    #[test]
+    fn active_task_prompt_includes_attachments_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        let expected = temp_dir
+            .path()
+            .join("attachments")
+            .join("task-001")
+            .display()
+            .to_string();
+
+        assert!(prompt.contains("## Attachments"));
+        assert!(prompt.contains(&expected));
+    }
+
+    #[test]
+    fn pending_task_prompt_omits_attachments() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Pending task", "", vec![], None).unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(!prompt.contains("## Attachments"));
+    }
+
+    #[test]
+    fn terminal_task_prompt_omits_attachments() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store.add_task("Done task", "", vec![], None).unwrap();
+        for _ in 0..4 {
+            store.next_phase("task-001").unwrap();
+        }
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(!prompt.contains("## Attachments"));
+    }
+
+    #[test]
+    fn task_prompt_places_attachments_after_acceptance_criteria() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "in_progress")
+            .unwrap()
+            .duty = Some("implement the task".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Ordered attachments", "", vec![], None)
+            .unwrap();
+        store
+            .record_phase_artifact(
+                "task-001",
+                "accepted pending task",
+                "2026-06-07T00:00:00+00:00".to_owned(),
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        let acceptance_index = prompt.find("## Acceptance Criteria").unwrap();
+        let attachments_index = prompt.find("## Attachments").unwrap();
+
+        assert!(acceptance_index < attachments_index);
     }
 
     #[test]
@@ -566,7 +709,12 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("## Description Quality Warning"));
         assert!(prompt.contains("chars)"));
@@ -591,7 +739,12 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Description Quality Warning"));
     }
@@ -615,8 +768,18 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let short_prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
-        let long_prompt = format_task_prompt(store.get_task("task-002").unwrap(), &config, None);
+        let short_prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        let long_prompt = format_task_prompt(
+            store.get_task("task-002").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(short_prompt.contains("## Description Quality Warning"));
         assert!(!long_prompt.contains("## Description Quality Warning"));
@@ -633,7 +796,12 @@ mod tests {
             .unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Description Quality Warning"));
     }
@@ -648,7 +816,12 @@ mod tests {
             .add_task("Pending task", "thin description", vec![], None)
             .unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Description Quality Warning"));
     }
@@ -665,7 +838,12 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("## Description Quality Warning"));
         assert!(prompt.contains("(0 chars"));
@@ -689,7 +867,12 @@ mod tests {
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
         let description_index = prompt.find("## Description").unwrap();
         let warning_index = prompt.find("## Description Quality Warning").unwrap();
         let duty_index = prompt.find("## Phase Duty").unwrap();
@@ -734,9 +917,18 @@ mod tests {
             .unwrap();
         store.next_phase("task-001").unwrap();
 
-        let in_progress_prompt =
-            format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
-        let pending_prompt = format_task_prompt(store.get_task("task-002").unwrap(), &config, None);
+        let in_progress_prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        let pending_prompt = format_task_prompt(
+            store.get_task("task-002").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(in_progress_prompt.contains("## Description Quality Warning"));
         assert!(!pending_prompt.contains("## Description Quality Warning"));
@@ -752,7 +944,12 @@ mod tests {
         store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("- Agent role: opus"));
         assert!(prompt.contains("The configured model is `opus`"));
@@ -769,7 +966,12 @@ mod tests {
         // Task in pending phase — transition phase, no model, no orchestrator wrapper.
         store.add_task("Implement pick", "", vec![], None).unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("# Agira Orchestrator Instructions"));
         assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
@@ -792,7 +994,12 @@ mod tests {
         store.next_phase("task-001").unwrap();
 
         // Task is in in_progress state but config has no in_progress phase: model is None.
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("- Agent role:"));
         assert!(!prompt.contains("# Agira Orchestrator Instructions"));
@@ -835,7 +1042,12 @@ mod tests {
         store.add_task("Triage work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap(); // pending -> triage
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("# Agira Orchestrator Instructions"));
         assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
@@ -875,7 +1087,12 @@ mod tests {
         store.add_task("Triage work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("# Agira Orchestrator Instructions"));
         assert!(!prompt.contains("- Agent role:"));
@@ -889,7 +1106,12 @@ mod tests {
 
         store.add_task("Implement work", "", vec![], None).unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("agira task todo --artifact"));
     }
@@ -902,7 +1124,12 @@ mod tests {
 
         store.add_task("Accept work", "", vec![], None).unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("## Pending Phase"));
         assert!(prompt.contains("This task is currently in the pending phase."));
@@ -924,7 +1151,12 @@ mod tests {
         store.add_task("Continue work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(!prompt.contains("## Pending Phase"));
         assert!(!prompt.contains("This task is currently in the pending phase."));
@@ -945,7 +1177,12 @@ mod tests {
             .add_task("Clarify requirements", "", vec![], None)
             .unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("not confident about a decision"));
         assert!(prompt.contains("human input is required"));
@@ -964,7 +1201,12 @@ mod tests {
         store.add_task("Next task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
 
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
@@ -990,6 +1232,7 @@ mod tests {
             store.get_task("task-001").unwrap(),
             &config,
             Some(("task-000", "Previous Task")),
+            temp_dir.path(),
         );
 
         assert!(!prompt.contains("Commit all changes"));
@@ -1009,7 +1252,7 @@ mod tests {
 
         store.add_task("Implement pick", "", vec![], None).unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
 
         assert!(!output.as_bytes().contains(&0x1B));
     }
@@ -1031,7 +1274,7 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let output = format_pick_output(&config, store.all_tasks(), None);
+        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
 
         assert!(output.contains("# Agira Completion Summary"));
         assert!(output.contains("task-001"));

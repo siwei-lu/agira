@@ -67,7 +67,7 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                 return Ok(());
             }
 
-            let output = format_pick_output(&config, store.all_tasks(), None);
+            let output = format_pick_output(&config, store.all_tasks(), None, &project.state_dir);
             print_todo_output(&output);
         }
         Some(artifact) => {
@@ -129,6 +129,7 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                     &config,
                     store.all_tasks(),
                     Some((&task_id, &resulting_task.title)),
+                    &project.state_dir,
                 );
                 print_todo_output(&next_output);
             } else {
