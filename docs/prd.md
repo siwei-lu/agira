@@ -91,7 +91,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 - If all tasks are in terminal-done state, outputs a completion summary listing all tasks with their IDs, titles, and final artifacts, then exits 0
 - If no tasks exist and `--prd` is given, outputs a decomposition prompt instructing the agent to break the PRD into tasks using `agira task add`
 - If no tasks exist and `--prd` is absent, prints to stdout: `No tasks found. Add tasks with \`agira task add "<title>"\` or provide requirements with \`agira task work --prd <path>\``
-- The prompt must include: task id and title, current phase name and agent role (from config), task description, acceptance criteria if the `phases` object has prior enrichment data, the verification commands if the current phase is a verification phase, and the exact command(s) to call to advance state
+- The prompt must include: task id and title, current phase name and agent role (from config), task description, phase duty if the current phase config defines one, acceptance criteria if the `phases` object has prior enrichment data, the verification commands if the current phase is a verification phase, and the exact command(s) to call to advance state
 - Output contains no ANSI escape sequences (verified by piping through `cat -v`)
 - Exits 0 in all non-error cases; exits 1 only on config/file read errors
 **Acceptance Criteria:**

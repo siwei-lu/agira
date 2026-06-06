@@ -90,11 +90,11 @@ fn format_decomposition_prompt(prd_content: &str) -> String {
 }
 
 fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &str)>) -> String {
-    let model: Option<&str> = config
-        .phases
-        .iter()
-        .find(|p| p.name == task.state)
-        .and_then(|p| effective_phase_model(p, config));
+    let phase_cfg = config.phases.iter().find(|p| p.name == task.state);
+    let model: Option<&str> = phase_cfg.and_then(|p| effective_phase_model(p, config));
+    let duty = phase_cfg
+        .and_then(|p| p.duty.as_deref())
+        .filter(|d| !d.is_empty());
 
     let mut subagent = format!(
         "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
@@ -111,6 +111,10 @@ fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &s
             task.description.as_str()
         }
     ));
+
+    if let Some(duty) = duty {
+        subagent.push_str(&format!("\n\n## Phase Duty\n{duty}"));
+    }
 
     if !task.phases.is_empty() {
         subagent.push_str("\n\n## Acceptance Criteria");
@@ -482,6 +486,98 @@ mod tests {
         assert!(prompt.contains("run commands"));
         assert!(prompt.contains("try to understand the problem before delegating"));
         assert!(prompt.contains("The subagent is responsible for all investigation"));
+    }
+
+    #[test]
+    fn task_prompt_includes_phase_duty_when_current_phase_defines_one() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .duty = Some("investigate and write a plan".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains("investigate and write a plan"));
+    }
+
+    #[test]
+    fn task_prompt_omits_phase_duty_when_current_phase_duty_is_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Phase Duty"));
+    }
+
+    #[test]
+    fn task_prompt_omits_phase_duty_when_current_phase_duty_is_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .duty = Some(String::new());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+
+        assert!(!prompt.contains("## Phase Duty"));
+    }
+
+    #[test]
+    fn task_prompt_places_phase_duty_before_acceptance_criteria() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .duty = Some("investigate and write a plan".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Implement pick", "", None, vec![], None)
+            .unwrap();
+        store
+            .record_phase_artifact(
+                "task-001",
+                "accepted pending task",
+                "2026-06-07T00:00:00+00:00".to_owned(),
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
+        let duty_index = prompt.find("## Phase Duty").unwrap();
+        let acceptance_index = prompt.find("## Acceptance Criteria").unwrap();
+
+        assert!(duty_index < acceptance_index);
     }
 
     #[test]
