@@ -64,7 +64,7 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 **Description:** Manages `~/.agira/<slug>/tasks.json` — the runtime source of truth for all task state. Provides validated read/write operations and enforces state machine transitions defined in `config.json`. Every state change is recorded in the task's `history` array with a timestamp and reason.
 **Constraints:**
 - Task schema: `id` (string, e.g. `task-001`), `title` (string), `description` (string), `state` (string, must match a phase name in config or `"failed"`), `prd_module_id` (optional string), `dependencies` (string array), `retry_count` (u32), `max_retries` (u32, default from config or 3), `phases` (object keyed by phase name, each `{artifact: string, completed_at: ISO8601 string}`), `history` (array of `{from, to, timestamp, reason}`), `created_at` (ISO8601 string)
-- Config `phases` field schema: array of `{name: string, model: string}` objects in workflow order (e.g. `[{"name": "pending", "model": "sonnet"}, {"name": "enriching", "model": "opus"}, {"name": "in_progress", "model": "sonnet"}, {"name": "done", "model": "haiku"}]`); `pending` is mandatory first and `done` is mandatory last, and the loader auto-inserts either if omitted while preserving configured models when present; replaces the former flat `string[]` representation
+- Config `phases` field schema: array of `{name: string, model?: string, duty?: string}` objects in workflow order (e.g. `[{"name": "pending"}, {"name": "enriching", "model": "opus", "duty": "Prepare an implementation plan and cite required evidence."}, {"name": "in_progress", "model": "sonnet"}, {"name": "done"}]`); `duty` is an optional freeform paragraph describing the subagent duty and required evidence/artifact; `pending` is mandatory first and `done` is mandatory last, and the loader auto-inserts either if omitted while stripping `model` and `duty` from both mandatory phases while preserving configured models and duties on middle phases; replaces the former flat `string[]` representation
 - IDs are auto-assigned as `task-001`, `task-002`, ... in insertion order, zero-padded to 3 digits
 - A task may only advance to the next phase in the configured order, or to `"failed"` from any phase
 - A task with any dependency not in the terminal-done phase cannot advance past `pending`
@@ -309,6 +309,9 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 6 — 2026-06-07
+- FM-003: add optional per-phase `duty` field for freeform subagent duty/evidence instructions; loader strips it from mandatory `pending` and `done` phases, and prompt injection is reserved for a later task
+
 ### Round 5 — 2026-06-05
 - FM-012 (new): hook configuration schema — global (`~/.agira/config.toml`) and per-project (`~/.agira/<slug>/hooks.toml`) TOML `[[hooks]]` tables with `on` and `run` fields
 - FM-013 (new): hook execution — fire-and-forget detached `sh -c` subprocess after atomic write, with `AGIRA_TASK_ID/TITLE/PROJECT_SLUG/PROJECT_PATH/FROM_PHASE/TO_PHASE/ARTIFACT` env vars; global hooks first then per-project

@@ -139,18 +139,22 @@ mod tests {
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
                     model: Some("opus".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "in_progress".to_owned(),
                     model: Some("sonnet".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
                     model: None,
+                    duty: None,
                 },
             ],
             default_model: None,

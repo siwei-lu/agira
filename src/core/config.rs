@@ -17,6 +17,8 @@ pub struct PhaseConfig {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duty: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -166,7 +168,11 @@ fn migrate_state_machine(
                     .to_owned();
                 Some(m)
             };
-            PhaseConfig { name, model }
+            PhaseConfig {
+                name,
+                model,
+                duty: None,
+            }
         })
         .collect()
 }
@@ -186,25 +192,29 @@ pub fn normalize_mandatory_phases(phases: Vec<PhaseConfig>) -> Vec<PhaseConfig> 
         }
     }
 
-    // Mandatory phases have no model — they are transition phases, not AI-driven phases.
-    // Strip any model that might have been set on them (e.g. from legacy config or user override).
+    // Mandatory phases are transition phases, not AI-driven phases.
+    // Strip any model or duty that might have been set on them (e.g. from legacy config or user override).
     let initial_phase = initial_phase
         .map(|p| PhaseConfig {
             name: p.name,
             model: None,
+            duty: None,
         })
         .unwrap_or_else(|| PhaseConfig {
             name: INITIAL_PHASE_NAME.to_owned(),
             model: None,
+            duty: None,
         });
     let terminal_phase = terminal_phase
         .map(|p| PhaseConfig {
             name: p.name,
             model: None,
+            duty: None,
         })
         .unwrap_or_else(|| PhaseConfig {
             name: TERMINAL_PHASE_NAME.to_owned(),
             model: None,
+            duty: None,
         });
 
     let mut normalized = Vec::with_capacity(middle_phases.len() + 2);
@@ -271,6 +281,66 @@ mod tests {
 }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn phase_config_serializes_optional_duty() {
+        let with_duty = PhaseConfig {
+            name: "enriching".to_owned(),
+            model: Some("opus".to_owned()),
+            duty: Some("prepare a concrete implementation plan".to_owned()),
+        };
+
+        let serialized = serde_json::to_string(&with_duty).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            value.get("duty").and_then(serde_json::Value::as_str),
+            Some("prepare a concrete implementation plan")
+        );
+
+        let without_duty = PhaseConfig {
+            name: "in_progress".to_owned(),
+            model: Some("sonnet".to_owned()),
+            duty: None,
+        };
+
+        let serialized = serde_json::to_string(&without_duty).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert!(value.get("duty").is_none());
+
+        let missing_duty: PhaseConfig =
+            serde_json::from_str(r#"{"name":"verifying","model":"haiku"}"#).unwrap();
+        assert_eq!(missing_duty.duty, None);
+    }
+
+    #[test]
+    fn normalize_mandatory_phases_strips_duty_from_pending_and_done() {
+        let phases = normalize_mandatory_phases(vec![
+            PhaseConfig {
+                name: "done".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: Some("terminal phase duty should be ignored".to_owned()),
+            },
+            PhaseConfig {
+                name: "review".to_owned(),
+                model: Some("sonnet".to_owned()),
+                duty: Some("review the implementation evidence".to_owned()),
+            },
+            PhaseConfig {
+                name: "pending".to_owned(),
+                model: Some("haiku".to_owned()),
+                duty: Some("initial phase duty should be ignored".to_owned()),
+            },
+        ]);
+
+        let names: Vec<&str> = phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["pending", "review", "done"]);
+        assert_eq!(phases[0].duty, None);
+        assert_eq!(
+            phases[1].duty,
+            Some("review the implementation evidence".to_owned())
+        );
+        assert_eq!(phases[2].duty, None);
     }
 
     #[test]
@@ -479,10 +549,12 @@ mod tests {
                 PhaseConfig {
                     name: "enriching".to_owned(),
                     model: Some("opus".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
                     model: None,
+                    duty: None,
                 },
             ],
             default_model: None,

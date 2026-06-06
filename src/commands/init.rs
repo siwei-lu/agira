@@ -221,22 +221,27 @@ fn default_phases() -> Vec<PhaseConfig> {
         PhaseConfig {
             name: INITIAL_PHASE_NAME.to_owned(),
             model: None,
+            duty: None,
         },
         PhaseConfig {
             name: "enriching".to_owned(),
             model: Some("opus".to_owned()),
+            duty: None,
         },
         PhaseConfig {
             name: "in_progress".to_owned(),
             model: Some("sonnet".to_owned()),
+            duty: None,
         },
         PhaseConfig {
             name: "verifying".to_owned(),
             model: Some("haiku".to_owned()),
+            duty: None,
         },
         PhaseConfig {
             name: TERMINAL_PHASE_NAME.to_owned(),
             model: None,
+            duty: None,
         },
     ]
 }
@@ -645,6 +650,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                         Ok(PhaseConfig {
                             name: name.to_owned(),
                             model: Some(model.to_owned()),
+                            duty: None,
                         })
                     }
                 }
@@ -655,6 +661,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
                         Ok(PhaseConfig {
                             name: pair.to_owned(),
                             model: None,
+                            duty: None,
                         })
                     }
                 }

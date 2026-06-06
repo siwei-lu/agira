@@ -1116,8 +1116,9 @@ run = "echo failed"
 
     fn read_file_eventually(path: &Path) -> String {
         for _ in 0..50 {
-            if let Ok(contents) = fs::read_to_string(path) {
-                return contents;
+            match fs::read_to_string(path) {
+                Ok(contents) if !contents.is_empty() => return contents,
+                _ => {}
             }
 
             thread::sleep(Duration::from_millis(10));

@@ -270,22 +270,27 @@ mod tests {
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
                     model: Some("opus".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "in_progress".to_owned(),
                     model: Some("sonnet".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "verifying".to_owned(),
                     model: Some("haiku".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
                     model: None,
+                    duty: None,
                 },
             ],
             default_model: None,
@@ -384,6 +389,7 @@ mod tests {
             PhaseConfig {
                 name: "blocked".to_owned(),
                 model: Some("haiku".to_owned()),
+                duty: None,
             },
         );
         let mut store = test_store(&temp_dir, &config);
@@ -410,6 +416,7 @@ mod tests {
             PhaseConfig {
                 name: "failed".to_owned(),
                 model: Some("haiku".to_owned()),
+                duty: None,
             },
         );
         let mut store = test_store(&temp_dir, &config);
@@ -549,18 +556,22 @@ mod tests {
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "triage".to_owned(),
                     model: None, // non-mandatory, no model
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "enriching".to_owned(),
                     model: Some("opus".to_owned()),
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
                     model: None,
+                    duty: None,
                 },
             ],
             default_model: Some("codex".to_owned()),
@@ -594,14 +605,17 @@ mod tests {
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "triage".to_owned(),
                     model: None,
+                    duty: None,
                 },
                 PhaseConfig {
                     name: "done".to_owned(),
                     model: None,
+                    duty: None,
                 },
             ],
             default_model: None,
