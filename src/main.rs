@@ -188,8 +188,23 @@ enum HookCommands {
 
 #[derive(Subcommand)]
 enum TaskCommands {
-    /// Show current task status table; defaults to the latest 20 tasks
+    /// Status of tasks; bare invocation hints to `task list`
     Status {
+        /// Output raw JSON instead of the formatted table
+        #[arg(long)]
+        json: bool,
+        /// Number of tasks to show, or 0 to show all; default shows the latest 20 tasks
+        #[arg(long, value_name = "limit")]
+        limit: Option<usize>,
+        /// Number of tasks to skip from the start of the ascending list
+        #[arg(long, value_name = "offset")]
+        offset: Option<usize>,
+        /// Show only this task ID
+        #[arg(value_name = "task-id")]
+        filter: Option<String>,
+    },
+    /// List tasks as a table; defaults to the latest 20 tasks
+    List {
         /// Output raw JSON instead of the formatted table
         #[arg(long)]
         json: bool,
@@ -292,7 +307,43 @@ fn main() -> ExitCode {
                 filter,
             } => match resolve_initialized_project() {
                 Ok(project) => {
-                    match commands::run_status(&project, json, filter.as_deref(), limit, offset) {
+                    let bare_hint =
+                        !json && limit.is_none() && offset.is_none() && filter.is_none();
+                    match commands::run_status(
+                        &project,
+                        json,
+                        filter.as_deref(),
+                        limit,
+                        offset,
+                        bare_hint,
+                    ) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_status(&error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::List {
+                json,
+                limit,
+                offset,
+                filter,
+            } => match resolve_initialized_project() {
+                Ok(project) => {
+                    match commands::run_status(
+                        &project,
+                        json,
+                        filter.as_deref(),
+                        limit,
+                        offset,
+                        false,
+                    ) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");
