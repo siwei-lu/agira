@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    fmt::Write as FmtWrite,
     fs, io,
     io::Write,
     path::{Path, PathBuf},
@@ -152,6 +153,43 @@ pub fn run_status(
     Ok(())
 }
 
+pub fn run_inspect(project: &Project, id: &str) -> Result<(), StatusError> {
+    let tasks_path = project.state_dir.join("tasks.json");
+    match fs::metadata(&tasks_path) {
+        Ok(_) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(StatusError::TaskNotFound { id: id.to_owned() });
+        }
+        Err(source) => {
+            return Err(StoreError::Io {
+                path: tasks_path,
+                source,
+            }
+            .into());
+        }
+    }
+
+    let config_path = project.state_dir.join("config.json");
+    let config =
+        load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
+    let store = TaskStore::new(&project.state_dir, &config)?;
+    let task = store
+        .all_tasks()
+        .iter()
+        .find(|task| task.id == id)
+        .ok_or_else(|| StatusError::TaskNotFound { id: id.to_owned() })?;
+
+    let detail = format_task_detail(task);
+    print_status_output(&detail);
+    Ok(())
+}
+
+pub fn print_inspect_hint(id: &str) {
+    print_status_output(&format!(
+        "run `agira task inspect {id}` to see task details"
+    ));
+}
+
 fn output_raw_json(project: &Project) -> Result<(), StatusError> {
     let path = project.state_dir.join("tasks.json");
     let contents = fs::read_to_string(&path).map_err(|source| StatusError::JsonOutput {
@@ -199,6 +237,91 @@ fn map_config_error(error: ConfigError) -> StatusError {
         ConfigError::Parse { path, source } => StatusError::ConfigLoad { path, source },
         ConfigError::Invalid { path, reason } => StatusError::InvalidConfig { path, reason },
     }
+}
+
+fn format_task_detail(task: &Task) -> String {
+    let mut output = String::new();
+    let prd = task.prd_module_id.as_deref().unwrap_or("—");
+    let dependencies = if task.dependencies.is_empty() {
+        "—".to_owned()
+    } else {
+        task.dependencies.join(", ")
+    };
+    let blocked = format_blocked(task);
+    let description = format_multiline_value(&task.description, 2);
+
+    writeln!(output, "ID:           {}", task.id).unwrap();
+    writeln!(output, "Title:        {}", task.title).unwrap();
+    writeln!(output, "State:        {}", task.state).unwrap();
+    writeln!(output, "Created:      {}", task.created_at).unwrap();
+    writeln!(output, "PRD:          {prd}").unwrap();
+    writeln!(
+        output,
+        "Retries:      {}/{}",
+        task.retry_count, task.max_retries
+    )
+    .unwrap();
+    writeln!(output, "Depends on:   {dependencies}").unwrap();
+    writeln!(output, "Blocked:      {blocked}").unwrap();
+    writeln!(output, "Description:").unwrap();
+    writeln!(output, "{description}").unwrap();
+    writeln!(output, "Phases:").unwrap();
+    if task.phases.is_empty() {
+        writeln!(output, "  —").unwrap();
+    } else {
+        for (name, phase) in &task.phases {
+            writeln!(output, "  {name} (completed {}):", phase.completed_at).unwrap();
+            writeln!(output, "{}", format_multiline_value(&phase.artifact, 4)).unwrap();
+        }
+    }
+    writeln!(output, "History:").unwrap();
+    if task.history.is_empty() {
+        write!(output, "  —").unwrap();
+    } else {
+        for entry in &task.history {
+            let from = entry.from.as_deref().unwrap_or("(none)");
+            writeln!(
+                output,
+                "  {from} → {}  {}  {}",
+                entry.to, entry.timestamp, entry.reason
+            )
+            .unwrap();
+        }
+        output.pop();
+    }
+
+    output
+}
+
+fn format_blocked(task: &Task) -> String {
+    match (
+        task.blocked_at_phase.as_deref(),
+        task.blocked_reason.as_deref(),
+    ) {
+        (None, None) => "—".to_owned(),
+        (Some(phase), Some(reason)) => format!("{phase} — {reason}"),
+        (Some(phase), None) => format!("{phase} — —"),
+        (None, Some(reason)) => format!("— — {reason}"),
+    }
+}
+
+fn format_multiline_value(value: &str, indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    if value.is_empty() {
+        return format!("{prefix}—");
+    }
+
+    value
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                format!("{prefix}—")
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_status_table(tasks: &[&Task], terminal_phase: &str) -> String {
@@ -457,6 +580,109 @@ mod tests {
 
         result.unwrap();
         assert_eq!(output, "run `agira task list` to see the task table\n");
+    }
+
+    #[test]
+    fn inspect_hint_prints_task_inspect_hint_without_table() {
+        let (result, output) = capture_output(|| {
+            print_inspect_hint("task-001");
+            Ok(())
+        });
+
+        result.unwrap();
+        assert_eq!(
+            output,
+            "run `agira task inspect task-001` to see task details\n"
+        );
+        assert!(!output.contains("ID  "));
+        assert!(!output.contains("Title"));
+    }
+
+    #[test]
+    fn run_inspect_renders_task_detail() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "Dependency task",
+                "First task description",
+                Some("FM-000".to_owned()),
+                vec![],
+                None,
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        store
+            .add_task(
+                "Detailed task",
+                "Longer task description",
+                Some("FM-001".to_owned()),
+                vec!["task-001".to_owned()],
+                None,
+            )
+            .unwrap();
+        store
+            .record_phase_artifact(
+                "task-002",
+                "completed pending artifact",
+                "2026-06-06T00:00:00Z".to_owned(),
+            )
+            .unwrap();
+        store.next_phase("task-002").unwrap();
+
+        let (result, output) = capture_output(|| run_inspect(&project, "task-002"));
+
+        result.unwrap();
+        assert!(output.contains("ID:"));
+        assert!(output.contains("task-002"));
+        assert!(output.contains("Title:"));
+        assert!(output.contains("Detailed task"));
+        assert!(output.contains("State:"));
+        assert!(output.contains("enriching"));
+        assert!(output.contains("Created:"));
+        assert!(output.contains("PRD:"));
+        assert!(output.contains("FM-001"));
+        assert!(output.contains("Retries:"));
+        assert!(output.contains("0/3"));
+        assert!(output.contains("Depends on:"));
+        assert!(output.contains("task-001"));
+        assert!(output.contains("Blocked:"));
+        assert!(output.contains("Description:"));
+        assert!(output.contains("Longer task description"));
+        assert!(output.contains("Phases:"));
+        assert!(output.contains("pending (completed 2026-06-06T00:00:00Z):"));
+        assert!(output.contains("completed pending artifact"));
+        assert!(output.contains("History:"));
+        assert!(output.contains("(none)"));
+        assert!(output.contains("task created"));
+        assert!(output.contains("pending → enriching"));
+        assert!(output.contains("advanced to next phase"));
+    }
+
+    #[test]
+    fn run_inspect_unknown_id_returns_task_not_found() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Some task", "", None, vec![], None).unwrap();
+
+        let error = run_inspect(&project, "task-999").unwrap_err();
+
+        match error {
+            StatusError::TaskNotFound { id } => assert_eq!(id, "task-999"),
+            other => panic!("expected TaskNotFound, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn run_inspect_when_tasks_file_absent_returns_task_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let project = test_project(&temp_dir);
+
+        let error = run_inspect(&project, "task-001").unwrap_err();
+
+        assert!(matches!(error, StatusError::TaskNotFound { .. }));
     }
 
     #[test]
