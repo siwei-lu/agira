@@ -30,8 +30,6 @@ pub struct Config {
     pub verification: VerificationConfig,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prd_path: Option<String>,
 }
 
 impl Config {
@@ -91,7 +89,6 @@ struct ProjectConfigFile {
     // Legacy fallback, also preserved in the loaded Config for model-less phases.
     #[serde(default)]
     default_model: Option<String>,
-    prd_path: Option<String>,
 }
 
 pub fn load_project_config(
@@ -144,7 +141,6 @@ pub fn load_project_config(
         max_retries: project_config
             .max_retries
             .unwrap_or(global_config.default_max_retries),
-        prd_path: project_config.prd_path,
     })
 }
 
@@ -597,7 +593,6 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         };
 
         assert_eq!(config.terminal_phase(), Some("done"));

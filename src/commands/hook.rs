@@ -373,7 +373,6 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         }
     }
 

@@ -34,8 +34,6 @@ enum Commands {
         phases: Option<String>,
         #[arg(long = "verification-commands", value_name = "verification-commands")]
         verification_commands: Option<String>,
-        #[arg(long = "prd-path", value_name = "prd-path")]
-        prd_path: Option<String>,
     },
     /// Manage workflow phases
     #[command(subcommand_value_name = "command")]
@@ -55,7 +53,7 @@ enum Commands {
     /// Manage lifecycle hooks
     #[command(
         subcommand_value_name = "command",
-        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, failed, and configured phase names.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
     )]
     Hook {
         #[command(subcommand)]
@@ -151,7 +149,7 @@ enum HookCommands {
     List,
     /// Add a lifecycle hook
     #[command(
-        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Add {
         /// Write the hook to ~/.agira/config.toml instead of the current project
@@ -166,7 +164,7 @@ enum HookCommands {
     },
     /// Update lifecycle hooks for an event
     #[command(
-        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_PRD_MODULE_ID  PRD module ID (empty if not set)\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, failed, and configured phase names.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (initial phase for task_added)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact' (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Update {
         /// Update hooks in ~/.agira/config.toml instead of the current project
@@ -230,9 +228,6 @@ enum TaskCommands {
     },
     /// Print the current actionable task prompt, or advance it when --artifact is given
     Todo {
-        /// Path to a PRD file to inject as requirements context (print mode only)
-        #[arg(long, value_name = "prd")]
-        prd: Option<PathBuf>,
         /// Evidence of completion for this phase; advances the current task when provided
         #[arg(long, value_name = "artifact")]
         artifact: Option<String>,
@@ -269,9 +264,6 @@ enum TaskCommands {
         /// Optional longer description of the task
         #[arg(long, value_name = "description")]
         description: Option<String>,
-        /// PRD module ID this task implements (e.g. FM-001)
-        #[arg(long, value_name = "prd")]
-        prd: Option<String>,
         /// Comma-separated task IDs this task depends on
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Vec<String>,
@@ -290,9 +282,6 @@ enum TaskCommands {
         /// New description
         #[arg(long, value_name = "description")]
         description: Option<String>,
-        /// New PRD module ID (e.g. FM-001)
-        #[arg(long, value_name = "prd")]
-        prd: Option<String>,
         /// Replacement comma-separated dependency list
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Option<Vec<String>>,
@@ -388,16 +377,14 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Todo { prd, artifact } => match resolve_initialized_project() {
-                Ok(project) => {
-                    match commands::run_todo(&project, prd.as_deref(), artifact.as_deref()) {
-                        Ok(()) => ExitCode::SUCCESS,
-                        Err(error) => {
-                            eprintln!("error: {error}");
-                            exit_code_for_todo(&error)
-                        }
+            TaskCommands::Todo { artifact } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_todo(&project, artifact.as_deref()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_todo(&error)
                     }
-                }
+                },
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for(&error)
@@ -445,7 +432,6 @@ fn main() -> ExitCode {
             TaskCommands::Add {
                 title,
                 description,
-                prd,
                 depends_on,
                 phase,
             } => match resolve_initialized_project() {
@@ -453,7 +439,6 @@ fn main() -> ExitCode {
                     &project,
                     &title,
                     description.as_deref(),
-                    prd.as_deref(),
                     &depends_on,
                     phase.as_deref(),
                 ) {
@@ -472,7 +457,6 @@ fn main() -> ExitCode {
                 id,
                 title,
                 description,
-                prd,
                 depends_on,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_update(
@@ -481,7 +465,6 @@ fn main() -> ExitCode {
                     commands::UpdateInput {
                         title,
                         description,
-                        prd,
                         depends_on,
                     },
                 ) {
@@ -514,7 +497,6 @@ fn main() -> ExitCode {
             stack,
             phases,
             verification_commands,
-            prd_path,
         } => match resolve_project() {
             Ok(project) => match commands::run_init(
                 &project,
@@ -522,7 +504,6 @@ fn main() -> ExitCode {
                     stack,
                     phases,
                     verification_commands,
-                    prd_path,
                 },
             ) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -756,11 +737,9 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
     use commands::TodoError::*;
 
     match error {
-        NoActionableTask
-        | EmptyArtifact
-        | PrdNotFound { .. }
-        | ConfigLoad { .. }
-        | InvalidConfig { .. } => ExitCode::from(1),
+        NoActionableTask | EmptyArtifact | ConfigLoad { .. } | InvalidConfig { .. } => {
+            ExitCode::from(1)
+        }
         Io { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }

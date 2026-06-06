@@ -14,8 +14,7 @@ use crate::core::{
     tasks::{StoreError, Task, TaskStore},
 };
 
-const NO_TASKS_MESSAGE: &str =
-    "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.";
+const NO_TASKS_MESSAGE: &str = "No tasks. Run `agira task add` to get started.";
 const TITLE_LIMIT: usize = 40;
 const LAST_ACTION_LIMIT: usize = 30;
 const STATE_LIMIT: usize = 13;
@@ -241,7 +240,6 @@ fn map_config_error(error: ConfigError) -> StatusError {
 
 fn format_task_detail(task: &Task) -> String {
     let mut output = String::new();
-    let prd = task.prd_module_id.as_deref().unwrap_or("—");
     let dependencies = if task.dependencies.is_empty() {
         "—".to_owned()
     } else {
@@ -254,7 +252,6 @@ fn format_task_detail(task: &Task) -> String {
     writeln!(output, "Title:        {}", task.title).unwrap();
     writeln!(output, "State:        {}", task.state).unwrap();
     writeln!(output, "Created:      {}", task.created_at).unwrap();
-    writeln!(output, "PRD:          {prd}").unwrap();
     writeln!(
         output,
         "Retries:      {}/{}",
@@ -505,7 +502,6 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         }
     }
 
@@ -560,7 +556,7 @@ mod tests {
     fn add_tasks(store: &mut TaskStore, count: usize) {
         for index in 1..=count {
             store
-                .add_task(&format!("Task {index:03}"), "", None, vec![], None)
+                .add_task(&format!("Task {index:03}"), "", vec![], None)
                 .unwrap();
         }
     }
@@ -606,13 +602,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task(
-                "Dependency task",
-                "First task description",
-                Some("FM-000".to_owned()),
-                vec![],
-                None,
-            )
+            .add_task("Dependency task", "First task description", vec![], None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -621,7 +611,6 @@ mod tests {
             .add_task(
                 "Detailed task",
                 "Longer task description",
-                Some("FM-001".to_owned()),
                 vec!["task-001".to_owned()],
                 None,
             )
@@ -645,8 +634,6 @@ mod tests {
         assert!(output.contains("State:"));
         assert!(output.contains("enriching"));
         assert!(output.contains("Created:"));
-        assert!(output.contains("PRD:"));
-        assert!(output.contains("FM-001"));
         assert!(output.contains("Retries:"));
         assert!(output.contains("0/3"));
         assert!(output.contains("Depends on:"));
@@ -668,7 +655,7 @@ mod tests {
     fn run_inspect_unknown_id_returns_task_not_found() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Some task", "", None, vec![], None).unwrap();
+        store.add_task("Some task", "", vec![], None).unwrap();
 
         let error = run_inspect(&project, "task-999").unwrap_err();
 
@@ -693,7 +680,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("List-compatible status table", "", None, vec![], None)
+            .add_task("List-compatible status table", "", vec![], None)
             .unwrap();
 
         let (result, output) =
@@ -715,10 +702,7 @@ mod tests {
             capture_output(|| run_status(&project, false, None, Some(20), Some(0), false));
 
         result.unwrap();
-        assert_eq!(
-            output,
-            "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.\n"
-        );
+        assert_eq!(output, "No tasks. Run `agira task add` to get started.\n");
     }
 
     #[test]
@@ -730,10 +714,7 @@ mod tests {
             capture_output(|| run_status(&project, false, None, Some(20), Some(0), false));
 
         result.unwrap();
-        assert_eq!(
-            output,
-            "No tasks. Run `agira task add` or `agira task todo --prd <path>` to get started.\n"
-        );
+        assert_eq!(output, "No tasks. Run `agira task add` to get started.\n");
     }
 
     #[test]
@@ -741,7 +722,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Implement status command", "", None, vec![], None)
+            .add_task("Implement status command", "", vec![], None)
             .unwrap();
 
         let (result, output) =
@@ -764,9 +745,7 @@ mod tests {
     fn terminal_done_shows_checkmark() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("Finish status", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Finish status", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -782,9 +761,7 @@ mod tests {
     fn failed_task_shows_cross() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("Fail status", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Fail status", "", vec![], None).unwrap();
         store.fail_task("task-001", "blocked").unwrap();
 
         let (result, output) =
@@ -798,9 +775,7 @@ mod tests {
     fn blocked_task_shows_blocked_prefix() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("Blocked task", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Blocked task", "", vec![], None).unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
         let (result, output) =
@@ -817,7 +792,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         let title = "x".repeat(50);
-        store.add_task(&title, "", None, vec![], None).unwrap();
+        store.add_task(&title, "", vec![], None).unwrap();
 
         let (result, output) =
             capture_output(|| run_status(&project, false, None, Some(20), Some(0), false));
@@ -834,12 +809,8 @@ mod tests {
     fn sorted_by_id_ascending() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("First in file", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Second in file", "", None, vec![], None)
-            .unwrap();
+        store.add_task("First in file", "", vec![], None).unwrap();
+        store.add_task("Second in file", "", vec![], None).unwrap();
 
         let mut tasks_file: TasksFile = serde_json::from_str(
             &fs::read_to_string(project.state_dir.join("tasks.json")).unwrap(),
@@ -1105,12 +1076,8 @@ mod tests {
     fn json_with_filter_outputs_single_task_object() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("First task", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Second task", "", None, vec![], None)
-            .unwrap();
+        store.add_task("First task", "", vec![], None).unwrap();
+        store.add_task("Second task", "", vec![], None).unwrap();
 
         let (result, output) = capture_output(|| {
             run_status(&project, true, Some("task-001"), Some(20), Some(0), false)
@@ -1129,7 +1096,7 @@ mod tests {
     fn json_with_filter_task_not_found() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Some task", "", None, vec![], None).unwrap();
+        store.add_task("Some task", "", vec![], None).unwrap();
 
         let error =
             run_status(&project, true, Some("task-999"), Some(20), Some(0), false).unwrap_err();
@@ -1155,12 +1122,8 @@ mod tests {
     fn filter_shows_only_matching_task() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("First task", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Second task", "", None, vec![], None)
-            .unwrap();
+        store.add_task("First task", "", vec![], None).unwrap();
+        store.add_task("Second task", "", vec![], None).unwrap();
 
         let (result, output) = capture_output(|| {
             run_status(&project, false, Some("task-002"), Some(20), Some(0), false)
@@ -1177,7 +1140,7 @@ mod tests {
     fn filter_unknown_id_returns_task_not_found() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Some task", "", None, vec![], None).unwrap();
+        store.add_task("Some task", "", vec![], None).unwrap();
 
         let error =
             run_status(&project, false, Some("task-999"), Some(20), Some(0), false).unwrap_err();

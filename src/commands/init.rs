@@ -44,7 +44,6 @@ pub struct InitFlags {
     pub stack: Option<String>,
     pub phases: Option<String>,
     pub verification_commands: Option<String>,
-    pub prd_path: Option<String>,
 }
 
 pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
@@ -77,7 +76,6 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
             ),
         },
         max_retries: project.global_config.default_max_retries,
-        prd_path: parse_prd_path_flag(flags.prd_path.as_deref()),
     };
 
     let config_path = project.state_dir.join("config.json");
@@ -186,7 +184,6 @@ fn config_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -> Con
         default_model: None,
         verification: VerificationConfig { commands },
         max_retries,
-        prd_path: None,
     }
 }
 
@@ -370,9 +367,6 @@ Read and record findings from each of the following before asking the user anyth
 6. **Commit conventions** — run `git log --no-merges -10 --format="%s"` and note the pattern
    (Conventional Commits, Angular, freeform, etc.).
 
-7. **PRD** — check `docs/prd.md`. If found and it contains `## Functional Modules` with FM-IDs,
-   record its path. Otherwise note it as absent.
-
 ## Step 2 — Prove the project starts (REQUIRED)
 
 After scanning and before recommending flags, you MUST make a real local start/run attempt.
@@ -424,7 +418,7 @@ Present the full resulting state machine to the user, including built-ins, in ar
 `pending -> [chosen phases] -> done`
 
 Examples:
-- PRD-driven project with review loop: `enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku`
+- Project with review loop: `enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku`
 - CLI tool or library: `in_progress:codex,verifying:haiku`
 - Prototype with explicit model: `in_progress:sonnet`
 - Prototype using a configured default model: `in_progress`
@@ -449,10 +443,6 @@ If a reliable start check requires multiple shell operations, prefer an existing
 project script or Makefile target and list that.
 Format: `cmd1;cmd2;cmd3`
 
-**`--prd-path`**
-If you found `docs/prd.md` with FM-IDs, propose it. Otherwise leave blank unless the user
-mentions a requirements document.
-
 ## Step 4 — Interview the user
 
 Present ALL findings and recommendations in ONE message. Ask the user only where a decision is genuinely ambiguous (multiple reasonable options); confirm unambiguous values inline without a question.
@@ -475,8 +465,7 @@ Once all values are confirmed, call:
 agira init \
   --stack <stack> \
   --phases <phase[:model],...> \
-  --verification-commands <cmd1;cmd2;...> \
-  [--prd-path <path>]
+  --verification-commands <cmd1;cmd2;...>
 ```
 
 ## Step 6 — Set phase duties
@@ -509,7 +498,6 @@ The CLAUDE.md must cover all of these at minimum:
 - **Build, test, and lint commands** — exact commands, ready to copy-paste
 - **Local run/start** — exact start command, required env setup, port or URL, and proof it worked
 - **Commit conventions** — pattern from `git log`; omit if no consistent pattern was found
-- **PRD** — relative path if a requirements document was confirmed; omit otherwise
 - **Development workflow** — any conventions captured in existing config (current CLAUDE.md,
   `.claude/settings.json`, CI files, Makefile, etc.)
 "#);
@@ -642,13 +630,6 @@ fn parse_verification_commands_flag(input: &str) -> Vec<String> {
             .map(ToOwned::to_owned)
             .collect()
     }
-}
-
-fn parse_prd_path_flag(input: Option<&str>) -> Option<String> {
-    input
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
@@ -825,7 +806,6 @@ mod tests {
             stack: Some("rust".to_owned()),
             phases: Some("done:haiku".to_owned()),
             verification_commands: Some("cargo test".to_owned()),
-            prd_path: None,
         };
         assert!(super::detect_missing_flags(&all_present).is_empty());
 
@@ -833,7 +813,6 @@ mod tests {
             stack: Some("rust".to_owned()),
             phases: Some("done:haiku".to_owned()),
             verification_commands: None,
-            prd_path: None,
         };
         assert_eq!(
             super::detect_missing_flags(&partial),
@@ -935,6 +914,5 @@ mod tests {
         assert!(value.get(&legacy_acceptance_key).is_none());
         assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));
         assert!(value.get("default_model").is_none());
-        assert!(value.get("prd_path").is_none());
     }
 }

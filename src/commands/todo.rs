@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -27,9 +27,6 @@ pub enum TodoError {
     #[error("artifact must not be empty")]
     EmptyArtifact,
 
-    #[error("prd file not found: {path}")]
-    PrdNotFound { path: PathBuf },
-
     #[error("failed to read {path}")]
     Io {
         path: PathBuf,
@@ -51,15 +48,10 @@ pub enum TodoError {
     StoreError(#[from] StoreError),
 }
 
-pub fn run_todo(
-    project: &Project,
-    prd_path: Option<&Path>,
-    artifact: Option<&str>,
-) -> Result<(), TodoError> {
+pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoError> {
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    let prd_content = prd_path.map(read_prd).transpose()?;
 
     match artifact {
         None => {
@@ -75,8 +67,7 @@ pub fn run_todo(
                 return Ok(());
             }
 
-            let output =
-                format_pick_output(&config, store.all_tasks(), prd_content.as_deref(), None);
+            let output = format_pick_output(&config, store.all_tasks(), None);
             print_todo_output(&output);
         }
         Some(artifact) => {
@@ -137,7 +128,6 @@ pub fn run_todo(
                 let next_output = format_pick_output(
                     &config,
                     store.all_tasks(),
-                    None,
                     Some((&task_id, &resulting_task.title)),
                 );
                 print_todo_output(&next_output);
@@ -180,19 +170,6 @@ fn latest_history_timestamp(task: &Task) -> &str {
         .last()
         .map(|entry| entry.timestamp.as_str())
         .unwrap_or(task.created_at.as_str())
-}
-
-fn read_prd(path: &Path) -> Result<String, TodoError> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(contents),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Err(TodoError::PrdNotFound {
-            path: path.to_path_buf(),
-        }),
-        Err(source) => Err(TodoError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
 }
 
 fn map_config_error(error: ConfigError) -> TodoError {
@@ -265,7 +242,6 @@ mod tests {
             default_model: None,
             max_retries: 3,
             verification: VerificationConfig { commands: vec![] },
-            prd_path: None,
         }
     }
 
@@ -337,10 +313,10 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("My task", "description", None, vec![], None)
+            .add_task("My task", "description", vec![], None)
             .unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Agira Task Prompt"));
@@ -361,26 +337,14 @@ mod tests {
         write_config(&project, &config);
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task(
-                "Blocked current task",
-                "blocked description",
-                None,
-                vec![],
-                None,
-            )
+            .add_task("Blocked current task", "blocked description", vec![], None)
             .unwrap();
         store
-            .add_task(
-                "Next actionable task",
-                "next description",
-                None,
-                vec![],
-                None,
-            )
+            .add_task("Next actionable task", "next description", vec![], None)
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Agira Task Prompt"));
@@ -392,16 +356,16 @@ mod tests {
     fn no_artifact_dirty_tree_blocks_next_task_prompt() {
         let (git_dir, state_dir, project, config) = setup_with_git_repo();
         let mut store = test_store(&state_dir, &config);
-        store.add_task("Done task", "", None, vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None).unwrap();
         store
-            .add_task("Next task", "", None, vec!["task-001".to_owned()], None)
+            .add_task("Next task", "", vec!["task-001".to_owned()], None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         fs::write(git_dir.path().join("dirty.txt"), "dirty").unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Commit"));
@@ -418,10 +382,10 @@ mod tests {
         let (_git_dir, state_dir, project, config) = setup_with_git_repo();
         let mut store = test_store(&state_dir, &config);
         store
-            .add_task("Clean tree task", "description", None, vec![], None)
+            .add_task("Clean tree task", "description", vec![], None)
             .unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Agira Task Prompt"));
@@ -434,10 +398,10 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Non-git task", "description", None, vec![], None)
+            .add_task("Non-git task", "description", vec![], None)
             .unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Agira Task Prompt"));
@@ -449,12 +413,12 @@ mod tests {
     fn no_artifact_all_done_shows_completion_summary() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Done task", "", None, vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("# Agira Completion Summary"));
@@ -464,9 +428,9 @@ mod tests {
     fn task_prompt_references_todo_command() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", None, vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None).unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("agira task todo --artifact"));
@@ -484,9 +448,9 @@ mod tests {
     fn with_artifact_non_terminal_shows_arrow() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", None, vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None).unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, Some("enriched")));
+        let (result, output) = capture_output(|| run_todo(&project, Some("enriched")));
 
         result.unwrap();
         assert!(output.contains("task-001 → enriching"));
@@ -499,15 +463,15 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Blocked current task", "", None, vec![], None)
+            .add_task("Blocked current task", "", vec![], None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", None, vec![], None)
+            .add_task("Next actionable task", "", vec![], None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, Some("next artifact")));
+        let (result, output) = capture_output(|| run_todo(&project, Some("next artifact")));
 
         result.unwrap();
         assert!(output.contains("task-002 → enriching"));
@@ -529,17 +493,15 @@ mod tests {
     fn with_artifact_terminal_shows_commit_and_next_task() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("First task", "", None, vec![], None)
-            .unwrap();
+        store.add_task("First task", "", vec![], None).unwrap();
         // task-002 depends on task-001 so it is blocked until task-001 is done
         store
-            .add_task("Second task", "", None, vec!["task-001".to_owned()], None)
+            .add_task("Second task", "", vec!["task-001".to_owned()], None)
             .unwrap();
         store.next_phase("task-001").unwrap(); // pending -> enriching
         store.next_phase("task-001").unwrap(); // enriching -> in_progress
 
-        let (result, output) = capture_output(|| run_todo(&project, None, Some("implemented")));
+        let (result, output) = capture_output(|| run_todo(&project, Some("implemented")));
 
         result.unwrap();
         assert!(output.contains("task-001 done ✓"));
@@ -552,11 +514,11 @@ mod tests {
     fn with_artifact_terminal_all_done_shows_completion() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Only task", "", None, vec![], None).unwrap();
+        store.add_task("Only task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, Some("implemented")));
+        let (result, output) = capture_output(|| run_todo(&project, Some("implemented")));
 
         result.unwrap();
         assert!(output.contains("task-001 done ✓"));
@@ -568,12 +530,12 @@ mod tests {
     fn with_artifact_no_actionable_task_returns_error() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Done task", "", None, vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
-        let error = run_todo(&project, None, Some("artifact")).unwrap_err();
+        let error = run_todo(&project, Some("artifact")).unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -587,7 +549,7 @@ mod tests {
         let (_temp_dir, project, _config) = setup();
 
         for artifact in ["", "  "] {
-            let error = run_todo(&project, None, Some(artifact)).unwrap_err();
+            let error = run_todo(&project, Some(artifact)).unwrap_err();
             assert!(matches!(error, TodoError::EmptyArtifact));
         }
     }
@@ -596,9 +558,9 @@ mod tests {
     fn with_artifact_records_in_store() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", None, vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None).unwrap();
 
-        let (result, _) = capture_output(|| run_todo(&project, None, Some("done it")));
+        let (result, _) = capture_output(|| run_todo(&project, Some("done it")));
         result.unwrap();
 
         let store = test_store(&temp_dir, &config);
@@ -612,7 +574,7 @@ mod tests {
     fn no_artifact_no_tasks_shows_no_tasks_message() {
         let (_temp_dir, project, _config) = setup();
 
-        let (result, output) = capture_output(|| run_todo(&project, None, None));
+        let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
         assert!(output.contains("agira task add"));

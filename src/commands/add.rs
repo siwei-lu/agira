@@ -48,7 +48,6 @@ pub fn run_add(
     project: &Project,
     title: &str,
     description: Option<&str>,
-    prd_module_id: Option<&str>,
     depends_on: &[String],
     phase: Option<&str>,
 ) -> Result<(), AddError> {
@@ -82,7 +81,6 @@ pub fn run_add(
         &mut store,
         title,
         description.unwrap_or(""),
-        prd_module_id.map(ToOwned::to_owned),
         depends_on.to_vec(),
         phase,
     )
@@ -102,11 +100,10 @@ fn add_task_flow(
     store: &mut TaskStore,
     title: &str,
     description: &str,
-    prd_module_id: Option<String>,
     depends_on: Vec<String>,
     phase: Option<&str>,
 ) -> Result<(), AddError> {
-    let task = match store.add_task(title, description, prd_module_id, depends_on, phase) {
+    let task = match store.add_task(title, description, depends_on, phase) {
         Ok(task) => task,
         Err(error) => return Err(map_store_error(error)),
     };
@@ -203,7 +200,6 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         }
     }
 
@@ -269,7 +265,7 @@ mod tests {
         let (_temp_dir, project, config) = test_project_with_config();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Implement login endpoint", None, None, &[], None));
+            capture_output(|| run_add(&project, "Implement login endpoint", None, &[], None));
         result.unwrap();
 
         assert_eq!(output, "added task-001: Implement login endpoint\n");
@@ -281,7 +277,6 @@ mod tests {
         assert_eq!(task.id, "task-001");
         assert_eq!(task.title, "Implement login endpoint");
         assert_eq!(task.description, "");
-        assert_eq!(task.prd_module_id, None);
         assert_eq!(task.state, config.phases[0].name);
         assert!(task.dependencies.is_empty());
         assert_eq!(task.retry_count, 0);
@@ -300,21 +295,13 @@ mod tests {
     #[test]
     fn add_task_with_dependencies() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Prepare", None, None, &[], None))
+        capture_output(|| run_add(&project, "Prepare", None, &[], None))
             .0
             .unwrap();
 
         let depends_on = vec!["task-001".to_owned()];
-        let (result, output) = capture_output(|| {
-            run_add(
-                &project,
-                "Deploy",
-                Some("ship release"),
-                Some("FM-007"),
-                &depends_on,
-                None,
-            )
-        });
+        let (result, output) =
+            capture_output(|| run_add(&project, "Deploy", Some("ship release"), &depends_on, None));
         result.unwrap();
 
         assert_eq!(output, "added task-002: Deploy\n");
@@ -325,7 +312,6 @@ mod tests {
         let task = &tasks_file.tasks[1];
         assert_eq!(task.id, "task-002");
         assert_eq!(task.description, "ship release");
-        assert_eq!(task.prd_module_id.as_deref(), Some("FM-007"));
         assert_eq!(task.dependencies, vec!["task-001".to_owned()]);
     }
 
@@ -335,7 +321,7 @@ mod tests {
         let depends_on = vec!["task-999".to_owned()];
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Blocked", None, None, &depends_on, None));
+            capture_output(|| run_add(&project, "Blocked", None, &depends_on, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -352,7 +338,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Review me", None, None, &[], Some("reviewing")));
+            capture_output(|| run_add(&project, "Review me", None, &[], Some("reviewing")));
         let error = result.unwrap_err();
 
         match &error {
@@ -367,12 +353,11 @@ mod tests {
     #[test]
     fn add_task_with_same_case_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None))
             .0
             .unwrap();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "Deploy", None, None, &[], None));
+        let (result, output) = capture_output(|| run_add(&project, "Deploy", None, &[], None));
         let error = result.unwrap_err();
 
         match &error {
@@ -393,12 +378,11 @@ mod tests {
     #[test]
     fn add_task_with_case_insensitive_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None))
             .0
             .unwrap();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "deploy", None, None, &[], None));
+        let (result, output) = capture_output(|| run_add(&project, "deploy", None, &[], None));
         let error = result.unwrap_err();
 
         match &error {
@@ -419,11 +403,11 @@ mod tests {
     #[test]
     fn add_task_allows_duplicate_title_when_existing_task_is_done() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Repeatable", None, None, &[], Some("done")))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], Some("done")))
             .0
             .unwrap();
 
-        capture_output(|| run_add(&project, "Repeatable", None, None, &[], None))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], None))
             .0
             .unwrap();
 
@@ -435,10 +419,10 @@ mod tests {
     #[test]
     fn add_task_allows_distinct_titles() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None))
             .0
             .unwrap();
-        capture_output(|| run_add(&project, "Release", None, None, &[], None))
+        capture_output(|| run_add(&project, "Release", None, &[], None))
             .0
             .unwrap();
 
@@ -450,7 +434,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         for title in ["First", "Second", "Third"] {
-            capture_output(|| run_add(&project, title, None, None, &[], None))
+            capture_output(|| run_add(&project, title, None, &[], None))
                 .0
                 .unwrap();
         }
@@ -471,7 +455,7 @@ mod tests {
         project.global_config.default_max_retries = 5;
         write_config_without_max_retries(&project);
 
-        capture_output(|| run_add(&project, "Uses global retries", None, None, &[], None))
+        capture_output(|| run_add(&project, "Uses global retries", None, &[], None))
             .0
             .unwrap();
 
@@ -484,17 +468,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_add(&project, "Missing config", None, None, &[], None).unwrap_err();
+        let error = run_add(&project, "Missing config", None, &[], None).unwrap_err();
         assert!(matches!(error, AddError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_add(&project, "Malformed config", None, None, &[], None).unwrap_err();
+        let error = run_add(&project, "Malformed config", None, &[], None).unwrap_err();
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        run_add(&project, "Mandatory-only config", None, None, &[], None).unwrap();
+        run_add(&project, "Mandatory-only config", None, &[], None).unwrap();
         let tasks_file = read_tasks(&project);
         assert_eq!(tasks_file.tasks[0].state, "pending");
     }
@@ -511,7 +495,6 @@ mod tests {
             &mut store,
             "Blocked",
             "",
-            None,
             vec!["task-999".to_owned()],
             None,
         )
@@ -528,16 +511,8 @@ mod tests {
     fn add_task_with_phase_override_places_task_in_specified_phase() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
-        let (result, output) = capture_output(|| {
-            run_add(
-                &project,
-                "Backfilled task",
-                None,
-                None,
-                &[],
-                Some("enriching"),
-            )
-        });
+        let (result, output) =
+            capture_output(|| run_add(&project, "Backfilled task", None, &[], Some("enriching")));
         result.unwrap();
 
         assert_eq!(output, "added task-001: Backfilled task\n");
@@ -552,16 +527,8 @@ mod tests {
     fn add_task_with_unknown_phase_override_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
-        let (result, output) = capture_output(|| {
-            run_add(
-                &project,
-                "Bad phase task",
-                None,
-                None,
-                &[],
-                Some("nonexistent"),
-            )
-        });
+        let (result, output) =
+            capture_output(|| run_add(&project, "Bad phase task", None, &[], Some("nonexistent")));
         let error = result.unwrap_err();
 
         match &error {

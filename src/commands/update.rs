@@ -10,7 +10,7 @@ use crate::core::{
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
-    #[error("at least one of --title, --description, --prd, or --depends-on is required")]
+    #[error("at least one of --title, --description, or --depends-on is required")]
     NoFields,
 
     #[error("task {id} not found")]
@@ -49,16 +49,11 @@ pub enum UpdateError {
 pub struct UpdateInput {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub prd: Option<String>,
     pub depends_on: Option<Vec<String>>,
 }
 
 pub fn run_update(project: &Project, id: &str, input: UpdateInput) -> Result<(), UpdateError> {
-    if input.title.is_none()
-        && input.description.is_none()
-        && input.prd.is_none()
-        && input.depends_on.is_none()
-    {
+    if input.title.is_none() && input.description.is_none() && input.depends_on.is_none() {
         return Err(UpdateError::NoFields);
     }
 
@@ -73,7 +68,6 @@ pub fn run_update(project: &Project, id: &str, input: UpdateInput) -> Result<(),
         id,
         input.title.as_deref(),
         input.description.as_deref(),
-        input.prd.as_deref(),
         depends_on_ref,
     );
 
@@ -160,7 +154,6 @@ mod tests {
             default_model: None,
             max_retries: 3,
             verification: VerificationConfig { commands: vec![] },
-            prd_path: None,
         }
     }
 
@@ -214,7 +207,6 @@ mod tests {
             UpdateInput {
                 title: None,
                 description: None,
-                prd: None,
                 depends_on: None,
             },
         )
@@ -223,7 +215,7 @@ mod tests {
         assert!(matches!(error, UpdateError::NoFields));
         assert_eq!(
             error.to_string(),
-            "at least one of --title, --description, --prd, or --depends-on is required"
+            "at least one of --title, --description, or --depends-on is required"
         );
     }
 
@@ -237,7 +229,6 @@ mod tests {
             UpdateInput {
                 title: Some("New title".to_owned()),
                 description: None,
-                prd: None,
                 depends_on: None,
             },
         )
@@ -253,9 +244,7 @@ mod tests {
     fn update_title_persists() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store
-            .add_task("Original title", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Original title", "", vec![], None).unwrap();
 
         let (result, output) = capture_output(|| {
             run_update(
@@ -264,7 +253,6 @@ mod tests {
                 UpdateInput {
                     title: Some("Updated title".to_owned()),
                     description: None,
-                    prd: None,
                     depends_on: None,
                 },
             )
@@ -281,7 +269,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Task", "original desc", None, vec![], None)
+            .add_task("Task", "original desc", vec![], None)
             .unwrap();
 
         run_update(
@@ -290,7 +278,6 @@ mod tests {
             UpdateInput {
                 title: None,
                 description: Some("new desc".to_owned()),
-                prd: None,
                 depends_on: None,
             },
         )
@@ -301,38 +288,13 @@ mod tests {
     }
 
     #[test]
-    fn update_prd_persists() {
-        let (temp_dir, project, config) = test_project_with_config();
-        let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![], None).unwrap();
-
-        run_update(
-            &project,
-            "task-001",
-            UpdateInput {
-                title: None,
-                description: None,
-                prd: Some("FM-042".to_owned()),
-                depends_on: None,
-            },
-        )
-        .unwrap();
-
-        let store = test_store(&temp_dir, &config);
-        assert_eq!(
-            store.get_task("task-001").unwrap().prd_module_id.as_deref(),
-            Some("FM-042")
-        );
-    }
-
-    #[test]
     fn update_depends_on_replaces_list() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Dep A", "", None, vec![], None).unwrap();
-        store.add_task("Dep B", "", None, vec![], None).unwrap();
+        store.add_task("Dep A", "", vec![], None).unwrap();
+        store.add_task("Dep B", "", vec![], None).unwrap();
         store
-            .add_task("Subject", "", None, vec!["task-001".to_owned()], None)
+            .add_task("Subject", "", vec!["task-001".to_owned()], None)
             .unwrap();
 
         run_update(
@@ -341,7 +303,6 @@ mod tests {
             UpdateInput {
                 title: None,
                 description: None,
-                prd: None,
                 depends_on: Some(vec!["task-002".to_owned()]),
             },
         )
@@ -358,7 +319,7 @@ mod tests {
     fn update_depends_on_unknown_dep_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![], None).unwrap();
+        store.add_task("Task", "", vec![], None).unwrap();
 
         let error = run_update(
             &project,
@@ -366,7 +327,6 @@ mod tests {
             UpdateInput {
                 title: None,
                 description: None,
-                prd: None,
                 depends_on: Some(vec!["task-999".to_owned()]),
             },
         )
@@ -382,7 +342,7 @@ mod tests {
     fn update_done_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![], None).unwrap();
+        store.add_task("Task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -394,7 +354,6 @@ mod tests {
             UpdateInput {
                 title: Some("Updated terminal".to_owned()),
                 description: None,
-                prd: None,
                 depends_on: None,
             },
         );
@@ -414,7 +373,7 @@ mod tests {
     fn update_failed_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", None, vec![], None).unwrap();
+        store.add_task("Task", "", vec![], None).unwrap();
         store.fail_task("task-001", "oops").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -424,7 +383,6 @@ mod tests {
             UpdateInput {
                 title: Some("Updated failed".to_owned()),
                 description: None,
-                prd: None,
                 depends_on: None,
             },
         );
@@ -445,7 +403,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Old title", "old desc", None, vec![], None)
+            .add_task("Old title", "old desc", vec![], None)
             .unwrap();
 
         run_update(
@@ -454,7 +412,6 @@ mod tests {
             UpdateInput {
                 title: Some("New title".to_owned()),
                 description: Some("new desc".to_owned()),
-                prd: Some("FM-001".to_owned()),
                 depends_on: None,
             },
         )
@@ -464,6 +421,5 @@ mod tests {
         let task = store.get_task("task-001").unwrap();
         assert_eq!(task.title, "New title");
         assert_eq!(task.description, "new desc");
-        assert_eq!(task.prd_module_id.as_deref(), Some("FM-001"));
     }
 }

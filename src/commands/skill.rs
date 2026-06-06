@@ -27,7 +27,7 @@ example \"add an agira task\", \"create a task to ...\", or \"register a follow-
    which project to target instead of guessing.
 3. Confirm the chosen workspace before making any change.
 4. From that workspace, run `agira task add \"<title>\" --description \"<details>\"`
-   (adding `--prd`, `--depends-on`, or `--phase` only when the user supplies them).
+   (adding `--depends-on` or `--phase` only when the user supplies them).
 5. Never edit `~/.agira/<slug>/tasks.json` or any other Agira state file directly;
    always go through the `agira` CLI so IDs, history, and the state machine stay valid.
 

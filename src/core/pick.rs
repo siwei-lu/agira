@@ -7,21 +7,17 @@ use crate::core::{
     tasks::{Task, TaskPhase},
 };
 
-const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"` or provide requirements with `agira task todo --prd <path>`";
+const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"`";
 const BLOCKED_STATE: &str = "blocked";
 const FAILED_STATE: &str = "failed";
 
 pub(crate) fn format_pick_output(
     config: &Config,
     tasks: &[Task],
-    prd_content: Option<&str>,
     just_done: Option<(&str, &str)>,
 ) -> String {
     if tasks.is_empty() {
-        return match prd_content {
-            Some(prd_content) => format_decomposition_prompt(prd_content),
-            None => NO_TASKS_MESSAGE.to_owned(),
-        };
+        return NO_TASKS_MESSAGE.to_owned();
     }
 
     if is_all_done(tasks, config) {
@@ -81,12 +77,6 @@ fn is_all_done(tasks: &[Task], config: &Config) -> bool {
         && config
             .terminal_phase()
             .is_some_and(|terminal| tasks.iter().all(|task| task.state == terminal))
-}
-
-fn format_decomposition_prompt(prd_content: &str) -> String {
-    format!(
-        "# Agira PRD Decomposition\n\n## Role\nYou are the planner for this Agira project.\n\n## Objective\nBreak the requirements into small, actionable Agira tasks. Add each task with agira task add.\n\n## Commands\nFor each task, run:\n`agira task add \"<title>\" --description \"<description>\"`\n\n## Requirements Context\n{prd_content}"
-    )
 }
 
 fn format_task_prompt(task: &Task, config: &Config, _just_done: Option<(&str, &str)>) -> String {
@@ -300,7 +290,6 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         }
     }
 
@@ -309,27 +298,14 @@ mod tests {
     }
 
     #[test]
-    fn no_tasks_no_prd_message() {
+    fn no_tasks_message() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let store = test_store(&temp_dir, &config);
 
-        let output = format_pick_output(&config, store.all_tasks(), None, None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert_eq!(output, NO_TASKS_MESSAGE);
-    }
-
-    #[test]
-    fn no_tasks_with_prd_decomposition() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = test_config();
-        let store = test_store(&temp_dir, &config);
-        let prd_text = "Build the pick command from these requirements.";
-
-        let output = format_pick_output(&config, store.all_tasks(), Some(prd_text), None);
-
-        assert!(output.contains("agira task add"));
-        assert!(output.contains(prd_text));
     }
 
     #[test]
@@ -338,13 +314,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Later phase", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Later phase", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
-        store
-            .add_task("Earlier phase", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Earlier phase", "", vec![], None).unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -357,8 +329,8 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("First", "", None, vec![], None).unwrap();
-        store.add_task("Second", "", None, vec![], None).unwrap();
+        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("Second", "", vec![], None).unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -371,11 +343,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
+        store.add_task("Blocking task", "", vec![], None).unwrap();
         store
-            .add_task("Blocking task", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Blocked task", "", None, vec!["task-001".to_owned()], None)
+            .add_task("Blocked task", "", vec!["task-001".to_owned()], None)
             .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
@@ -398,10 +368,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Blocked current task", "", None, vec![], None)
+            .add_task("Blocked current task", "", vec![], None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", None, vec![], None)
+            .add_task("Next actionable task", "", vec![], None)
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
@@ -425,10 +395,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Failed current task", "", None, vec![], None)
+            .add_task("Failed current task", "", vec![], None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", None, vec![], None)
+            .add_task("Next actionable task", "", vec![], None)
             .unwrap();
         store.fail_task("task-001", "broken").unwrap();
 
@@ -443,16 +413,12 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Blocked task", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Failed task", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Blocked task", "", vec![], None).unwrap();
+        store.add_task("Failed task", "", vec![], None).unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.fail_task("task-002", "broken").unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None, None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert!(output.contains("All remaining tasks are blocked, failed, or complete."));
         assert!(output.contains("task-001: Blocked task (blocked)"));
@@ -466,9 +432,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching phase which has a model (opus) — orchestrator wrapper is present.
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -499,9 +463,7 @@ mod tests {
             .duty = Some("investigate and write a plan".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -516,9 +478,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -538,9 +498,7 @@ mod tests {
             .duty = Some(String::new());
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -560,9 +518,7 @@ mod tests {
             .duty = Some("investigate and write a plan".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store
             .record_phase_artifact(
                 "task-001",
@@ -586,9 +542,7 @@ mod tests {
         config.default_model = Some("codex".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -606,9 +560,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Task in pending phase — transition phase, no model, no orchestrator wrapper.
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -628,9 +580,7 @@ mod tests {
         config.phases.retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -672,13 +622,10 @@ mod tests {
             default_model: Some("codex".to_owned()),
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         };
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Triage work", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Triage work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap(); // pending -> triage
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -715,13 +662,10 @@ mod tests {
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
             max_retries: 3,
-            prd_path: None,
         };
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Triage work", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Triage work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -736,9 +680,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement work", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement work", "", vec![], None).unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -751,9 +693,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Accept work", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Accept work", "", vec![], None).unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
 
@@ -774,9 +714,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Continue work", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Continue work", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -797,7 +735,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Clarify requirements", "", None, vec![], None)
+            .add_task("Clarify requirements", "", vec![], None)
             .unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -816,7 +754,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", None, vec![], None).unwrap();
+        store.add_task("Next task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(store.get_task("task-001").unwrap(), &config, None);
@@ -838,7 +776,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", None, vec![], None).unwrap();
+        store.add_task("Next task", "", vec![], None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -862,11 +800,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store
-            .add_task("Implement pick", "", None, vec![], None)
-            .unwrap();
+        store.add_task("Implement pick", "", vec![], None).unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None, None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert!(!output.as_bytes().contains(&0x1B));
     }
@@ -877,11 +813,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
+        store.add_task("First done task", "", vec![], None).unwrap();
         store
-            .add_task("First done task", "", None, vec![], None)
-            .unwrap();
-        store
-            .add_task("Second done task", "", None, vec![], None)
+            .add_task("Second done task", "", vec![], None)
             .unwrap();
         for id in ["task-001", "task-002"] {
             store.next_phase(id).unwrap();
@@ -890,7 +824,7 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let output = format_pick_output(&config, store.all_tasks(), None, None);
+        let output = format_pick_output(&config, store.all_tasks(), None);
 
         assert!(output.contains("# Agira Completion Summary"));
         assert!(output.contains("task-001"));

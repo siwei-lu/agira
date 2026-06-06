@@ -30,7 +30,6 @@ pub struct HookContext {
     pub task_title: String,
     pub task_description: String,
     pub task_state: String,
-    pub task_prd_module_id: String,
     pub task_dependencies: String,
     pub task_retry_count: String,
     pub task_max_retries: String,
@@ -71,7 +70,6 @@ impl HookContext {
             task_title: task.title.clone(),
             task_description: task.description.clone(),
             task_state: task.state.clone(),
-            task_prd_module_id: task.prd_module_id.clone().unwrap_or_default(),
             task_dependencies: task.dependencies.join(","),
             task_retry_count: task.retry_count.to_string(),
             task_max_retries: task.max_retries.to_string(),
@@ -397,7 +395,6 @@ fn hook_command(hook: &HookEntry, ctx: &HookContext) -> Command {
         .env("AGIRA_TASK_TITLE", &ctx.task_title)
         .env("AGIRA_TASK_DESCRIPTION", &ctx.task_description)
         .env("AGIRA_TASK_STATE", &ctx.task_state)
-        .env("AGIRA_TASK_PRD_MODULE_ID", &ctx.task_prd_module_id)
         .env("AGIRA_TASK_DEPENDENCIES", &ctx.task_dependencies)
         .env("AGIRA_TASK_RETRY_COUNT", &ctx.task_retry_count)
         .env("AGIRA_TASK_MAX_RETRIES", &ctx.task_max_retries)
@@ -1104,7 +1101,6 @@ run = "echo failed"
             state: "done".to_owned(),
             blocked_at_phase: None,
             blocked_reason: None,
-            prd_module_id: None,
             dependencies: vec![],
             retry_count: 0,
             max_retries: 3,
