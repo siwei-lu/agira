@@ -1,12 +1,15 @@
-use std::{io, path::PathBuf};
+use std::{collections::HashSet, io, path::PathBuf};
 
 use thiserror::Error;
 
 use crate::core::{
-    config::{ConfigError, load_project_config},
+    config::{
+        ConfigError, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, load_project_config,
+        normalize_mandatory_phases,
+    },
     hooks::{HookContext, TASK_ADDED_EVENT, dispatch_hooks, hooks_for_event},
     project::Project,
-    tasks::{StoreError, TaskStore},
+    tasks::{StoreError, TaskPhaseConfig, TaskStore},
 };
 
 #[derive(Debug, Error)]
@@ -16,6 +19,9 @@ pub enum AddError {
 
     #[error("unknown phase: {phase}")]
     UnknownPhase { phase: String },
+
+    #[error("invalid --phases: {reason}")]
+    InvalidPhases { reason: String },
 
     #[error("a task with this title already exists: {id} \"{title}\"")]
     DuplicateTitle { id: String, title: String },
@@ -50,6 +56,7 @@ pub fn run_add(
     description: Option<&str>,
     depends_on: &[String],
     phase: Option<&str>,
+    phases: Option<&str>,
 ) -> Result<(), AddError> {
     let config_path = project.state_dir.join("config.json");
     let config =
@@ -76,6 +83,11 @@ pub fn run_add(
         return Err(AddError::DuplicateTitle { id, title });
     }
 
+    let state_machine = phases
+        .map(parse_phases)
+        .transpose()
+        .map_err(|reason| AddError::InvalidPhases { reason })?;
+
     add_task_flow(
         project,
         &mut store,
@@ -83,6 +95,7 @@ pub fn run_add(
         description.unwrap_or(""),
         depends_on.to_vec(),
         phase,
+        state_machine,
     )
 }
 
@@ -95,6 +108,82 @@ fn map_config_error(error: ConfigError) -> AddError {
     }
 }
 
+fn parse_phases(input: &str) -> Result<Vec<TaskPhaseConfig>, String> {
+    let mut parsed = Vec::new();
+
+    for entry in input.split(',') {
+        let (name, model) = match entry.split_once(':') {
+            Some((name, model)) => {
+                validate_phase_name(name)?;
+                if model.is_empty() {
+                    return Err(format!("empty model for phase '{name}'"));
+                }
+                if !is_valid_phase_label(model) {
+                    return Err(format!("invalid model for phase '{name}'"));
+                }
+                (name, Some(model.to_owned()))
+            }
+            None => {
+                validate_phase_name(entry)?;
+                (entry, None)
+            }
+        };
+
+        parsed.push(TaskPhaseConfig {
+            name: name.to_owned(),
+            model,
+        });
+    }
+
+    let mut names = HashSet::new();
+    for phase in &parsed {
+        if !names.insert(phase.name.as_str()) {
+            return Err(format!("duplicate phase '{}'", phase.name));
+        }
+    }
+
+    let phase_configs = parsed
+        .into_iter()
+        .map(|phase| PhaseConfig {
+            name: phase.name,
+            model: phase.model,
+            duty: None,
+        })
+        .collect();
+
+    let normalized = normalize_mandatory_phases(phase_configs);
+    debug_assert_eq!(
+        normalized.first().map(|phase| phase.name.as_str()),
+        Some(INITIAL_PHASE_NAME)
+    );
+    debug_assert_eq!(
+        normalized.last().map(|phase| phase.name.as_str()),
+        Some(TERMINAL_PHASE_NAME)
+    );
+
+    Ok(normalized
+        .into_iter()
+        .map(|phase| TaskPhaseConfig {
+            name: phase.name,
+            model: phase.model,
+        })
+        .collect())
+}
+
+fn validate_phase_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("empty phase name".to_owned());
+    }
+    if !is_valid_phase_label(name) {
+        return Err(format!("invalid phase name '{name}'"));
+    }
+    Ok(())
+}
+
+fn is_valid_phase_label(label: &str) -> bool {
+    !label.is_empty() && !label.chars().any(char::is_whitespace)
+}
+
 fn add_task_flow(
     project: &Project,
     store: &mut TaskStore,
@@ -102,8 +191,9 @@ fn add_task_flow(
     description: &str,
     depends_on: Vec<String>,
     phase: Option<&str>,
+    state_machine: Option<Vec<TaskPhaseConfig>>,
 ) -> Result<(), AddError> {
-    let task = match store.add_task(title, description, depends_on, phase) {
+    let task = match store.add_task(title, description, depends_on, phase, state_machine) {
         Ok(task) => task,
         Err(error) => return Err(map_store_error(error)),
     };
@@ -258,12 +348,98 @@ mod tests {
         (result, output)
     }
 
+    fn phase_names(phases: &[crate::core::tasks::TaskPhaseConfig]) -> Vec<&str> {
+        phases.iter().map(|phase| phase.name.as_str()).collect()
+    }
+
+    #[test]
+    fn parse_simple_list() {
+        let phases = parse_phases("pending,in_progress,done").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert!(phases.iter().all(|phase| phase.model.is_none()));
+    }
+
+    #[test]
+    fn parse_with_models() {
+        let phases = parse_phases("pending,in_progress:sonnet,done").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert_eq!(phases[1].model.as_deref(), Some("sonnet"));
+        assert!(phases[0].model.is_none());
+        assert!(phases[2].model.is_none());
+    }
+
+    #[test]
+    fn normalize_prepends_pending() {
+        let phases = parse_phases("in_progress:sonnet,done").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert!(phases[0].model.is_none());
+    }
+
+    #[test]
+    fn normalize_appends_done() {
+        let phases = parse_phases("pending,in_progress:sonnet").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert!(phases.last().unwrap().model.is_none());
+    }
+
+    #[test]
+    fn normalize_repositions_done_not_last() {
+        let phases = parse_phases("in_progress,done,verifying").unwrap();
+
+        assert_eq!(
+            phase_names(&phases),
+            ["pending", "in_progress", "verifying", "done"]
+        );
+    }
+
+    #[test]
+    fn normalize_strips_model_from_mandatory() {
+        let phases = parse_phases("pending:opus,in_progress:sonnet,done:haiku").unwrap();
+
+        assert_eq!(phase_names(&phases), ["pending", "in_progress", "done"]);
+        assert!(phases[0].model.is_none());
+        assert_eq!(phases[1].model.as_deref(), Some("sonnet"));
+        assert!(phases[2].model.is_none());
+    }
+
+    #[test]
+    fn reject_empty_name() {
+        let error = parse_phases(",in_progress").unwrap_err();
+
+        assert!(error.contains("empty phase name"));
+        assert_eq!(
+            AddError::InvalidPhases { reason: error }.to_string(),
+            "invalid --phases: empty phase name"
+        );
+
+        let error = parse_phases(":opus").unwrap_err();
+        assert!(error.contains("empty phase name"));
+    }
+
+    #[test]
+    fn reject_duplicate() {
+        let error = parse_phases("pending,in_progress,in_progress,done").unwrap_err();
+
+        assert!(error.contains("duplicate phase 'in_progress'"));
+    }
+
+    #[test]
+    fn reject_empty_model() {
+        let error = parse_phases("enriching:").unwrap_err();
+
+        assert!(error.contains("empty model"));
+    }
+
     #[test]
     fn add_task_creates_with_first_phase() {
         let (_temp_dir, project, config) = test_project_with_config();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Implement login endpoint", None, &[], None));
+            capture_output(|| run_add(&project, "Implement login endpoint", None, &[], None, None));
         result.unwrap();
 
         assert_eq!(output, "added task-001: Implement login endpoint\n");
@@ -291,15 +467,82 @@ mod tests {
     }
 
     #[test]
+    fn run_add_with_phases_stores_state_machine() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Review custom phase",
+                None,
+                &[],
+                None,
+                Some("pending,security_review:opus,done"),
+            )
+        });
+        result.unwrap();
+
+        assert_eq!(output, "added task-001: Review custom phase\n");
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        let state_machine = task.state_machine.as_ref().unwrap();
+        assert_eq!(task.state, "pending");
+        assert_eq!(
+            phase_names(state_machine),
+            ["pending", "security_review", "done"]
+        );
+        assert_eq!(state_machine[1].model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn run_add_invalid_phases_no_write() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Bad phases",
+                None,
+                &[],
+                None,
+                Some("pending,in_progress,in_progress,done"),
+            )
+        });
+        let error = result.unwrap_err();
+
+        match &error {
+            AddError::InvalidPhases { reason } => {
+                assert_eq!(reason, "duplicate phase 'in_progress'");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            error.to_string(),
+            "invalid --phases: duplicate phase 'in_progress'"
+        );
+        assert_eq!(output, "");
+        assert!(!project.state_dir.join("tasks.json").exists());
+    }
+
+    #[test]
     fn add_task_with_dependencies() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Prepare", None, &[], None))
+        capture_output(|| run_add(&project, "Prepare", None, &[], None, None))
             .0
             .unwrap();
 
         let depends_on = vec!["task-001".to_owned()];
-        let (result, output) =
-            capture_output(|| run_add(&project, "Deploy", Some("ship release"), &depends_on, None));
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Deploy",
+                Some("ship release"),
+                &depends_on,
+                None,
+                None,
+            )
+        });
         result.unwrap();
 
         assert_eq!(output, "added task-002: Deploy\n");
@@ -319,7 +562,7 @@ mod tests {
         let depends_on = vec!["task-999".to_owned()];
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Blocked", None, &depends_on, None));
+            capture_output(|| run_add(&project, "Blocked", None, &depends_on, None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -336,7 +579,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Review me", None, &[], Some("reviewing")));
+            capture_output(|| run_add(&project, "Review me", None, &[], Some("reviewing"), None));
         let error = result.unwrap_err();
 
         match &error {
@@ -351,11 +594,12 @@ mod tests {
     #[test]
     fn add_task_with_same_case_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
             .0
             .unwrap();
 
-        let (result, output) = capture_output(|| run_add(&project, "Deploy", None, &[], None));
+        let (result, output) =
+            capture_output(|| run_add(&project, "Deploy", None, &[], None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -376,11 +620,12 @@ mod tests {
     #[test]
     fn add_task_with_case_insensitive_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
             .0
             .unwrap();
 
-        let (result, output) = capture_output(|| run_add(&project, "deploy", None, &[], None));
+        let (result, output) =
+            capture_output(|| run_add(&project, "deploy", None, &[], None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -401,11 +646,11 @@ mod tests {
     #[test]
     fn add_task_allows_duplicate_title_when_existing_task_is_done() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Repeatable", None, &[], Some("done")))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], Some("done"), None))
             .0
             .unwrap();
 
-        capture_output(|| run_add(&project, "Repeatable", None, &[], None))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], None, None))
             .0
             .unwrap();
 
@@ -417,10 +662,10 @@ mod tests {
     #[test]
     fn add_task_allows_distinct_titles() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
             .0
             .unwrap();
-        capture_output(|| run_add(&project, "Release", None, &[], None))
+        capture_output(|| run_add(&project, "Release", None, &[], None, None))
             .0
             .unwrap();
 
@@ -432,7 +677,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         for title in ["First", "Second", "Third"] {
-            capture_output(|| run_add(&project, title, None, &[], None))
+            capture_output(|| run_add(&project, title, None, &[], None, None))
                 .0
                 .unwrap();
         }
@@ -453,7 +698,7 @@ mod tests {
         project.global_config.default_max_retries = 5;
         write_config_without_max_retries(&project);
 
-        capture_output(|| run_add(&project, "Uses global retries", None, &[], None))
+        capture_output(|| run_add(&project, "Uses global retries", None, &[], None, None))
             .0
             .unwrap();
 
@@ -466,17 +711,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_add(&project, "Missing config", None, &[], None).unwrap_err();
+        let error = run_add(&project, "Missing config", None, &[], None, None).unwrap_err();
         assert!(matches!(error, AddError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_add(&project, "Malformed config", None, &[], None).unwrap_err();
+        let error = run_add(&project, "Malformed config", None, &[], None, None).unwrap_err();
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        run_add(&project, "Mandatory-only config", None, &[], None).unwrap();
+        run_add(&project, "Mandatory-only config", None, &[], None, None).unwrap();
         let tasks_file = read_tasks(&project);
         assert_eq!(tasks_file.tasks[0].state, "pending");
     }
@@ -495,6 +740,7 @@ mod tests {
             "",
             vec!["task-999".to_owned()],
             None,
+            None,
         )
         .unwrap_err();
 
@@ -509,8 +755,16 @@ mod tests {
     fn add_task_with_phase_override_places_task_in_specified_phase() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "Backfilled task", None, &[], Some("enriching")));
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Backfilled task",
+                None,
+                &[],
+                Some("enriching"),
+                None,
+            )
+        });
         result.unwrap();
 
         assert_eq!(output, "added task-001: Backfilled task\n");
@@ -525,8 +779,16 @@ mod tests {
     fn add_task_with_unknown_phase_override_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "Bad phase task", None, &[], Some("nonexistent")));
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Bad phase task",
+                None,
+                &[],
+                Some("nonexistent"),
+                None,
+            )
+        });
         let error = result.unwrap_err();
 
         match &error {

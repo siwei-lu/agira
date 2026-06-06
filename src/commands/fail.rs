@@ -304,7 +304,7 @@ mod tests {
     fn retry_decrements_below_max() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let (result, output) =
@@ -330,7 +330,7 @@ mod tests {
     fn retry_when_next_count_is_still_below_max() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store
             .retry_task("task-001", "first transient failure")
             .unwrap();
@@ -358,7 +358,7 @@ mod tests {
     fn terminal_fail_when_at_max_minus_one() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
 
         capture_output(|| run_fail(&project, "task-001", Some("first failure")))
             .0
@@ -388,7 +388,7 @@ mod tests {
     fn terminal_fail_when_at_max() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.retry_task("task-001", "one").unwrap();
         store.retry_task("task-001", "two").unwrap();
         store.retry_task("task-001", "three").unwrap();
@@ -413,7 +413,7 @@ mod tests {
     fn already_failed_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -433,7 +433,7 @@ mod tests {
     fn already_terminal_done_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();

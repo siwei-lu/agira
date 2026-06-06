@@ -1107,6 +1107,7 @@ run = "echo failed"
             phases: BTreeMap::new(),
             history: vec![],
             created_at: "2026-06-05T00:00:00Z".to_owned(),
+            state_machine: None,
         }
     }
 

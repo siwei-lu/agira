@@ -11,6 +11,13 @@ use thiserror::Error;
 use crate::core::config::Config;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TaskPhaseConfig {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TaskPhase {
     pub artifact: String,
     pub completed_at: String,
@@ -41,6 +48,8 @@ pub struct Task {
     pub phases: BTreeMap<String, TaskPhase>,
     pub history: Vec<HistoryEntry>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_machine: Option<Vec<TaskPhaseConfig>>,
 }
 
 fn default_max_retries() -> u32 {
@@ -109,6 +118,13 @@ pub struct TaskStore {
     max_retries: u32,
 }
 
+fn machine_names(task: &Task, global: &[String]) -> Vec<String> {
+    task.state_machine
+        .as_ref()
+        .map(|machine| machine.iter().map(|phase| phase.name.clone()).collect())
+        .unwrap_or_else(|| global.to_vec())
+}
+
 impl TaskStore {
     pub fn new(state_dir: impl AsRef<Path>, config: &Config) -> Result<Self, StoreError> {
         let tasks_path = state_dir.as_ref().join("tasks.json");
@@ -168,6 +184,7 @@ impl TaskStore {
         description: &str,
         dependencies: Vec<String>,
         phase_override: Option<&str>,
+        state_machine: Option<Vec<TaskPhaseConfig>>,
     ) -> Result<Task, StoreError> {
         let next_num = self
             .tasks_file
@@ -191,15 +208,20 @@ impl TaskStore {
             }
         }
 
+        let machine_names: Vec<String> = state_machine
+            .as_ref()
+            .map(|machine| machine.iter().map(|phase| phase.name.clone()).collect())
+            .unwrap_or_else(|| self.state_machine.clone());
+
         let initial_phase = if let Some(phase) = phase_override {
-            if !self.state_machine.iter().any(|s| s == phase) {
+            if !machine_names.iter().any(|s| s == phase) {
                 return Err(StoreError::UnknownPhase {
                     phase: phase.to_owned(),
                 });
             }
             phase.to_owned()
         } else {
-            self.state_machine
+            machine_names
                 .first()
                 .cloned()
                 .ok_or_else(|| StoreError::InvalidTransition {
@@ -226,6 +248,7 @@ impl TaskStore {
                 reason: "task created".to_owned(),
             }],
             created_at,
+            state_machine,
         };
 
         let mut tasks_file = self.tasks_file.clone();
@@ -280,8 +303,8 @@ impl TaskStore {
             return Err(StoreError::AlreadyTerminal);
         }
 
-        let current_index = self
-            .state_machine
+        let machine = machine_names(&tasks_file.tasks[task_index], &self.state_machine);
+        let current_index = machine
             .iter()
             .position(|state| state == &previous_state)
             .ok_or_else(|| StoreError::InvalidTransition {
@@ -290,7 +313,7 @@ impl TaskStore {
             })?;
         let target_index = current_index + 1;
 
-        if target_index >= self.state_machine.len() {
+        if target_index >= machine.len() {
             return Err(StoreError::AlreadyTerminal);
         }
 
@@ -312,7 +335,7 @@ impl TaskStore {
             }
         }
 
-        let target_state = self.state_machine[target_index].clone();
+        let target_state = machine[target_index].clone();
         let task = &mut tasks_file.tasks[task_index];
         task.state = target_state.clone();
         task.history.push(HistoryEntry {
@@ -338,11 +361,8 @@ impl TaskStore {
             return Err(StoreError::AlreadyTerminal);
         }
 
-        if !self
-            .state_machine
-            .iter()
-            .any(|state| state == &previous_state)
-        {
+        let machine = machine_names(&tasks_file.tasks[task_index], &self.state_machine);
+        if !machine.contains(&previous_state) {
             return Err(StoreError::InvalidTransition {
                 from: previous_state,
                 to: "failed".to_owned(),
@@ -378,11 +398,8 @@ impl TaskStore {
             return Err(StoreError::AlreadyTerminal);
         }
 
-        if !self
-            .state_machine
-            .iter()
-            .any(|state| state == &previous_state)
-        {
+        let machine = machine_names(&tasks_file.tasks[task_index], &self.state_machine);
+        if !machine.contains(&previous_state) {
             return Err(StoreError::InvalidTransition {
                 from: previous_state,
                 to: "blocked".to_owned(),
@@ -485,13 +502,13 @@ impl TaskStore {
 
     pub fn remove_task(&mut self, id: &str) -> Result<(), StoreError> {
         let task = self.get_task(id).ok_or(StoreError::NotFound)?;
-        let pending_phase =
-            self.state_machine
-                .first()
-                .ok_or_else(|| StoreError::InvalidTransition {
-                    from: task.state.clone(),
-                    to: String::new(),
-                })?;
+        let machine = machine_names(task, &self.state_machine);
+        let pending_phase = machine
+            .first()
+            .ok_or_else(|| StoreError::InvalidTransition {
+                from: task.state.clone(),
+                to: String::new(),
+            })?;
 
         if task.state != *pending_phase {
             return Err(StoreError::NotInPendingPhase { id: id.to_owned() });
@@ -524,8 +541,9 @@ impl TaskStore {
             return Err(StoreError::AlreadyTerminal);
         }
 
+        let machine = machine_names(&tasks_file.tasks[task_index], &self.state_machine);
         let first_phase =
-            self.state_machine
+            machine
                 .first()
                 .cloned()
                 .ok_or_else(|| StoreError::InvalidTransition {
@@ -533,11 +551,7 @@ impl TaskStore {
                     to: String::new(),
                 })?;
 
-        if !self
-            .state_machine
-            .iter()
-            .any(|state| state == &previous_state)
-        {
+        if !machine.contains(&previous_state) {
             return Err(StoreError::InvalidTransition {
                 from: previous_state,
                 to: first_phase,
@@ -602,13 +616,30 @@ mod tests {
         TaskStore::new(temp_dir.path(), &test_config()).unwrap()
     }
 
+    fn custom_state_machine() -> Vec<TaskPhaseConfig> {
+        vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+            },
+            TaskPhaseConfig {
+                name: "security_review".to_owned(),
+                model: Some("opus".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+            },
+        ]
+    }
+
     #[test]
     fn add_task_creates_task_with_first_phase() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("First task", "Description", vec![], None)
+            .add_task("First task", "Description", vec![], None, None)
             .unwrap();
 
         assert_eq!(task.id, "task-001");
@@ -631,7 +662,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("First task", "", vec![], Some("enriching"))
+            .add_task("First task", "", vec![], Some("enriching"), None)
             .unwrap();
 
         assert_eq!(task.state, "enriching");
@@ -646,7 +677,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let error = store
-            .add_task("First task", "", vec![], Some("reviewing"))
+            .add_task("First task", "", vec![], Some("reviewing"), None)
             .unwrap_err();
 
         match error {
@@ -662,9 +693,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        let first = store.add_task("First", "", vec![], None).unwrap();
-        let second = store.add_task("Second", "", vec![], None).unwrap();
-        let third = store.add_task("Third", "", vec![], None).unwrap();
+        let first = store.add_task("First", "", vec![], None, None).unwrap();
+        let second = store.add_task("Second", "", vec![], None, None).unwrap();
+        let third = store.add_task("Third", "", vec![], None, None).unwrap();
 
         assert_eq!(first.id, "task-001");
         assert_eq!(second.id, "task-002");
@@ -676,7 +707,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -692,7 +723,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -705,7 +736,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.next_phase("task-001").unwrap_err();
@@ -717,7 +748,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.fail_task("task-001", "provided reason").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -732,7 +763,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -745,7 +776,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let (retry_count, max_retries) = store.retry_task("task-001", "try again").unwrap();
@@ -766,7 +797,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Done", "", vec![], None).unwrap();
+        store.add_task("Done", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before_done = store.get_task("task-001").unwrap().clone();
@@ -775,7 +806,7 @@ mod tests {
         assert!(matches!(error, StoreError::AlreadyTerminal));
         assert_eq!(store.get_task("task-001").unwrap(), &before_done);
 
-        store.add_task("Failed", "", vec![], None).unwrap();
+        store.add_task("Failed", "", vec![], None, None).unwrap();
         store.fail_task("task-002", "failed").unwrap();
         let before_failed = store.get_task("task-002").unwrap().clone();
 
@@ -789,7 +820,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
@@ -813,7 +844,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -836,9 +867,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", vec![], None).unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None)
+            .add_task("Dependency", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
 
         let error = store.next_phase("task-002").unwrap_err();
@@ -859,9 +892,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", vec![], None).unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None)
+            .add_task("Dependency", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -876,9 +911,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Dependency", "", vec![], None).unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None)
+            .add_task("Dependency", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
         store.fail_task("task-001", "dependency failed").unwrap();
 
@@ -891,7 +928,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.block_task("task-001", "waiting on api").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -910,7 +947,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -923,7 +960,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.block_task("task-001", "reason").unwrap_err();
@@ -935,7 +972,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.block_task("task-001", "first reason").unwrap();
 
         let error = store.block_task("task-001", "second reason").unwrap_err();
@@ -956,7 +993,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.unblock_task("task-001").unwrap();
@@ -976,7 +1013,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
 
         let error = store.unblock_task("task-001").unwrap_err();
         assert!(matches!(error, StoreError::NotBlocked));
@@ -996,8 +1033,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
-        store.add_task("Second", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.add_task("Second", "", vec![], None, None).unwrap();
 
         store.remove_task("task-001").unwrap();
 
@@ -1029,7 +1066,7 @@ mod tests {
         {
             let temp_dir = TempDir::new().unwrap();
             let mut store = test_store(&temp_dir);
-            store.add_task("First", "", vec![], None).unwrap();
+            store.add_task("First", "", vec![], None, None).unwrap();
             make_non_pending(&mut store);
             let before = store.get_task("task-001").unwrap().clone();
 
@@ -1075,9 +1112,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
         store
-            .add_task("Second", "", vec!["task-001".to_owned()], None)
+            .add_task("Second", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
 
         let error = store.remove_task("task-001").unwrap_err();
@@ -1099,7 +1136,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
 
         let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
         let value: Value = serde_json::from_str(&contents).unwrap();
@@ -1112,7 +1149,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("Backfilled", "", vec![], Some("enriching"))
+            .add_task("Backfilled", "", vec![], Some("enriching"), None)
             .unwrap();
 
         assert_eq!(task.state, "enriching");
@@ -1128,7 +1165,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("Already done", "", vec![], Some("done"))
+            .add_task("Already done", "", vec![], Some("done"), None)
             .unwrap();
 
         assert_eq!(task.state, "done");
@@ -1141,7 +1178,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let error = store
-            .add_task("Bad phase", "", vec![], Some("nonexistent"))
+            .add_task("Bad phase", "", vec![], Some("nonexistent"), None)
             .unwrap_err();
 
         assert!(matches!(
@@ -1153,16 +1190,140 @@ mod tests {
     }
 
     #[test]
+    fn add_task_with_state_machine_sets_first_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        let state_machine = custom_state_machine();
+
+        let task = store
+            .add_task(
+                "Security review",
+                "",
+                vec![],
+                None,
+                Some(state_machine.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(task.state, "pending");
+        assert_eq!(task.state_machine.as_ref(), Some(&state_machine));
+        assert_eq!(task.history[0].to, "pending");
+        assert_eq!(
+            store.get_task("task-001").unwrap().state_machine.as_ref(),
+            Some(&state_machine)
+        );
+    }
+
+    #[test]
+    fn custom_machine_advances_through_own_phases() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        store
+            .add_task(
+                "Security review",
+                "",
+                vec![],
+                None,
+                Some(custom_state_machine()),
+            )
+            .unwrap();
+
+        store.next_phase("task-001").unwrap();
+        assert_eq!(store.get_task("task-001").unwrap().state, "security_review");
+
+        store.next_phase("task-001").unwrap();
+        assert_eq!(store.get_task("task-001").unwrap().state, "done");
+
+        let error = store.next_phase("task-001").unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyTerminal));
+    }
+
+    #[test]
+    fn custom_machine_fail_block_retry() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store
+            .add_task("Fails", "", vec![], None, Some(custom_state_machine()))
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.fail_task("task-001", "failed review").unwrap();
+        assert_eq!(store.get_task("task-001").unwrap().state, "failed");
+
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store
+            .add_task("Blocks", "", vec![], None, Some(custom_state_machine()))
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.block_task("task-001", "waiting").unwrap();
+        let task = store.get_task("task-001").unwrap();
+        assert_eq!(task.state, "blocked");
+        assert_eq!(task.blocked_at_phase.as_deref(), Some("security_review"));
+
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store
+            .add_task("Retries", "", vec![], None, Some(custom_state_machine()))
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.retry_task("task-001", "redo").unwrap();
+        assert_eq!(store.get_task("task-001").unwrap().state, "pending");
+    }
+
+    #[test]
+    fn backward_compat_loads_without_state_machine() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("tasks.json"),
+            r#"{
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Legacy task",
+      "description": "",
+      "state": "pending",
+      "dependencies": [],
+      "retry_count": 0,
+      "max_retries": 3,
+      "phases": {},
+      "history": [
+        {
+          "from": null,
+          "to": "pending",
+          "timestamp": "2026-06-06T00:00:00Z",
+          "reason": "task created"
+        }
+      ],
+      "created_at": "2026-06-06T00:00:00Z"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let mut store = test_store(&temp_dir);
+        assert!(store.get_task("task-001").unwrap().state_machine.is_none());
+
+        let tasks_file = TasksFile {
+            tasks: store.all_tasks().to_vec(),
+        };
+        store.save(tasks_file).unwrap();
+        let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
+        assert!(!contents.contains("state_machine"));
+    }
+
+    #[test]
     fn add_after_remove_does_not_reuse_id() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None).unwrap();
-        store.add_task("Second", "", vec![], None).unwrap();
-        store.add_task("Third", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.add_task("Second", "", vec![], None, None).unwrap();
+        store.add_task("Third", "", vec![], None, None).unwrap();
         store.remove_task("task-002").unwrap();
 
-        let task = store.add_task("Fourth", "", vec![], None).unwrap();
+        let task = store.add_task("Fourth", "", vec![], None, None).unwrap();
         assert_eq!(task.id, "task-004");
     }
 }

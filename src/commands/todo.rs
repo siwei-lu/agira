@@ -313,7 +313,7 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("My task", "description", vec![], None)
+            .add_task("My task", "description", vec![], None, None)
             .unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None));
@@ -337,10 +337,22 @@ mod tests {
         write_config(&project, &config);
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Blocked current task", "blocked description", vec![], None)
+            .add_task(
+                "Blocked current task",
+                "blocked description",
+                vec![],
+                None,
+                None,
+            )
             .unwrap();
         store
-            .add_task("Next actionable task", "next description", vec![], None)
+            .add_task(
+                "Next actionable task",
+                "next description",
+                vec![],
+                None,
+                None,
+            )
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
@@ -356,9 +368,9 @@ mod tests {
     fn no_artifact_dirty_tree_blocks_next_task_prompt() {
         let (git_dir, state_dir, project, config) = setup_with_git_repo();
         let mut store = test_store(&state_dir, &config);
-        store.add_task("Done task", "", vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None, None).unwrap();
         store
-            .add_task("Next task", "", vec!["task-001".to_owned()], None)
+            .add_task("Next task", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -382,7 +394,7 @@ mod tests {
         let (_git_dir, state_dir, project, config) = setup_with_git_repo();
         let mut store = test_store(&state_dir, &config);
         store
-            .add_task("Clean tree task", "description", vec![], None)
+            .add_task("Clean tree task", "description", vec![], None, None)
             .unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None));
@@ -398,7 +410,7 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Non-git task", "description", vec![], None)
+            .add_task("Non-git task", "description", vec![], None, None)
             .unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None));
@@ -413,7 +425,7 @@ mod tests {
     fn no_artifact_all_done_shows_completion_summary() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Done task", "", vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -428,7 +440,7 @@ mod tests {
     fn task_prompt_references_todo_command() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None, None).unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, None));
 
@@ -448,7 +460,7 @@ mod tests {
     fn with_artifact_non_terminal_shows_arrow() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None, None).unwrap();
 
         let (result, output) = capture_output(|| run_todo(&project, Some("enriched")));
 
@@ -463,10 +475,10 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Blocked current task", "", vec![], None)
+            .add_task("Blocked current task", "", vec![], None, None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", vec![], None)
+            .add_task("Next actionable task", "", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
@@ -493,10 +505,12 @@ mod tests {
     fn with_artifact_terminal_shows_commit_and_next_task() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First task", "", vec![], None).unwrap();
+        store
+            .add_task("First task", "", vec![], None, None)
+            .unwrap();
         // task-002 depends on task-001 so it is blocked until task-001 is done
         store
-            .add_task("Second task", "", vec!["task-001".to_owned()], None)
+            .add_task("Second task", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap(); // pending -> enriching
         store.next_phase("task-001").unwrap(); // enriching -> in_progress
@@ -514,7 +528,7 @@ mod tests {
     fn with_artifact_terminal_all_done_shows_completion() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Only task", "", vec![], None).unwrap();
+        store.add_task("Only task", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -530,7 +544,7 @@ mod tests {
     fn with_artifact_no_actionable_task_returns_error() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Done task", "", vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -558,7 +572,7 @@ mod tests {
     fn with_artifact_records_in_store() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("My task", "", vec![], None).unwrap();
+        store.add_task("My task", "", vec![], None, None).unwrap();
 
         let (result, _) = capture_output(|| run_todo(&project, Some("done it")));
         result.unwrap();

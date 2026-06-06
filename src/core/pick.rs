@@ -43,7 +43,7 @@ pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Op
         })
         .max_by_key(|task| {
             (
-                phase_index(&task.state, config).unwrap_or(0),
+                task_phase_index(task, &task.state, config).unwrap_or(0),
                 Reverse(task_id_number(&task.id)),
             )
         })
@@ -53,12 +53,32 @@ fn phase_index(phase: &str, config: &Config) -> Option<usize> {
     config.phases.iter().position(|p| p.name == phase)
 }
 
+fn task_phase_names<'a>(task: &'a Task, config: &'a Config) -> Vec<&'a str> {
+    task.state_machine
+        .as_ref()
+        .map(|machine| machine.iter().map(|phase| phase.name.as_str()).collect())
+        .unwrap_or_else(|| {
+            config
+                .phases
+                .iter()
+                .map(|phase| phase.name.as_str())
+                .collect()
+        })
+}
+
+fn task_phase_index(task: &Task, phase: &str, config: &Config) -> Option<usize> {
+    task_phase_names(task, config)
+        .iter()
+        .position(|candidate| *candidate == phase)
+}
+
 fn is_actionable(task: &Task, config: &Config) -> bool {
     let Some(terminal) = config.terminal_phase() else {
         return false;
     };
 
-    !is_non_actionable_state(&task.state, terminal) && phase_index(&task.state, config).is_some()
+    !is_non_actionable_state(&task.state, terminal)
+        && task_phase_index(task, &task.state, config).is_some()
 }
 
 fn is_non_actionable_state(state: &str, terminal_phase: &str) -> bool {
@@ -87,9 +107,11 @@ fn format_task_prompt(
     _just_done: Option<(&str, &str)>,
     state_dir: &Path,
 ) -> String {
-    let phase_cfg = config.phases.iter().find(|p| p.name == task.state);
-    let model: Option<&str> = phase_cfg.and_then(|p| effective_phase_model(p, config));
-    let duty = phase_cfg
+    let model = effective_task_model(task, &task.state, config);
+    let duty = config
+        .phases
+        .iter()
+        .find(|p| p.name == task.state)
         .and_then(|p| p.duty.as_deref())
         .filter(|d| !d.is_empty());
 
@@ -195,19 +217,38 @@ fn effective_phase_model<'a>(
     phase.model.as_deref().or(config.default_model.as_deref())
 }
 
-fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
-    let Some(current_index) = phase_index(&task.state, config) else {
-        return Vec::new();
-    };
+fn effective_task_model<'a>(task: &'a Task, phase: &str, config: &'a Config) -> Option<&'a str> {
+    if let Some(machine) = task.state_machine.as_ref() {
+        let phase_cfg = machine.iter().find(|candidate| candidate.name == phase)?;
+        if phase_cfg.name == INITIAL_PHASE_NAME || phase_cfg.name == TERMINAL_PHASE_NAME {
+            return None;
+        }
+
+        return phase_cfg
+            .model
+            .as_deref()
+            .or(config.default_model.as_deref());
+    }
 
     config
         .phases
         .iter()
+        .find(|candidate| candidate.name == phase)
+        .and_then(|phase_cfg| effective_phase_model(phase_cfg, config))
+}
+
+fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
+    let Some(current_index) = task_phase_index(task, &task.state, config) else {
+        return Vec::new();
+    };
+
+    task_phase_names(task, config)
+        .iter()
         .take(current_index)
-        .filter_map(|p| {
+        .filter_map(|phase_name| {
             task.phases
-                .get(&p.name)
-                .map(|phase| (p.name.as_str(), phase))
+                .get(*phase_name)
+                .map(|phase| (*phase_name, phase))
         })
         .collect()
 }
@@ -274,7 +315,7 @@ mod tests {
 
     use super::*;
     use crate::core::config::PhaseConfig;
-    use crate::core::tasks::TaskStore;
+    use crate::core::tasks::{TaskPhaseConfig, TaskStore};
 
     fn test_config() -> Config {
         Config {
@@ -315,6 +356,23 @@ mod tests {
         TaskStore::new(temp_dir.path(), config).unwrap()
     }
 
+    fn custom_state_machine() -> Vec<TaskPhaseConfig> {
+        vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+            },
+            TaskPhaseConfig {
+                name: "security_review".to_owned(),
+                model: Some("opus".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+            },
+        ]
+    }
+
     #[test]
     fn no_tasks_message() {
         let temp_dir = TempDir::new().unwrap();
@@ -332,9 +390,13 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Later phase", "", vec![], None).unwrap();
+        store
+            .add_task("Later phase", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
-        store.add_task("Earlier phase", "", vec![], None).unwrap();
+        store
+            .add_task("Earlier phase", "", vec![], None, None)
+            .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -347,8 +409,8 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("First", "", vec![], None).unwrap();
-        store.add_task("Second", "", vec![], None).unwrap();
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.add_task("Second", "", vec![], None, None).unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
@@ -361,14 +423,38 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Blocking task", "", vec![], None).unwrap();
         store
-            .add_task("Blocked task", "", vec!["task-001".to_owned()], None)
+            .add_task("Blocking task", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Blocked task", "", vec!["task-001".to_owned()], None, None)
             .unwrap();
 
         let selected = select_next_task(store.all_tasks(), &config).unwrap();
 
         assert_eq!(selected.id, "task-001");
+    }
+
+    #[test]
+    fn custom_machine_task_is_actionable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task(
+                "Security review",
+                "",
+                vec![],
+                Some("security_review"),
+                Some(custom_state_machine()),
+            )
+            .unwrap();
+
+        let selected = select_next_task(store.all_tasks(), &config).unwrap();
+
+        assert_eq!(selected.id, "task-001");
+        assert_eq!(selected.state, "security_review");
     }
 
     #[test]
@@ -386,10 +472,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Blocked current task", "", vec![], None)
+            .add_task("Blocked current task", "", vec![], None, None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", vec![], None)
+            .add_task("Next actionable task", "", vec![], None, None)
             .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
@@ -413,10 +499,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Failed current task", "", vec![], None)
+            .add_task("Failed current task", "", vec![], None, None)
             .unwrap();
         store
-            .add_task("Next actionable task", "", vec![], None)
+            .add_task("Next actionable task", "", vec![], None, None)
             .unwrap();
         store.fail_task("task-001", "broken").unwrap();
 
@@ -431,8 +517,12 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Blocked task", "", vec![], None).unwrap();
-        store.add_task("Failed task", "", vec![], None).unwrap();
+        store
+            .add_task("Blocked task", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Failed task", "", vec![], None, None)
+            .unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.fail_task("task-002", "broken").unwrap();
 
@@ -450,7 +540,9 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching phase which has a model (opus) — orchestrator wrapper is present.
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -475,6 +567,34 @@ mod tests {
     }
 
     #[test]
+    fn model_lookup_honors_task_machine() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task(
+                "Security review",
+                "",
+                vec![],
+                Some("security_review"),
+                Some(custom_state_machine()),
+            )
+            .unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("- Agent role: opus"));
+        assert!(prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(prompt.contains("The configured model is `opus`"));
+    }
+
+    #[test]
     fn task_prompt_includes_phase_duty_when_current_phase_defines_one() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
@@ -486,7 +606,9 @@ mod tests {
             .duty = Some("investigate and write a plan".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -501,12 +623,80 @@ mod tests {
     }
 
     #[test]
+    fn duty_falls_back_to_global() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "in_progress")
+            .unwrap()
+            .duty = Some("write the implementation".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+            },
+            TaskPhaseConfig {
+                name: "in_progress".to_owned(),
+                model: Some("sonnet".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "security_review".to_owned(),
+                model: Some("opus".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+            },
+        ];
+
+        store
+            .add_task(
+                "Global duty",
+                "",
+                vec![],
+                Some("in_progress"),
+                Some(state_machine.clone()),
+            )
+            .unwrap();
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains("write the implementation"));
+
+        store
+            .add_task(
+                "No global duty",
+                "",
+                vec![],
+                Some("security_review"),
+                Some(state_machine),
+            )
+            .unwrap();
+        let prompt = format_task_prompt(
+            store.get_task("task-002").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        assert!(!prompt.contains("## Phase Duty"));
+    }
+
+    #[test]
     fn task_prompt_omits_phase_duty_when_current_phase_duty_is_none() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -531,7 +721,9 @@ mod tests {
             .duty = Some(String::new());
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -556,7 +748,9 @@ mod tests {
             .duty = Some("investigate and write a plan".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store
             .record_phase_artifact(
                 "task-001",
@@ -584,7 +778,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -611,7 +807,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Pending task", "", vec![], None).unwrap();
+        store
+            .add_task("Pending task", "", vec![], None, None)
+            .unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
@@ -629,7 +827,7 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Done task", "", vec![], None).unwrap();
+        store.add_task("Done task", "", vec![], None, None).unwrap();
         for _ in 0..4 {
             store.next_phase("task-001").unwrap();
         }
@@ -657,7 +855,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Ordered attachments", "", vec![], None)
+            .add_task("Ordered attachments", "", vec![], None, None)
             .unwrap();
         store
             .record_phase_artifact(
@@ -688,7 +886,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Implement pick", "thin description", vec![], None)
+            .add_task("Implement pick", "thin description", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -718,7 +916,7 @@ mod tests {
         let description = "x".repeat(150);
 
         store
-            .add_task("Implement pick", &description, vec![], None)
+            .add_task("Implement pick", &description, vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -742,10 +940,10 @@ mod tests {
         let description_150 = "y".repeat(150);
 
         store
-            .add_task("Short boundary", &description_149, vec![], None)
+            .add_task("Short boundary", &description_149, vec![], None, None)
             .unwrap();
         store
-            .add_task("Long boundary", &description_150, vec![], None)
+            .add_task("Long boundary", &description_150, vec![], None, None)
             .unwrap();
         for id in ["task-001", "task-002"] {
             store.next_phase(id).unwrap();
@@ -776,7 +974,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Enrich task", "thin description", vec![], None)
+            .add_task("Enrich task", "thin description", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -797,7 +995,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Pending task", "thin description", vec![], None)
+            .add_task("Pending task", "thin description", vec![], None, None)
             .unwrap();
 
         let prompt = format_task_prompt(
@@ -817,7 +1015,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Empty description", "", vec![], None)
+            .add_task("Empty description", "", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -846,7 +1044,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Ordered sections", "thin description", vec![], None)
+            .add_task("Ordered sections", "thin description", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -893,10 +1091,10 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("In progress task", "thin description", vec![], None)
+            .add_task("In progress task", "thin description", vec![], None, None)
             .unwrap();
         store
-            .add_task("Pending task", "thin description", vec![], None)
+            .add_task("Pending task", "thin description", vec![], None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -924,7 +1122,9 @@ mod tests {
         config.default_model = Some("codex".to_owned());
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -947,7 +1147,9 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Task in pending phase — transition phase, no model, no orchestrator wrapper.
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
@@ -972,7 +1174,9 @@ mod tests {
         config.phases.retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -1021,7 +1225,9 @@ mod tests {
         };
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Triage work", "", vec![], None).unwrap();
+        store
+            .add_task("Triage work", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap(); // pending -> triage
 
         let prompt = format_task_prompt(
@@ -1065,7 +1271,9 @@ mod tests {
         };
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Triage work", "", vec![], None).unwrap();
+        store
+            .add_task("Triage work", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -1085,7 +1293,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement work", "", vec![], None).unwrap();
+        store
+            .add_task("Implement work", "", vec![], None, None)
+            .unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
@@ -1103,7 +1313,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Accept work", "", vec![], None).unwrap();
+        store
+            .add_task("Accept work", "", vec![], None, None)
+            .unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
@@ -1129,7 +1341,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Continue work", "", vec![], None).unwrap();
+        store
+            .add_task("Continue work", "", vec![], None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -1149,13 +1363,72 @@ mod tests {
     }
 
     #[test]
+    fn prior_phases_honor_task_machine() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+            },
+            TaskPhaseConfig {
+                name: "security_review".to_owned(),
+                model: Some("opus".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "compliance_review".to_owned(),
+                model: Some("haiku".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+            },
+        ];
+
+        store
+            .add_task("Custom order", "", vec![], None, Some(state_machine))
+            .unwrap();
+        store
+            .record_phase_artifact(
+                "task-001",
+                "pending artifact",
+                "2026-06-06T00:00:00Z".into(),
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store
+            .record_phase_artifact(
+                "task-001",
+                "security artifact",
+                "2026-06-06T01:00:00Z".into(),
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("## Acceptance Criteria"));
+        let pending_index = prompt.find("Phase: pending").unwrap();
+        let security_index = prompt.find("Phase: security_review").unwrap();
+        assert!(pending_index < security_index);
+        assert!(prompt.contains("Artifact: pending artifact"));
+        assert!(prompt.contains("Artifact: security artifact"));
+    }
+
+    #[test]
     fn task_prompt_contains_checkpoint_block_instruction() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
         store
-            .add_task("Clarify requirements", "", vec![], None)
+            .add_task("Clarify requirements", "", vec![], None, None)
             .unwrap();
 
         let prompt = format_task_prompt(
@@ -1179,7 +1452,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", vec![], None).unwrap();
+        store.add_task("Next task", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -1206,7 +1479,7 @@ mod tests {
         let mut store = test_store(&temp_dir, &config);
 
         // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", vec![], None).unwrap();
+        store.add_task("Next task", "", vec![], None, None).unwrap();
         store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
@@ -1231,7 +1504,9 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("Implement pick", "", vec![], None).unwrap();
+        store
+            .add_task("Implement pick", "", vec![], None, None)
+            .unwrap();
 
         let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
 
@@ -1244,9 +1519,11 @@ mod tests {
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        store.add_task("First done task", "", vec![], None).unwrap();
         store
-            .add_task("Second done task", "", vec![], None)
+            .add_task("First done task", "", vec![], None, None)
+            .unwrap();
+        store
+            .add_task("Second done task", "", vec![], None, None)
             .unwrap();
         for id in ["task-001", "task-002"] {
             store.next_phase(id).unwrap();
@@ -1282,6 +1559,7 @@ mod tests {
                 "Verify work",
                 "Run final verification for the implemented change.",
                 vec![],
+                None,
                 None,
             )
             .unwrap();

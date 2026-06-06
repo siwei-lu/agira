@@ -268,6 +268,9 @@ enum TaskCommands {
         /// Place the task directly into this phase instead of the default starting phase
         #[arg(long, value_name = "phase")]
         phase: Option<String>,
+        /// Override the project state machine for this task: comma-separated name[:model] entries
+        #[arg(long, value_name = "phases")]
+        phases: Option<String>,
     },
     /// Update editable fields of an existing task
     Update {
@@ -432,6 +435,7 @@ fn main() -> ExitCode {
                 description,
                 depends_on,
                 phase,
+                phases,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
                     &project,
@@ -439,6 +443,7 @@ fn main() -> ExitCode {
                     description.as_deref(),
                     &depends_on,
                     phase.as_deref(),
+                    phases.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -862,6 +867,7 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
     match error {
         commands::AddError::UnknownDependency { .. }
         | commands::AddError::UnknownPhase { .. }
+        | commands::AddError::InvalidPhases { .. }
         | commands::AddError::DuplicateTitle { .. }
         | commands::AddError::ConfigNotFound { .. }
         | commands::AddError::ConfigLoad { .. }
