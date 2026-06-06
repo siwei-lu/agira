@@ -299,7 +299,6 @@ mod tests {
             ],
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
-            acceptance_testing: "cli".to_owned(),
             max_retries: 3,
             prd_path: None,
         }
@@ -672,7 +671,6 @@ mod tests {
             ],
             default_model: Some("codex".to_owned()),
             verification: VerificationConfig { commands: vec![] },
-            acceptance_testing: "cli".to_owned(),
             max_retries: 3,
             prd_path: None,
         };
@@ -716,7 +714,6 @@ mod tests {
             ],
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
-            acceptance_testing: "cli".to_owned(),
             max_retries: 3,
             prd_path: None,
         };

@@ -58,8 +58,6 @@ fn setup_repo() -> (TempDir, TempDir, PathBuf) {
         "enriching:sonnet,in_progress:sonnet,verifying:haiku,done:haiku",
         "--verification-commands",
         "none",
-        "--acceptance-testing",
-        "cli",
     ]));
 
     (home, workspace, repo)

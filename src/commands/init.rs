@@ -15,8 +15,6 @@ use crate::core::{
     project::Project,
 };
 
-const ACCEPTANCE_TESTING_VALUES: [&str; 5] = ["cli", "api", "ui", "hybrid", "none"];
-
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(
@@ -29,9 +27,6 @@ pub enum InitError {
         "invalid phases: use comma-separated phase names or phase:model pairs (e.g. enriching,in_progress:codex); phase names and model labels must be non-empty and contain no whitespace"
     )]
     InvalidPhases,
-
-    #[error("invalid acceptance-testing: use cli, api, ui, hybrid, or none")]
-    InvalidAcceptanceTesting,
 
     #[error("failed to serialize config")]
     Serialize(#[source] serde_json::Error),
@@ -49,7 +44,6 @@ pub struct InitFlags {
     pub stack: Option<String>,
     pub phases: Option<String>,
     pub verification_commands: Option<String>,
-    pub acceptance_testing: Option<String>,
     pub prd_path: Option<String>,
 }
 
@@ -82,9 +76,6 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
                 flags.verification_commands.as_deref().unwrap_or_default(),
             ),
         },
-        acceptance_testing: parse_acceptance_testing_flag(
-            flags.acceptance_testing.as_deref().unwrap_or_default(),
-        )?,
         max_retries: project.global_config.default_max_retries,
         prd_path: parse_prd_path_flag(flags.prd_path.as_deref()),
     };
@@ -102,7 +93,6 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
                 "cargo clippy -- -D warnings".to_owned(),
                 "cargo test".to_owned(),
             ],
-            "cli",
             max_retries,
         );
     }
@@ -119,7 +109,6 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
                 "go vet ./...".to_owned(),
                 "go test ./...".to_owned(),
             ],
-            "api",
             max_retries,
         );
     }
@@ -132,29 +121,23 @@ fn scan_project(git_root: &Path, max_retries: u32) -> Config {
                 "python -m ruff check .".to_owned(),
                 "python -m pytest".to_owned(),
             ],
-            "api",
             max_retries,
         );
     }
 
     if git_root.join("pom.xml").exists() {
-        return config_for_stack("java", vec!["mvn verify".to_owned()], "api", max_retries);
+        return config_for_stack("java", vec!["mvn verify".to_owned()], max_retries);
     }
 
     if git_root.join("build.gradle").exists() || git_root.join("build.gradle.kts").exists() {
-        return config_for_stack(
-            "java",
-            vec!["./gradlew test".to_owned()],
-            "api",
-            max_retries,
-        );
+        return config_for_stack("java", vec!["./gradlew test".to_owned()], max_retries);
     }
 
     if git_root.join("pubspec.yaml").exists() {
         return scan_pubspec_project(git_root, max_retries);
     }
 
-    config_for_stack("unknown", Vec::new(), "none", max_retries)
+    config_for_stack("unknown", Vec::new(), max_retries)
 }
 
 fn scan_package_json_project(git_root: &Path, max_retries: u32) -> Config {
@@ -166,9 +149,8 @@ fn scan_package_json_project(git_root: &Path, max_retries: u32) -> Config {
         "javascript"
     };
     let commands = package_commands(package_manager, package_json.as_ref());
-    let acceptance_testing = package_acceptance_testing(package_json.as_ref());
 
-    config_for_stack(stack, commands, &acceptance_testing, max_retries)
+    config_for_stack(stack, commands, max_retries)
 }
 
 fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
@@ -182,7 +164,6 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
                 "flutter analyze".to_owned(),
                 "flutter test".to_owned(),
             ],
-            "ui",
             max_retries,
         )
     } else {
@@ -193,24 +174,17 @@ fn scan_pubspec_project(git_root: &Path, max_retries: u32) -> Config {
                 "dart analyze".to_owned(),
                 "dart test".to_owned(),
             ],
-            "cli",
             max_retries,
         )
     }
 }
 
-fn config_for_stack(
-    stack: &str,
-    commands: Vec<String>,
-    acceptance_testing: &str,
-    max_retries: u32,
-) -> Config {
+fn config_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -> Config {
     Config {
         stack: stack.to_owned(),
         phases: default_phases(),
         default_model: None,
         verification: VerificationConfig { commands },
-        acceptance_testing: acceptance_testing.to_owned(),
         max_retries,
         prd_path: None,
     }
@@ -353,51 +327,6 @@ fn default_package_commands(package_manager: PackageManager) -> Vec<String> {
     }
 }
 
-fn package_acceptance_testing(package_json: Option<&Value>) -> String {
-    let frontend = has_any_package_dependency(
-        package_json,
-        &["next", "vite", "react", "vue", "svelte", "angular"],
-    );
-    let api =
-        has_any_package_dependency(package_json, &["express", "fastify", "koa", "hapi", "nest"]);
-
-    match (frontend, api) {
-        (true, true) => "hybrid",
-        (true, false) => "ui",
-        (false, true) => "api",
-        (false, false) => "cli",
-    }
-    .to_owned()
-}
-
-fn has_any_package_dependency(package_json: Option<&Value>, markers: &[&str]) -> bool {
-    package_json
-        .into_iter()
-        .filter_map(Value::as_object)
-        .flat_map(|root| {
-            [
-                "dependencies",
-                "devDependencies",
-                "peerDependencies",
-                "optionalDependencies",
-            ]
-            .into_iter()
-            .filter_map(|section| root.get(section))
-            .filter_map(Value::as_object)
-        })
-        .flat_map(|dependencies| dependencies.keys())
-        .any(|name| dependency_matches(name, markers))
-}
-
-fn dependency_matches(name: &str, markers: &[&str]) -> bool {
-    markers.iter().any(|marker| {
-        name == *marker
-            || (*marker == "angular" && name.starts_with("@angular/"))
-            || (*marker == "hapi" && name.contains("hapi"))
-            || (*marker == "nest" && name.starts_with("@nestjs/"))
-    })
-}
-
 fn bare_invocation_prompt(defaults: &Config) -> String {
     let mut prompt = String::from(
         r#"# agira init — agent setup required
@@ -457,8 +386,7 @@ Do not proceed to `agira init` until the project starts successfully, unless you
    CLI output, or equivalent smoke check.
 
 Record the start command, required env setup, port or URL, and verification evidence.
-These findings must feed into `--verification-commands`, `--acceptance-testing`, and
-`CLAUDE.md`.
+These findings must feed into `--verification-commands` and `CLAUDE.md`.
 
 ## Step 3 — Reason and recommend
 
@@ -490,20 +418,11 @@ Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],.
 **`--verification-commands`**
 From your scan and required start proof, propose exact commands. Prefer commands found in
 CI or Makefile over anything you infer. Include the confirmed project-start smoke command
-or wrapper command, plus any setup command required before acceptance testing can run.
+or wrapper command.
 **Separate commands with semicolons (`cmd1;cmd2;cmd3`). Never put a raw semicolon inside a single command.**
 If a reliable start check requires multiple shell operations, prefer an existing single
 project script or Makefile target and list that.
 Format: `cmd1;cmd2;cmd3`
-
-**`--acceptance-testing`**
-Reason from what you successfully started, not markers alone:
-- Frontend markers (next, vite, react, vue, svelte, angular) → `ui`
-- Backend markers (express, fastify, koa, nest, Spring, FastAPI, etc.) → `api`
-- Both present → `hybrid`
-- CLI binary or library → `cli`
-- Cannot determine → ask explicitly; do not guess
-Valid values: `cli`, `api`, `ui`, `hybrid`, `none`
 
 **`--prd-path`**
 If you found `docs/prd.md` with FM-IDs, propose it. Otherwise leave blank unless the user
@@ -526,7 +445,6 @@ agira init \
   --stack <stack> \
   --phases <phase[:model],...> \
   --verification-commands <cmd1;cmd2;...> \
-  --acceptance-testing <cli|api|ui|hybrid|none> \
   [--prd-path <path>]
 ```
 
@@ -575,19 +493,17 @@ fn auto_detected_defaults_block(defaults: &Config) -> String {
 
 - `stack={stack}`
 - `--verification-commands` candidate: `{commands}`
-- `acceptance_testing={acceptance_testing}` (`--acceptance-testing={acceptance_testing}`)
 
 "#,
             stack = defaults.stack,
-            commands = commands,
-            acceptance_testing = defaults.acceptance_testing
+            commands = commands
         )
         .expect("writing to String cannot fail");
     } else {
         block.push_str(
             r#"## agira's auto-detected defaults
 
-**agira could not auto-detect reliable defaults for this repo. Investigate from the markers below, derive verification commands from CI/scripts, and decide acceptance testing only after Step 2 proves what starts.**
+**agira could not auto-detect reliable defaults for this repo. Investigate from the markers below and derive verification commands from CI/scripts.**
 
 "#,
         );
@@ -604,7 +520,6 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
             "--verification-commands",
             flags.verification_commands.as_ref(),
         ),
-        ("--acceptance-testing", flags.acceptance_testing.as_ref()),
     ];
 
     if required.iter().all(|(_, value)| value.is_none())
@@ -621,10 +536,7 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
 }
 
 fn has_required_flags(flags: &InitFlags) -> bool {
-    flags.stack.is_some()
-        && flags.phases.is_some()
-        && flags.verification_commands.is_some()
-        && flags.acceptance_testing.is_some()
+    flags.stack.is_some() && flags.phases.is_some() && flags.verification_commands.is_some()
 }
 
 fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
@@ -691,16 +603,6 @@ fn parse_verification_commands_flag(input: &str) -> Vec<String> {
     }
 }
 
-fn parse_acceptance_testing_flag(input: &str) -> Result<String, InitError> {
-    let value = input.trim();
-
-    if ACCEPTANCE_TESTING_VALUES.contains(&value) {
-        Ok(value.to_owned())
-    } else {
-        Err(InitError::InvalidAcceptanceTesting)
-    }
-}
-
 fn parse_prd_path_flag(input: Option<&str>) -> Option<String> {
     input
         .map(str::trim)
@@ -749,7 +651,6 @@ mod tests {
                 "cargo test"
             ]
         );
-        assert_eq!(config.acceptance_testing, "cli");
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.phases[0].name, "pending");
         assert_eq!(config.phases[0].model, None);
@@ -765,7 +666,6 @@ mod tests {
 
         assert_eq!(config.stack, "unknown");
         assert!(config.verification.commands.is_empty());
-        assert_eq!(config.acceptance_testing, "none");
         assert_eq!(config.max_retries, 4);
     }
 
@@ -778,7 +678,6 @@ mod tests {
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["mvn verify"]);
-        assert_eq!(config.acceptance_testing, "api");
     }
 
     #[test]
@@ -790,7 +689,6 @@ mod tests {
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["./gradlew test"]);
-        assert_eq!(config.acceptance_testing, "api");
     }
 
     #[test]
@@ -802,7 +700,6 @@ mod tests {
 
         assert_eq!(config.stack, "java");
         assert_eq!(config.verification.commands, ["./gradlew test"]);
-        assert_eq!(config.acceptance_testing, "api");
     }
 
     #[test]
@@ -873,23 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_acceptance_testing_flag() {
-        for value in ["cli", "api", "ui", "hybrid", "none"] {
-            assert_eq!(super::parse_acceptance_testing_flag(value).unwrap(), value);
-        }
-        assert!(matches!(
-            super::parse_acceptance_testing_flag("browser"),
-            Err(InitError::InvalidAcceptanceTesting)
-        ));
-    }
-
-    #[test]
     fn detect_missing_flags() {
         let all_present = InitFlags {
             stack: Some("rust".to_owned()),
             phases: Some("done:haiku".to_owned()),
             verification_commands: Some("cargo test".to_owned()),
-            acceptance_testing: Some("cli".to_owned()),
             prd_path: None,
         };
         assert!(super::detect_missing_flags(&all_present).is_empty());
@@ -898,12 +783,11 @@ mod tests {
             stack: Some("rust".to_owned()),
             phases: Some("done:haiku".to_owned()),
             verification_commands: None,
-            acceptance_testing: None,
             prd_path: None,
         };
         assert_eq!(
             super::detect_missing_flags(&partial),
-            ["--verification-commands", "--acceptance-testing"]
+            ["--verification-commands"]
         );
 
         assert!(super::detect_missing_flags(&InitFlags::default()).is_empty());
@@ -918,7 +802,6 @@ mod tests {
                 "cargo clippy -- -D warnings".to_owned(),
                 "cargo test".to_owned(),
             ],
-            "cli",
             5,
         );
         let prompt = super::bare_invocation_prompt(&config);
@@ -942,7 +825,6 @@ mod tests {
         );
         assert!(prompt.contains("Run / start instructions"));
         assert!(prompt.contains("confirmed project-start smoke command"));
-        assert!(prompt.contains("Reason from what you successfully started, not markers alone"));
         assert!(prompt.contains("Local run/start"));
         assert!(prompt.contains("rust"));
         assert!(prompt.contains("cargo fmt -- --check;cargo clippy -- -D warnings"));
@@ -952,11 +834,13 @@ mod tests {
         assert!(prompt.contains("server"));
         assert!(prompt.contains("endpoint"));
         assert!(prompt.contains("Never put a raw semicolon"));
+        let removed_acceptance_flag = format!("--{}-{}", "acceptance", "testing");
+        assert!(!prompt.contains(&removed_acceptance_flag));
     }
 
     #[test]
     fn bare_invocation_prompt_unknown_defaults_use_fallback() {
-        let config = config_for_stack("unknown", vec![], "none", 3);
+        let config = config_for_stack("unknown", vec![], 3);
         let prompt = super::bare_invocation_prompt(&config);
 
         assert!(!prompt.contains("stack=unknown"));
@@ -974,7 +858,6 @@ mod tests {
                 "cargo clippy -- -D warnings".to_owned(),
                 "cargo test".to_owned(),
             ],
-            "cli",
             5,
         );
 
@@ -988,7 +871,8 @@ mod tests {
         assert!(value.get("state_machine").is_none());
         assert!(value.get("models").is_none());
         assert!(value.get("verification").is_some());
-        assert!(value.get("acceptance_testing").is_some());
+        let legacy_acceptance_key = format!("{}_{}", "acceptance", "testing");
+        assert!(value.get(&legacy_acceptance_key).is_none());
         assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));
         assert!(value.get("default_model").is_none());
         assert!(value.get("prd_path").is_none());

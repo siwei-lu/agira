@@ -31,27 +31,26 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ### FM-002: `agira init`
 **Priority:** P0
 **Dependencies:** FM-001
-**Description:** One-time project setup. Accepts six flags that fully specify the project configuration and writes `~/.agira/<slug>/config.json` non-interactively. When called with no flags, instead of running an interactive interview it emits a Markdown agent-prompt to stdout that instructs the calling agent to scan the repo, interview the user for each value, and re-invoke `agira init` with all flags filled in. Does NOT write any files into the target repo.
+**Description:** One-time project setup. Accepts required configuration flags plus optional `--prd-path` and writes `~/.agira/<slug>/config.json` non-interactively. When called with no flags, instead of running an interactive interview it emits a Markdown agent-prompt to stdout that instructs the calling agent to scan the repo, interview the user for each value, and re-invoke `agira init` with all flags filled in. Does NOT write any files into the target repo.
 **Constraints:**
-- Flags (all required when any flag is present; bare invocation with none is valid — see below):
+- Flags (the first three are required when any flag is present; bare invocation with none is valid — see below):
   - `--stack <name>` — one of: `rust`, `typescript`, `javascript`, `go`, `python`, `dart`, `flutter`, `unknown`
   - `--phases <phase1:model1,phase2:model2,...>` — ordered comma-separated `phase:model` pairs for the middle workflow phases; phase name has no spaces; model is a Claude model shortname (e.g. `opus`, `sonnet`, `haiku`); minimum one pair; `pending` and `done` are mandatory and auto-inserted if omitted
   - `--verification-commands <cmd1;cmd2;...>` — semicolon-separated shell commands, or the literal string `none` for an empty list
-  - `--acceptance-testing <value>` — one of: `cli`, `api`, `ui`, `hybrid`, `none`
   - `--prd-path <path>` — optional; omit to leave `prd_path` absent from config
 - When all required flags are provided: validate values, write config atomically (`.tmp` → rename), print `config written to <path>` to stdout, exit 0. If config already exists it is silently overwritten — no confirmation prompt.
 - When called with no flags (bare invocation): print a Markdown-formatted agent prompt to stdout and exit 0. The prompt must:
   1. Instruct the agent to scan the repo root for stack markers (`Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `pubspec.yaml`) and derive sensible defaults
   2. List each flag and its purpose; for `--phases`, explain that `pending` is always first and `done` is always last, and include model recommendations per phase type: pending → `sonnet`, enriching (design/planning) → `opus`, in_progress (implementation) → `sonnet`, verifying (mechanical checks) → `haiku`, done → `haiku`; agent should confirm or override with the user
-  3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1:model1,phase2:model2,...> ...`)
+  3. End with a fenced `sh` code block containing the fully-formed `agira init` command template with every required flag shown as a placeholder (e.g., `agira init --stack <stack> --phases <phase1:model1,phase2:model2,...> ...`)
 - Partial flag sets (some but not all required flags present) exit 1 with: `error: agira init requires all flags or none; missing: --<flag> [--<flag> ...]`
 - `max_retries` is not a flag; it is read from global config (`~/.agira/config.toml`) at init time and written into `config.json`
 - No TTY requirement — the command is fully non-interactive in both the flag-driven and bare-invocation paths
 **Acceptance Criteria:**
-- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku" --verification-commands "cargo fmt -- --check;cargo test" --acceptance-testing cli` writes a valid `config.json` with `phases` as an array of `{name, model}` objects ordered `pending,enriching,in_progress,verifying,done` and exits 0
-- `agira init --stack rust --phases "in_progress:sonnet,verifying:haiku" --verification-commands none --acceptance-testing cli` writes a `config.json` with `verification.commands: []` and auto-inserted `pending`/`done` phases, then exits 0
+- `agira init --stack rust --phases "enriching:opus,in_progress:sonnet,verifying:haiku" --verification-commands "cargo fmt -- --check;cargo test"` writes a valid `config.json` with `phases` as an array of `{name, model}` objects ordered `pending,enriching,in_progress,verifying,done` and exits 0
+- `agira init --stack rust --phases "in_progress:sonnet,verifying:haiku" --verification-commands none` writes a `config.json` with `verification.commands: []` and auto-inserted `pending`/`done` phases, then exits 0
 - `agira init` (bare, no flags) prints Markdown to stdout containing instructions for the agent including per-phase model recommendations, and a fenced `sh` block with the `agira init` command template; exits 0
-- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --verification-commands --acceptance-testing`
+- `agira init --stack rust` (partial flags) exits 1 with `error: agira init requires all flags or none; missing: --phases --verification-commands`
 - Re-running `agira init` with all flags when config already exists overwrites it silently; `agira task status` reflects the new config
 - `agira init --stack rust ... --prd-path docs/prd.md` writes `prd_path: "docs/prd.md"` into config; omitting `--prd-path` leaves the key absent
 - `agira init --phases "enriching:badmodel"` exits 1 with `error: unknown model: badmodel` (valid shortnames: `opus`, `sonnet`, `haiku`)
@@ -309,6 +308,9 @@ Agira is a Rust CLI tool that orchestrates AI-assisted software development work
 ---
 
 ## Changelog
+### Round 7 — 2026-06-07
+- FM-002: remove --acceptance-testing flag and the acceptance_testing config field (superseded by per-phase duties); existing config.json still loads (field read and discarded)
+
 ### Round 6 — 2026-06-07
 - FM-003: add optional per-phase `duty` field for freeform subagent duty/evidence instructions; loader strips it from mandatory `pending` and `done` phases, and prompt injection is reserved for a later task
 

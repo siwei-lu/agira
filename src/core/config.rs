@@ -28,7 +28,6 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     pub verification: VerificationConfig,
-    pub acceptance_testing: String,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,7 +84,9 @@ struct ProjectConfigFile {
     #[serde(default)]
     models: Option<BTreeMap<String, String>>,
     verification: VerificationConfig,
-    acceptance_testing: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    acceptance_testing: Option<String>,
     max_retries: Option<u32>,
     // Legacy fallback, also preserved in the loaded Config for model-less phases.
     #[serde(default)]
@@ -140,7 +141,6 @@ pub fn load_project_config(
         phases,
         default_model,
         verification: project_config.verification,
-        acceptance_testing: project_config.acceptance_testing,
         max_retries: project_config
             .max_retries
             .unwrap_or(global_config.default_max_retries),
@@ -454,6 +454,43 @@ mod tests {
     }
 
     #[test]
+    fn project_config_legacy_acceptance_field_is_backward_compatible() {
+        let temp_dir = TempDir::new().unwrap();
+        let legacy_path = temp_dir.path().join("legacy-config.json");
+        fs::write(
+            &legacy_path,
+            r#"{
+  "stack": "rust",
+  "phases": [{"name":"in_progress","model":"sonnet"}],
+  "verification": { "commands": ["cargo test"] },
+  "acceptance_testing": "cli"
+}"#,
+        )
+        .unwrap();
+
+        let legacy_config = load_project_config(&legacy_path, &global_config(3)).unwrap();
+        assert_eq!(legacy_config.stack, "rust");
+        assert_eq!(legacy_config.verification.commands, ["cargo test"]);
+        assert_eq!(legacy_config.max_retries, 3);
+
+        let current_path = temp_dir.path().join("current-config.json");
+        fs::write(
+            &current_path,
+            r#"{
+  "stack": "rust",
+  "phases": [{"name":"in_progress","model":"sonnet"}],
+  "verification": { "commands": ["cargo test"] }
+}"#,
+        )
+        .unwrap();
+
+        let current_config = load_project_config(&current_path, &global_config(4)).unwrap();
+        assert_eq!(current_config.stack, "rust");
+        assert_eq!(current_config.verification.commands, ["cargo test"]);
+        assert_eq!(current_config.max_retries, 4);
+    }
+
+    #[test]
     fn project_config_explicit_max_retries_wins() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
@@ -559,7 +596,6 @@ mod tests {
             ],
             default_model: None,
             verification: VerificationConfig { commands: vec![] },
-            acceptance_testing: "cli".to_owned(),
             max_retries: 3,
             prd_path: None,
         };

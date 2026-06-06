@@ -34,8 +34,6 @@ enum Commands {
         phases: Option<String>,
         #[arg(long = "verification-commands", value_name = "verification-commands")]
         verification_commands: Option<String>,
-        #[arg(long = "acceptance-testing", value_name = "acceptance-testing")]
-        acceptance_testing: Option<String>,
         #[arg(long = "prd-path", value_name = "prd-path")]
         prd_path: Option<String>,
     },
@@ -516,7 +514,6 @@ fn main() -> ExitCode {
             stack,
             phases,
             verification_commands,
-            acceptance_testing,
             prd_path,
         } => match resolve_project() {
             Ok(project) => match commands::run_init(
@@ -525,7 +522,6 @@ fn main() -> ExitCode {
                     stack,
                     phases,
                     verification_commands,
-                    acceptance_testing,
                     prd_path,
                 },
             ) {
@@ -732,9 +728,9 @@ fn exit_code_for(error: &ProjectError) -> ExitCode {
 
 fn exit_code_for_init(error: &commands::InitError) -> ExitCode {
     match error {
-        commands::InitError::MissingFlags { .. }
-        | commands::InitError::InvalidPhases
-        | commands::InitError::InvalidAcceptanceTesting => ExitCode::from(1),
+        commands::InitError::MissingFlags { .. } | commands::InitError::InvalidPhases => {
+            ExitCode::from(1)
+        }
         _ => ExitCode::from(2),
     }
 }

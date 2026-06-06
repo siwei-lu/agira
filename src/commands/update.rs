@@ -160,7 +160,6 @@ mod tests {
             default_model: None,
             max_retries: 3,
             verification: VerificationConfig { commands: vec![] },
-            acceptance_testing: "cli".to_owned(),
             prd_path: None,
         }
     }
