@@ -270,48 +270,21 @@ pub fn dispatch_hooks(hooks: &[HookEntry], event: &str, ctx: &HookContext, hook_
 
 fn dispatch_hook(hook: &HookEntry, ctx: &HookContext) {
     let mut command = hook_command(hook, ctx);
-    detach_command(&mut command);
-
-    // Fire-and-forget: spawn the fully detached child and return immediately
-    // without waiting (FM-013). On spawn failure, warn but do not propagate.
-    if let Err(error) = command.spawn() {
-        eprintln!("warning: hook spawn failed: {error}");
-    }
-}
-
-/// Detach a hook child so it survives agira's exit (FM-013): release the
-/// inherited stdio (so it does not hold the caller's capture pipe or affect
-/// agira's own stdout/stderr) and move it into a new session/process group so a
-/// group-targeted kill on agira cannot reach it.
-#[cfg(unix)]
-fn detach_command(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    // SAFETY: `setsid` is async-signal-safe, so it is valid to call inside the
-    // post-fork `pre_exec` hook. Do NOT also call `process_group(0)`: std would
-    // run `setpgid(0, 0)` before this closure, making the child a group leader,
-    // and `setsid` then fails with EPERM — breaking every spawn.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
+    // Block until the hook child exits. stdio is null so it cannot pollute
+    // agira's own output. On spawn failure, warn but do not propagate.
+    match command.spawn() {
+        Ok(mut child) => {
+            let _ = child.wait();
+        }
+        Err(error) => {
+            eprintln!("warning: hook spawn failed: {error}");
+        }
     }
-}
-
-#[cfg(not(unix))]
-fn detach_command(command: &mut Command) {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
 }
 
 fn dispatch_hook_with_debug(hook: &HookEntry, ctx: &HookContext, log_path: &Path) {
@@ -751,6 +724,32 @@ run = "echo failed"
     }
 
     #[test]
+    fn non_debug_hook_blocks_until_child_exits() {
+        let _env = HookDebugEnvGuard::set(None);
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let marker_path = temp_dir.path().join("marker.txt");
+        let task = test_task();
+        let ctx = HookContext::new(
+            &task,
+            "test-project",
+            temp_dir.path(),
+            &state_dir,
+            "",
+            "done",
+            "",
+        );
+        let hooks = vec![HookEntry {
+            on: "done".to_owned(),
+            run: format!("sleep 0.2; printf 'done' > {}", marker_path.display()),
+        }];
+
+        dispatch_hooks(&hooks, "done", &ctx, false);
+
+        assert!(marker_path.exists());
+    }
+
+    #[test]
     #[cfg(unix)]
     fn non_debug_hook_runs_to_completion_with_null_stdio() {
         let _env = HookDebugEnvGuard::set(None);
@@ -776,40 +775,6 @@ run = "echo failed"
 
         let contents = read_file_eventually(&sentinel_path);
         assert_eq!(contents, "done");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn non_debug_hook_child_runs_in_detached_process_group() {
-        let _env = HookDebugEnvGuard::set(None);
-        let temp_dir = TempDir::new().unwrap();
-        let state_dir = temp_dir.path().join("state");
-        let pgid_path = temp_dir.path().join("pgid.txt");
-        let task = test_task();
-        let ctx = HookContext::new(
-            &task,
-            "test-project",
-            temp_dir.path(),
-            &state_dir,
-            "",
-            "done",
-            "",
-        );
-        let hooks = vec![HookEntry {
-            on: "done".to_owned(),
-            // `ps -o pgid= -p $$` prints the child's own process-group id
-            // (portable on macOS + Linux).
-            run: format!("ps -o pgid= -p $$ > {}", pgid_path.display()),
-        }];
-
-        dispatch_hooks(&hooks, "done", &ctx, false);
-
-        let child_pgid: i32 = read_file_eventually(&pgid_path).trim().parse().unwrap();
-        let own_pgid = unsafe { libc::getpgrp() };
-        assert_ne!(
-            child_pgid, own_pgid,
-            "detached hook child must run in a new process group"
-        );
     }
 
     #[test]
