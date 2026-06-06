@@ -37,7 +37,7 @@ fn project_state_dir(home: &Path) -> PathBuf {
 #[test]
 fn task_subcommands_require_initialized_project() {
     let cases: &[&[&str]] = &[
-        &["task", "status"],
+        &["task", "list"],
         &["task", "todo"],
         &["task", "todo", "--artifact", "done"],
         &["task", "fail", "task-001", "--reason", "failed"],
@@ -65,4 +65,15 @@ fn task_subcommands_require_initialized_project() {
         );
         assert!(!project_state_dir(home.path()).exists(), "args: {args:?}");
     }
+}
+
+#[test]
+fn task_status_is_unrecognized_subcommand() {
+    let (home, _workspace, repo) = setup_uninitialized_repo();
+
+    let output = run(agira(home.path(), &repo).args(["task", "status"]));
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand 'status'"));
 }

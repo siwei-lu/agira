@@ -39,7 +39,7 @@ agira/
 │       ├── hook.rs        — `agira hook` (manage lifecycle hooks)
 │       ├── phase.rs       — `agira phase get` / `agira phase update`
 │       ├── self_update.rs — `agira update`
-│       ├── status.rs      — `agira task status`
+│       ├── status.rs      — `agira task list` / `agira task inspect` (table + detail)
 │       ├── update.rs      — `agira task update`
 │       └── todo.rs        — `agira task todo` (print prompt / advance with --artifact)
 ├── tests/               — integration tests against real temp dirs
@@ -114,8 +114,8 @@ Phases: `pending → enriching → in_progress → verifying → done` (or `→ 
 ### Common CLI commands
 
 ```sh
-agira task status              # show task table
-agira task status --json       # raw JSON
+agira task list                # show task table
+agira task list --json         # raw JSON
 agira task todo                # print prompt for current task
 agira task todo --artifact ... # advance current task with evidence
 agira task add "title" --description "..." --prd FM-001 --depends-on task-001,task-002

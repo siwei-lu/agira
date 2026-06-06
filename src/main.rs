@@ -188,21 +188,6 @@ enum HookCommands {
 
 #[derive(Subcommand)]
 enum TaskCommands {
-    /// Status of tasks; bare invocation hints to `task list`, and bare <id> hints to `task inspect`
-    Status {
-        /// Output raw JSON instead of the formatted table
-        #[arg(long)]
-        json: bool,
-        /// Number of tasks to show, or 0 to show all; default shows the latest 20 tasks
-        #[arg(long, value_name = "limit")]
-        limit: Option<usize>,
-        /// Number of tasks to skip from the start of the ascending list
-        #[arg(long, value_name = "offset")]
-        offset: Option<usize>,
-        /// Show only this task ID
-        #[arg(value_name = "task-id")]
-        filter: Option<String>,
-    },
     /// Show a detailed view of a single task
     Inspect {
         /// Task ID to inspect (e.g. task-001)
@@ -300,44 +285,6 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Task { command } => match command {
-            TaskCommands::Status {
-                json,
-                limit,
-                offset,
-                filter,
-            } => match resolve_initialized_project() {
-                Ok(project) => {
-                    let fully_bare =
-                        !json && limit.is_none() && offset.is_none() && filter.is_none();
-                    let id_only = filter.is_some() && !json && limit.is_none() && offset.is_none();
-                    if id_only {
-                        let id = filter
-                            .as_deref()
-                            .expect("id-only status requires a task id");
-                        commands::print_inspect_hint(id);
-                        ExitCode::SUCCESS
-                    } else {
-                        match commands::run_status(
-                            &project,
-                            json,
-                            filter.as_deref(),
-                            limit,
-                            offset,
-                            fully_bare,
-                        ) {
-                            Ok(()) => ExitCode::SUCCESS,
-                            Err(error) => {
-                                eprintln!("error: {error}");
-                                exit_code_for_status(&error)
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for(&error)
-                }
-            },
             TaskCommands::Inspect { id } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_inspect(&project, &id) {
                     Ok(()) => ExitCode::SUCCESS,
@@ -358,14 +305,7 @@ fn main() -> ExitCode {
                 filter,
             } => match resolve_initialized_project() {
                 Ok(project) => {
-                    match commands::run_status(
-                        &project,
-                        json,
-                        filter.as_deref(),
-                        limit,
-                        offset,
-                        false,
-                    ) {
+                    match commands::run_status(&project, json, filter.as_deref(), limit, offset) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");
