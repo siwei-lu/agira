@@ -888,6 +888,7 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
     match error {
         commands::AddError::UnknownDependency { .. }
         | commands::AddError::UnknownPhase { .. }
+        | commands::AddError::DuplicateTitle { .. }
         | commands::AddError::ConfigNotFound { .. }
         | commands::AddError::ConfigLoad { .. }
         | commands::AddError::InvalidConfig { .. } => ExitCode::from(1),

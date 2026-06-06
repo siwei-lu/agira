@@ -17,6 +17,9 @@ pub enum AddError {
     #[error("unknown phase: {phase}")]
     UnknownPhase { phase: String },
 
+    #[error("a task with this title already exists: {id} \"{title}\"")]
+    DuplicateTitle { id: String, title: String },
+
     #[error("config file not found: {path}")]
     ConfigNotFound { path: PathBuf },
 
@@ -60,6 +63,20 @@ pub fn run_add(
     }
 
     let mut store = TaskStore::new(&project.state_dir, &config)?;
+    let title_lowercase = title.to_lowercase();
+    let duplicate = store
+        .all_tasks()
+        .iter()
+        .find(|task| {
+            Some(task.state.as_str()) != config.terminal_phase()
+                && task.title.to_lowercase() == title_lowercase
+        })
+        .map(|task| (task.id.clone(), task.title.clone()));
+
+    if let Some((id, title)) = duplicate {
+        return Err(AddError::DuplicateTitle { id, title });
+    }
+
     add_task_flow(
         project,
         &mut store,
@@ -343,6 +360,87 @@ mod tests {
         assert_eq!(output, "");
         assert_eq!(error.to_string(), "unknown phase: reviewing");
         assert!(!project.state_dir.join("tasks.json").exists());
+    }
+
+    #[test]
+    fn add_task_with_same_case_duplicate_title_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+            .0
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_add(&project, "Deploy", None, None, &[], None));
+        let error = result.unwrap_err();
+
+        match &error {
+            AddError::DuplicateTitle { id, title } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(title, "Deploy");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(output, "");
+        assert_eq!(
+            error.to_string(),
+            "a task with this title already exists: task-001 \"Deploy\""
+        );
+        assert_eq!(read_tasks(&project).tasks.len(), 1);
+    }
+
+    #[test]
+    fn add_task_with_case_insensitive_duplicate_title_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+            .0
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_add(&project, "deploy", None, None, &[], None));
+        let error = result.unwrap_err();
+
+        match &error {
+            AddError::DuplicateTitle { id, title } => {
+                assert_eq!(id, "task-001");
+                assert_eq!(title, "Deploy");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(output, "");
+        assert_eq!(
+            error.to_string(),
+            "a task with this title already exists: task-001 \"Deploy\""
+        );
+        assert_eq!(read_tasks(&project).tasks.len(), 1);
+    }
+
+    #[test]
+    fn add_task_allows_duplicate_title_when_existing_task_is_done() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+        capture_output(|| run_add(&project, "Repeatable", None, None, &[], Some("done")))
+            .0
+            .unwrap();
+
+        capture_output(|| run_add(&project, "Repeatable", None, None, &[], None))
+            .0
+            .unwrap();
+
+        let tasks_file = read_tasks(&project);
+        assert_eq!(tasks_file.tasks.len(), 2);
+        assert_eq!(tasks_file.tasks[1].id, "task-002");
+    }
+
+    #[test]
+    fn add_task_allows_distinct_titles() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+        capture_output(|| run_add(&project, "Deploy", None, None, &[], None))
+            .0
+            .unwrap();
+        capture_output(|| run_add(&project, "Release", None, None, &[], None))
+            .0
+            .unwrap();
+
+        assert_eq!(read_tasks(&project).tasks.len(), 2);
     }
 
     #[test]
