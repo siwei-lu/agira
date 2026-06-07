@@ -230,6 +230,9 @@ mod tests {
         tasks::TaskStore,
     };
 
+    const PENDING_ACCEPT_PROMPT: &str =
+        "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase.";
+
     fn test_config() -> Config {
         Config {
             stack: "rust".to_owned(),
@@ -334,8 +337,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
-        assert!(output.contains("# Agira Task Prompt"));
-        assert!(output.contains("My task"));
+        assert_eq!(output, format!("{PENDING_ACCEPT_PROMPT}\n"));
     }
 
     #[test]
@@ -374,8 +376,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
-        assert!(output.contains("# Agira Task Prompt"));
-        assert!(output.contains("Next actionable task"));
+        assert!(output.contains(PENDING_ACCEPT_PROMPT));
         assert!(!output.contains("Blocked current task"));
     }
 
@@ -415,8 +416,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
-        assert!(output.contains("# Agira Task Prompt"));
-        assert!(output.contains("Clean tree task"));
+        assert!(output.contains(PENDING_ACCEPT_PROMPT));
         assert!(!output.contains(DIRTY_WORKING_TREE_MESSAGE));
     }
 
@@ -431,8 +431,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
-        assert!(output.contains("# Agira Task Prompt"));
-        assert!(output.contains("Non-git task"));
+        assert!(output.contains(PENDING_ACCEPT_PROMPT));
         assert!(!output.contains(DIRTY_WORKING_TREE_MESSAGE));
     }
 
@@ -460,15 +459,7 @@ mod tests {
         let (result, output) = capture_output(|| run_todo(&project, None));
 
         result.unwrap();
-        assert!(output.contains("agira task todo --artifact"));
-        assert!(output.contains("This task is currently in the pending phase."));
-        assert!(
-            output
-                .contains("You are expected to accept the task and advance it, not just read it.")
-        );
-        assert!(output.contains(
-            "You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase."
-        ));
+        assert_eq!(output, format!("{PENDING_ACCEPT_PROMPT}\n"));
     }
 
     #[test]
@@ -535,8 +526,8 @@ mod tests {
         result.unwrap();
         assert!(output.contains("task-001 done ✓"));
         assert!(output.contains("# Commit"));
-        assert!(output.contains("# Agira Task Prompt"));
-        assert!(output.contains("Second task"));
+        assert!(output.contains(PENDING_ACCEPT_PROMPT));
+        assert!(!output.contains("# Agira Completion Summary"));
     }
 
     #[test]

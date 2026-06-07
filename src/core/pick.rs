@@ -107,6 +107,11 @@ fn format_task_prompt(
     _just_done: Option<(&str, &str)>,
     state_dir: &Path,
 ) -> String {
+    if task.state == INITIAL_PHASE_NAME {
+        return "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
+            .to_owned();
+    }
+
     let model = effective_task_model(task, &task.state, config);
     let duty = effective_task_duty(task, &task.state, config);
 
@@ -159,10 +164,6 @@ fn format_task_prompt(
             "\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n{}/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.",
             attachments_path.display()
         ));
-    }
-
-    if task.state == INITIAL_PHASE_NAME {
-        subagent.push_str("\n\n## Pending Phase\nThis task is currently in the pending phase. You are expected to accept the task and advance it, not just read it. You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase.");
     }
 
     subagent.push_str(&format!(
@@ -846,6 +847,10 @@ mod tests {
         );
 
         assert!(!prompt.contains("## Attachments"));
+        assert_eq!(
+            prompt,
+            "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
+        );
     }
 
     #[test]
@@ -1188,7 +1193,7 @@ mod tests {
         assert!(!prompt.contains("# Agira Orchestrator Instructions"));
         assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
         assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
-        assert!(prompt.contains("# Agira Task Prompt"));
+        assert!(!prompt.contains("# Agira Task Prompt"));
         assert!(!prompt.contains("- Agent role:"));
     }
 
@@ -1351,15 +1356,29 @@ mod tests {
             temp_dir.path(),
         );
 
-        assert!(prompt.contains("## Pending Phase"));
-        assert!(prompt.contains("This task is currently in the pending phase."));
-        assert!(
-            prompt
-                .contains("You are expected to accept the task and advance it, not just read it.")
+        assert_eq!(
+            prompt,
+            "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
         );
-        assert!(prompt.contains(
-            "You must call `agira task todo --artifact \"<evidence>\"` to move the task forward to the next phase."
-        ));
+        for section in [
+            "# Agira Task Prompt",
+            "# Agira Orchestrator Instructions",
+            "--- SUBAGENT PROMPT ---",
+            "--- END SUBAGENT PROMPT ---",
+            "## Description",
+            "## Phase Duty",
+            "## Acceptance Criteria",
+            "## Attachments",
+            "## Pending Phase",
+            "## Checkpoints",
+            "## Advance State",
+            "- Agent role:",
+        ] {
+            assert!(
+                !prompt.contains(section),
+                "pending prompt unexpectedly contained {section}"
+            );
+        }
     }
 
     #[test]
@@ -1461,6 +1480,7 @@ mod tests {
         store
             .add_task("Clarify requirements", "", vec![], None, None)
             .unwrap();
+        store.next_phase("task-001").unwrap();
 
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
