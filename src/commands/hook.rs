@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::core::{
     config::{Config, ConfigError, load_project_config},
     hooks::{
-        HookConfig, HookConfigError, HookEntry, TASK_ADDED_EVENT, save_hooks,
+        ALL_TASKS_DONE_EVENT, HookConfig, HookConfigError, HookEntry, TASK_ADDED_EVENT, save_hooks,
         save_hooks_preserving_toml,
     },
     project::Project,
@@ -262,7 +262,7 @@ fn validate_event(project: &Project, event: &str) -> Result<(), HookError> {
 }
 
 fn valid_hook_events(config: &Config) -> Vec<String> {
-    ["*", TASK_ADDED_EVENT, "failed"]
+    ["*", TASK_ADDED_EVENT, ALL_TASKS_DONE_EVENT, "failed"]
         .into_iter()
         .map(str::to_owned)
         .chain(config.phases.iter().map(|phase| phase.name.clone()))
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn add_accepts_star_task_added_failed_and_configured_phase_names() {
+    fn add_accepts_star_task_added_all_tasks_done_failed_and_configured_phase_names() {
         let (_temp_dir, project) = setup(HookConfig::default(), HookConfig::default());
 
         run_hook_add(&project, "*", &["echo all".to_owned()], false).unwrap();
@@ -466,6 +466,17 @@ mod tests {
             &project,
             "task_added",
             &["echo task_added".to_owned()],
+            false,
+        )
+        .unwrap();
+        let project = Project {
+            project_hooks: load_hooks(&project.state_dir.join("hooks.toml")).unwrap(),
+            ..project
+        };
+        run_hook_add(
+            &project,
+            "all_tasks_done",
+            &["echo all_tasks_done".to_owned()],
             false,
         )
         .unwrap();
@@ -491,6 +502,10 @@ mod tests {
                 HookEntry {
                     on: "task_added".to_owned(),
                     run: "echo task_added".to_owned(),
+                },
+                HookEntry {
+                    on: "all_tasks_done".to_owned(),
+                    run: "echo all_tasks_done".to_owned(),
                 },
                 HookEntry {
                     on: "failed".to_owned(),
@@ -630,6 +645,7 @@ mod tests {
             vec![
                 "*".to_owned(),
                 "task_added".to_owned(),
+                "all_tasks_done".to_owned(),
                 "failed".to_owned(),
                 "pending".to_owned(),
                 "enriching".to_owned(),

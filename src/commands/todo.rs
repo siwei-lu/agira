@@ -10,10 +10,10 @@ use thiserror::Error;
 use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
-    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
+    hooks::{ALL_TASKS_DONE_EVENT, HookContext, dispatch_hooks, hooks_for_event, hooks_for_phase},
     pick::{format_pick_output, select_next_task},
     project::Project,
-    tasks::{StoreError, Task, TaskStore},
+    tasks::{StoreError, Task, TaskStore, all_tasks_done},
 };
 
 const DIRTY_WORKING_TREE_MESSAGE: &str =
@@ -102,20 +102,35 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                 &project.project_hooks,
                 &resulting_state,
             );
+            let hook_ctx = HookContext::new(
+                &resulting_task,
+                &project.slug,
+                &project.git_root,
+                &project.state_dir,
+                &from_phase,
+                &resulting_state,
+                artifact,
+            );
             dispatch_hooks(
                 &hooks,
                 &resulting_state,
-                &HookContext::new(
-                    &resulting_task,
-                    &project.slug,
-                    &project.git_root,
-                    &project.state_dir,
-                    &from_phase,
-                    &resulting_state,
-                    artifact,
-                ),
+                &hook_ctx,
                 project.global_config.hook_debug,
             );
+
+            if all_tasks_done(store.all_tasks()) {
+                let all_done_hooks = hooks_for_event(
+                    &project.global_hooks,
+                    &project.project_hooks,
+                    ALL_TASKS_DONE_EVENT,
+                );
+                dispatch_hooks(
+                    &all_done_hooks,
+                    ALL_TASKS_DONE_EVENT,
+                    &hook_ctx,
+                    project.global_config.hook_debug,
+                );
+            }
 
             if resulting_state == terminal_phase {
                 print_todo_output(&format!("{task_id} done ✓"));
@@ -582,6 +597,95 @@ mod tests {
         assert_eq!(task.state, "enriching");
         let phase = task.phases.get("pending").unwrap();
         assert_eq!(phase.artifact, "done it");
+    }
+
+    fn project_with_all_done_hook(base: Project, sentinel_path: &std::path::Path) -> Project {
+        Project {
+            project_hooks: crate::core::hooks::HookConfig {
+                hooks: vec![crate::core::hooks::HookEntry {
+                    on: ALL_TASKS_DONE_EVENT.to_owned(),
+                    run: format!("printf 'all_done' > {}", sentinel_path.display()),
+                }],
+            },
+            ..base
+        }
+    }
+
+    #[test]
+    fn with_artifact_all_tasks_done_fires_all_done_hook() {
+        let (temp_dir, project, config) = setup();
+        let sentinel_path = temp_dir.path().join("all_done_sentinel.txt");
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Only task", "", vec![], None, None).unwrap();
+        store.next_phase("task-001").unwrap(); // pending -> enriching
+        store.next_phase("task-001").unwrap(); // enriching -> in_progress
+        let project = project_with_all_done_hook(project, &sentinel_path);
+
+        let (result, _) = capture_output(|| run_todo(&project, Some("done")));
+
+        result.unwrap();
+        assert!(sentinel_path.exists(), "all_tasks_done hook must fire");
+    }
+
+    #[test]
+    fn with_artifact_pending_tasks_remain_does_not_fire_all_done_hook() {
+        let (temp_dir, project, config) = setup();
+        let sentinel_path = temp_dir.path().join("all_done_sentinel.txt");
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Task one", "", vec![], None, None).unwrap();
+        store.add_task("Task two", "", vec![], None, None).unwrap();
+        store.next_phase("task-001").unwrap(); // pending -> enriching
+        store.next_phase("task-001").unwrap(); // enriching -> in_progress
+        let project = project_with_all_done_hook(project, &sentinel_path);
+
+        let (result, _) = capture_output(|| run_todo(&project, Some("done")));
+
+        result.unwrap();
+        assert!(
+            !sentinel_path.exists(),
+            "all_tasks_done hook must not fire when tasks remain"
+        );
+    }
+
+    #[test]
+    fn with_artifact_failed_tasks_count_as_terminal_fires_all_done_hook() {
+        let (temp_dir, project, config) = setup();
+        let sentinel_path = temp_dir.path().join("all_done_sentinel.txt");
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Failed task", "", vec![], None, None)
+            .unwrap();
+        store.add_task("Last task", "", vec![], None, None).unwrap();
+        store.fail_task("task-001", "oops").unwrap();
+        store.next_phase("task-002").unwrap(); // pending -> enriching
+        store.next_phase("task-002").unwrap(); // enriching -> in_progress
+        let project = project_with_all_done_hook(project, &sentinel_path);
+
+        let (result, _) = capture_output(|| run_todo(&project, Some("done")));
+
+        result.unwrap();
+        assert!(
+            sentinel_path.exists(),
+            "failed + done should trigger all_tasks_done hook"
+        );
+    }
+
+    #[test]
+    fn with_artifact_non_terminal_phase_does_not_fire_all_done_hook() {
+        let (temp_dir, project, config) = setup();
+        let sentinel_path = temp_dir.path().join("all_done_sentinel.txt");
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Only task", "", vec![], None, None).unwrap();
+        let project = project_with_all_done_hook(project, &sentinel_path);
+
+        // advances to enriching, not terminal
+        let (result, _) = capture_output(|| run_todo(&project, Some("enriched")));
+
+        result.unwrap();
+        assert!(
+            !sentinel_path.exists(),
+            "non-terminal advance must not fire all_tasks_done hook"
+        );
     }
 
     #[test]

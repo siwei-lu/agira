@@ -4,9 +4,9 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
-    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
+    hooks::{ALL_TASKS_DONE_EVENT, HookContext, dispatch_hooks, hooks_for_event, hooks_for_phase},
     project::Project,
-    tasks::{StoreError, TaskStore},
+    tasks::{StoreError, TaskStore, all_tasks_done},
 };
 
 #[derive(Debug, Error)]
@@ -110,7 +110,20 @@ fn fail_task_flow(
             return Err(map_store_error(error, store, id));
         }
         let task = store.get_task(id).unwrap();
-        dispatch_task_hooks(project, task, &current_state, "failed", "");
+        let hook_ctx = dispatch_task_hooks(project, task, &current_state, "failed", "");
+        if all_tasks_done(store.all_tasks()) {
+            let all_done_hooks = hooks_for_event(
+                &project.global_hooks,
+                &project.project_hooks,
+                ALL_TASKS_DONE_EVENT,
+            );
+            dispatch_hooks(
+                &all_done_hooks,
+                ALL_TASKS_DONE_EVENT,
+                &hook_ctx,
+                project.global_config.hook_debug,
+            );
+        }
         print_fail_output(&format!("{id} failed — max retries reached"));
     }
 
@@ -123,22 +136,24 @@ fn dispatch_task_hooks(
     from_phase: &str,
     to_phase: &str,
     artifact: &str,
-) {
+) -> HookContext {
     let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
+    let hook_ctx = HookContext::new(
+        task,
+        &project.slug,
+        &project.git_root,
+        &project.state_dir,
+        from_phase,
+        to_phase,
+        artifact,
+    );
     dispatch_hooks(
         &hooks,
         to_phase,
-        &HookContext::new(
-            task,
-            &project.slug,
-            &project.git_root,
-            &project.state_dir,
-            from_phase,
-            to_phase,
-            artifact,
-        ),
+        &hook_ctx,
         project.global_config.hook_debug,
     );
+    hook_ctx
 }
 
 fn validate_reason(reason: Option<&str>) -> Result<&str, FailError> {

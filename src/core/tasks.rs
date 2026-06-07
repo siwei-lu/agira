@@ -56,6 +56,14 @@ fn default_max_retries() -> u32 {
     3
 }
 
+pub fn all_tasks_done(tasks: &[Task]) -> bool {
+    !tasks.is_empty() && tasks.iter().all(is_terminal_task)
+}
+
+fn is_terminal_task(task: &Task) -> bool {
+    task.state == "done" || task.state == "failed"
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TasksFile {
     pub tasks: Vec<Task>,
@@ -631,6 +639,45 @@ mod tests {
                 model: None,
             },
         ]
+    }
+
+    fn task_with_state(state: &str) -> Task {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        let mut task = store.add_task("Task", "", vec![], None, None).unwrap();
+        task.state = state.to_owned();
+        task
+    }
+
+    #[test]
+    fn all_tasks_done_empty_list_returns_false() {
+        assert!(!all_tasks_done(&[]));
+    }
+
+    #[test]
+    fn all_tasks_done_all_done_returns_true() {
+        assert!(all_tasks_done(&[task_with_state("done")]));
+    }
+
+    #[test]
+    fn all_tasks_done_all_failed_returns_true() {
+        assert!(all_tasks_done(&[task_with_state("failed")]));
+    }
+
+    #[test]
+    fn all_tasks_done_done_and_failed_mix_returns_true() {
+        assert!(all_tasks_done(&[
+            task_with_state("done"),
+            task_with_state("failed"),
+        ]));
+    }
+
+    #[test]
+    fn all_tasks_done_non_terminal_task_returns_false() {
+        assert!(!all_tasks_done(&[
+            task_with_state("done"),
+            task_with_state("pending"),
+        ]));
     }
 
     #[test]
