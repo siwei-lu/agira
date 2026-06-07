@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    hooks::{HookContext, dispatch_hooks, hooks_for_phase},
     project::Project,
     tasks::{StoreError, TaskStore},
 };
@@ -60,10 +61,11 @@ pub fn run_block(project: &Project, id: &str, reason: Option<&str>) -> Result<()
         .to_owned();
 
     let mut store = TaskStore::new(&project.state_dir, &config)?;
-    block_task_flow(&mut store, &terminal_phase, id, reason)
+    block_task_flow(project, &mut store, &terminal_phase, id, reason)
 }
 
 fn block_task_flow(
+    project: &Project,
     store: &mut TaskStore,
     terminal_phase: &str,
     id: &str,
@@ -87,8 +89,36 @@ fn block_task_flow(
         return Err(map_store_error(error, store, id, terminal_phase));
     }
 
+    let task = store.get_task(id).unwrap();
+    let from_phase = task.blocked_at_phase.as_deref().unwrap_or("").to_owned();
+    dispatch_task_hooks(project, task, &from_phase, "blocked", reason);
+
     print_block_output(&format!("{id} blocked: {reason}"));
     Ok(())
+}
+
+fn dispatch_task_hooks(
+    project: &Project,
+    task: &crate::core::tasks::Task,
+    from_phase: &str,
+    to_phase: &str,
+    artifact: &str,
+) {
+    let hooks = hooks_for_phase(&project.global_hooks, &project.project_hooks, to_phase);
+    dispatch_hooks(
+        &hooks,
+        to_phase,
+        &HookContext::new(
+            task,
+            &project.slug,
+            &project.git_root,
+            &project.state_dir,
+            from_phase,
+            to_phase,
+            artifact,
+        ),
+        project.global_config.hook_debug,
+    );
 }
 
 fn validate_reason(reason: Option<&str>) -> Result<&str, BlockError> {
@@ -146,7 +176,7 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path, thread, time::Duration};
 
     use tempfile::TempDir;
 
@@ -154,6 +184,7 @@ mod tests {
     use crate::core::{
         config::{Config, PhaseConfig},
         global_config::GlobalConfig,
+        hooks::{HookConfig, HookEntry},
         tasks::TaskStore,
     };
 
@@ -196,6 +227,30 @@ mod tests {
             global_hooks: crate::core::hooks::HookConfig::default(),
             project_hooks: crate::core::hooks::HookConfig::default(),
         }
+    }
+
+    fn test_project_with_hooks(temp_dir: &TempDir, hooks: Vec<HookEntry>) -> Project {
+        Project {
+            git_root: temp_dir.path().to_path_buf(),
+            slug: "test".to_owned(),
+            state_dir: temp_dir.path().to_path_buf(),
+            global_config: GlobalConfig::default(),
+            global_hooks: HookConfig::default(),
+            project_hooks: HookConfig { hooks },
+        }
+    }
+
+    fn read_file_eventually(path: &Path) -> String {
+        for _ in 0..50 {
+            match fs::read_to_string(path) {
+                Ok(contents) if !contents.is_empty() => return contents,
+                _ => {}
+            }
+
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("hook output was not written to {}", path.display());
     }
 
     fn write_config(project: &Project, config: &Config) {
@@ -332,5 +387,30 @@ mod tests {
         let error = run_block(&project, "task-001", Some("x")).unwrap_err();
 
         assert!(matches!(error, BlockError::ConfigNotFound { .. }));
+    }
+
+    #[test]
+    fn successful_block_fires_blocked_hook() {
+        let temp_dir = TempDir::new().unwrap();
+        let marker_path = temp_dir.path().join("blocked-marker.txt");
+        let hooks = vec![HookEntry {
+            on: "blocked".to_owned(),
+            run: format!(
+                "printf '%s' \"$AGIRA_FROM_PHASE/$AGIRA_TO_PHASE/$AGIRA_ARTIFACT\" > {}",
+                marker_path.display()
+            ),
+        }];
+        let project = test_project_with_hooks(&temp_dir, hooks);
+        let config = test_config();
+        write_config(&project, &config);
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("First", "", vec![], None, None).unwrap();
+
+        let (result, _output) =
+            capture_output(|| run_block(&project, "task-001", Some("waiting on api")));
+        result.unwrap();
+
+        let contents = read_file_eventually(&marker_path);
+        assert_eq!(contents, "pending/blocked/waiting on api");
     }
 }
