@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -11,7 +11,7 @@ use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
     hooks::{ALL_TASKS_DONE_EVENT, HookContext, dispatch_hooks, hooks_for_event, hooks_for_phase},
-    pick::{format_pick_output, select_next_task},
+    pick::{FormattedPickOutput, format_pick_output_with_git_root, select_next_task},
     project::Project,
     tasks::{StoreError, Task, TaskStore, all_tasks_done},
 };
@@ -29,6 +29,13 @@ pub enum TodoError {
 
     #[error("failed to read {path}")]
     Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to write {path}")]
+    PromptFileWrite {
         path: PathBuf,
         #[source]
         source: io::Error,
@@ -67,8 +74,14 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                 return Ok(());
             }
 
-            let output = format_pick_output(&config, store.all_tasks(), None, &project.state_dir);
-            print_todo_output(&output);
+            let output = format_pick_output_with_git_root(
+                &config,
+                store.all_tasks(),
+                None,
+                &project.state_dir,
+                &project.git_root,
+            );
+            print_pick_output(output)?;
         }
         Some(artifact) => {
             if artifact.trim().is_empty() {
@@ -140,13 +153,14 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                     &resulting_task.title,
                     convention.as_deref(),
                 ));
-                let next_output = format_pick_output(
+                let next_output = format_pick_output_with_git_root(
                     &config,
                     store.all_tasks(),
                     Some((&task_id, &resulting_task.title)),
                     &project.state_dir,
+                    &project.git_root,
                 );
-                print_todo_output(&next_output);
+                print_pick_output(next_output)?;
             } else {
                 print_todo_output(&format!("{task_id} → {resulting_state}"));
             }
@@ -210,6 +224,20 @@ fn print_todo_output(message: &str) {
     });
 
     println!("{message}");
+}
+
+fn print_pick_output(output: FormattedPickOutput) -> Result<(), TodoError> {
+    if let Some(prompt_file) = output.dispatch_prompt_file {
+        fs::write(&prompt_file.path, prompt_file.contents).map_err(|source| {
+            TodoError::PromptFileWrite {
+                path: prompt_file.path,
+                source,
+            }
+        })?;
+    }
+
+    print_todo_output(&output.stdout);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -421,6 +449,50 @@ mod tests {
     }
 
     #[test]
+    fn no_artifact_dispatch_model_writes_prompt_file_before_printing_command() {
+        let (temp_dir, project, mut config) = setup();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .model = Some("dispatch -a codex".to_owned());
+        write_config(&project, &config);
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "Dispatch task",
+                "implement dispatch prompt output",
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        let prompt_path = std::path::Path::new("/tmp/agira-task-001.txt");
+        let _ = fs::remove_file(prompt_path);
+
+        let (result, output) = capture_output(|| run_todo(&project, None));
+
+        result.unwrap();
+        let expected_command = format!(
+            "dispatch -a codex exec -C {} --log-file /tmp/agira-task-001.log --prompt-file /tmp/agira-task-001.txt",
+            project.git_root.display()
+        );
+        assert!(output.contains("run_in_background: true"));
+        assert!(output.contains(&expected_command));
+        assert!(!output.contains("--- SUBAGENT PROMPT ---"));
+        assert!(!output.contains("Spawn a subagent"));
+
+        let prompt_file = fs::read_to_string(prompt_path).unwrap();
+        assert!(prompt_file.starts_with("# Agira Task Prompt"));
+        assert!(prompt_file.contains("- Agent role: dispatch -a codex"));
+        assert!(prompt_file.contains("Dispatch task"));
+        assert!(!prompt_file.contains("# Agira Orchestrator Instructions"));
+        let _ = fs::remove_file(prompt_path);
+    }
+
+    #[test]
     fn no_artifact_git_failure_skips_dirty_check() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
@@ -544,6 +616,53 @@ mod tests {
         assert!(output.contains("task-001 done ✓"));
         assert!(output.contains("# Commit"));
         assert!(output.contains("# Agira Completion Summary"));
+    }
+
+    #[test]
+    fn with_artifact_terminal_next_dispatch_task_writes_prompt_file() {
+        let (temp_dir, project, mut config) = setup();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .model = Some("dispatch -a codex".to_owned());
+        write_config(&project, &config);
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Finishing task", "finish this first", vec![], None, None)
+            .unwrap();
+        store
+            .add_task(
+                "Next dispatch task",
+                "dispatch after terminal advance",
+                vec![],
+                None,
+                None,
+            )
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-001").unwrap();
+        store.next_phase("task-002").unwrap();
+        let prompt_path = std::path::Path::new("/tmp/agira-task-002.txt");
+        let _ = fs::remove_file(prompt_path);
+
+        let (result, output) = capture_output(|| run_todo(&project, Some("implemented")));
+
+        result.unwrap();
+        let expected_command = format!(
+            "dispatch -a codex exec -C {} --log-file /tmp/agira-task-002.log --prompt-file /tmp/agira-task-002.txt",
+            project.git_root.display()
+        );
+        assert!(output.contains("task-001 done"));
+        assert!(output.contains(&expected_command));
+        assert!(!output.contains("--- SUBAGENT PROMPT ---"));
+
+        let prompt_file = fs::read_to_string(prompt_path).unwrap();
+        assert!(prompt_file.starts_with("# Agira Task Prompt"));
+        assert!(prompt_file.contains("Next dispatch task"));
+        assert!(!prompt_file.contains("# Agira Orchestrator Instructions"));
+        let _ = fs::remove_file(prompt_path);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::cmp::{Ordering, Reverse};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
 
@@ -12,25 +12,55 @@ const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \
 const BLOCKED_STATE: &str = "blocked";
 const FAILED_STATE: &str = "failed";
 
+pub(crate) struct FormattedPickOutput {
+    pub(crate) stdout: String,
+    pub(crate) dispatch_prompt_file: Option<DispatchPromptFile>,
+}
+
+pub(crate) struct DispatchPromptFile {
+    pub(crate) path: PathBuf,
+    pub(crate) contents: String,
+}
+
+impl FormattedPickOutput {
+    fn stdout(stdout: String) -> Self {
+        Self {
+            stdout,
+            dispatch_prompt_file: None,
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn format_pick_output(
     config: &Config,
     tasks: &[Task],
     just_done: Option<(&str, &str)>,
     state_dir: &Path,
 ) -> String {
+    format_pick_output_with_git_root(config, tasks, just_done, state_dir, state_dir).stdout
+}
+
+pub(crate) fn format_pick_output_with_git_root(
+    config: &Config,
+    tasks: &[Task],
+    just_done: Option<(&str, &str)>,
+    state_dir: &Path,
+    git_root: &Path,
+) -> FormattedPickOutput {
     if tasks.is_empty() {
-        return NO_TASKS_MESSAGE.to_owned();
+        return FormattedPickOutput::stdout(NO_TASKS_MESSAGE.to_owned());
     }
 
     if is_all_done(tasks, config) {
-        return format_completion_summary(tasks);
+        return FormattedPickOutput::stdout(format_completion_summary(tasks));
     }
 
     if let Some(task) = select_next_task(tasks, config) {
-        return format_task_prompt(task, config, just_done, state_dir);
+        return format_task_prompt_output(task, config, just_done, state_dir, git_root);
     }
 
-    format_non_actionable_summary(tasks)
+    FormattedPickOutput::stdout(format_non_actionable_summary(tasks))
 }
 
 pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
@@ -101,15 +131,28 @@ fn is_all_done(tasks: &[Task], config: &Config) -> bool {
             .is_some_and(|terminal| tasks.iter().all(|task| task.state == terminal))
 }
 
+#[cfg(test)]
 fn format_task_prompt(
+    task: &Task,
+    config: &Config,
+    just_done: Option<(&str, &str)>,
+    state_dir: &Path,
+) -> String {
+    format_task_prompt_output(task, config, just_done, state_dir, state_dir).stdout
+}
+
+fn format_task_prompt_output(
     task: &Task,
     config: &Config,
     _just_done: Option<(&str, &str)>,
     state_dir: &Path,
-) -> String {
+    git_root: &Path,
+) -> FormattedPickOutput {
     if task.state == INITIAL_PHASE_NAME {
-        return "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
-            .to_owned();
+        return FormattedPickOutput::stdout(
+            "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
+                .to_owned(),
+        );
     }
 
     let model = effective_task_model(task, &task.state, config);
@@ -178,17 +221,45 @@ fn format_task_prompt(
 
     // Orchestrator wrapper: only present when the phase has a model (i.e. AI-driven).
     if let Some(model) = model {
+        if model.starts_with("dispatch") {
+            let prompt_path = dispatch_prompt_path(&task.id);
+            let log_path = dispatch_log_path(&task.id);
+            let command = format!(
+                "{model} exec -C {} --log-file {} --prompt-file {}",
+                git_root.display(),
+                log_path.display(),
+                prompt_path.display()
+            );
+            return FormattedPickOutput {
+                stdout: format!(
+                    "# Agira Orchestrator Instructions\n\nRun the following command with run_in_background: true:\n{command}"
+                ),
+                dispatch_prompt_file: Some(DispatchPromptFile {
+                    path: prompt_path,
+                    contents: subagent,
+                }),
+            };
+        }
+
         let steps = format!(
-            "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Spawn a subagent using model `{model}` with that problem statement and the delimited prompt below."
+            "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Use the Agent tool with model `{model}` and run_in_background: true, passing the subagent prompt below."
         );
 
-        format!(
+        FormattedPickOutput::stdout(format!(
             "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
-        )
+        ))
     } else {
         // No effective model: return subagent prompt directly without orchestrator wrapper.
-        subagent
+        FormattedPickOutput::stdout(subagent)
     }
+}
+
+fn dispatch_prompt_path(task_id: &str) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("agira-{task_id}.txt"))
+}
+
+fn dispatch_log_path(task_id: &str) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("agira-{task_id}.log"))
 }
 
 fn description_warning_applies(task: &Task, config: &Config) -> bool {
@@ -582,6 +653,9 @@ mod tests {
         assert!(prompt.contains("# Agira Task Prompt"));
         assert!(prompt.contains("- Agent role: opus"));
         assert!(prompt.contains("The configured model is `opus`"));
+        assert!(prompt.contains(
+            "Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
+        ));
         assert!(prompt.contains("Do NOT perform this work yourself"));
         assert!(prompt.contains("do not read files"));
         assert!(prompt.contains("explore the codebase"));
@@ -1515,7 +1589,9 @@ mod tests {
 
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
+        assert!(prompt.contains(
+            "3. Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
+        ));
         assert!(prompt.contains("The configured model is `opus`"));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("1. Spawn a subagent"));
@@ -1544,9 +1620,50 @@ mod tests {
         assert!(!prompt.contains("task-000 \"Previous Task\""));
         assert!(prompt.contains("1. Read the task title and description"));
         assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains("3. Spawn a subagent using model `opus`"));
+        assert!(prompt.contains(
+            "3. Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
+        ));
         assert!(!prompt.contains("Once the subagent finishes"));
         assert!(!prompt.contains("4. Once the subagent finishes"));
+    }
+
+    #[test]
+    fn dispatch_model_task_prompt_emits_prompt_file_command_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|phase| phase.name == "enriching")
+            .unwrap()
+            .model = Some("dispatch -a codex".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+
+        store
+            .add_task("Dispatch task", "", vec![], None, None)
+            .unwrap();
+        store.next_phase("task-001").unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+        let expected_command = format!(
+            "dispatch -a codex exec -C {} --log-file /tmp/agira-task-001.log --prompt-file /tmp/agira-task-001.txt",
+            temp_dir.path().display()
+        );
+
+        assert!(prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(prompt.contains("run_in_background: true"));
+        assert!(prompt.contains(&expected_command));
+        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("1. Read the task title and description"));
+        assert!(!prompt.contains("2. Write a SHORT, CLEAR problem statement"));
+        assert!(!prompt.contains("Spawn a subagent"));
+        assert!(!prompt.contains("Use the Agent tool"));
     }
 
     #[test]
