@@ -446,7 +446,7 @@ fn write_status_output(contents: &str, path: &Path) -> Result<(), StatusError> {
 
 #[cfg(test)]
 thread_local! {
-    static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

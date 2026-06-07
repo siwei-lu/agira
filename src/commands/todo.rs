@@ -199,7 +199,7 @@ fn print_todo_output(message: &str) {
 
 #[cfg(test)]
 thread_local! {
-    static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
