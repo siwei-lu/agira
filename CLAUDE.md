@@ -44,7 +44,6 @@ agira/
 │       └── todo.rs        — `agira task todo` (print prompt / advance with --artifact)
 ├── tests/               — integration tests against real temp dirs
 ├── docs/
-│   ├── prd.md           — requirements; FM-IDs used to tag tasks
 │   └── conventions.md   — project taste decisions (error style, output format, etc.)
 └── build.rs             — injects BUILD_TARGET env var into binary version string
 ```
@@ -87,16 +86,7 @@ Conventional Commits with optional scope:
 feat: add new feature
 fix: fix a bug
 chore: tooling / version bumps / cleanup
-feat(fm-002): scoped to a functional module
 ```
-
-Scopes are typically `fm-NNN` referencing a PRD functional module.
-
-## PRD
-
-Full requirements: `docs/prd.md`
-
-Functional modules (FM-001, FM-002, ...) define acceptance criteria for each feature. Tag tasks with `--prd FM-NNN` when adding them so they trace back to specs.
 
 ## Development workflow
 
@@ -118,7 +108,7 @@ agira task list                # show task table
 agira task list --json         # raw JSON
 agira task todo                # print prompt for current task
 agira task todo --artifact ... # advance current task with evidence
-agira task add "title" --description "..." --prd FM-001 --depends-on task-001,task-002
+agira task add "title" --description "..." --depends-on task-001,task-002
 agira task update task-001 --title "new title"
 agira task fail task-001 --reason "..."
 agira phase get
