@@ -108,12 +108,7 @@ fn format_task_prompt(
     state_dir: &Path,
 ) -> String {
     let model = effective_task_model(task, &task.state, config);
-    let duty = config
-        .phases
-        .iter()
-        .find(|p| p.name == task.state)
-        .and_then(|p| p.duty.as_deref())
-        .filter(|d| !d.is_empty());
+    let duty = effective_task_duty(task, &task.state, config);
 
     let mut subagent = format!(
         "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
@@ -235,6 +230,31 @@ fn effective_task_model<'a>(task: &'a Task, phase: &str, config: &'a Config) -> 
         .iter()
         .find(|candidate| candidate.name == phase)
         .and_then(|phase_cfg| effective_phase_model(phase_cfg, config))
+}
+
+fn effective_task_duty<'a>(task: &'a Task, phase: &str, config: &'a Config) -> Option<&'a str> {
+    if let Some(machine) = task.state_machine.as_ref() {
+        if let Some(phase_cfg) = machine.iter().find(|p| p.name == phase) {
+            if let Some(duty) = phase_cfg.duty.as_deref().filter(|d| !d.is_empty()) {
+                return Some(duty);
+            }
+            // task-level phase has no duty; fall back to global config phase of same name
+            return config
+                .phases
+                .iter()
+                .find(|p| p.name == phase)
+                .and_then(|p| p.duty.as_deref())
+                .filter(|d| !d.is_empty());
+        }
+        return None;
+    }
+
+    config
+        .phases
+        .iter()
+        .find(|p| p.name == phase)
+        .and_then(|p| p.duty.as_deref())
+        .filter(|d| !d.is_empty())
 }
 
 fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
@@ -361,14 +381,17 @@ mod tests {
             TaskPhaseConfig {
                 name: "pending".to_owned(),
                 model: None,
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "security_review".to_owned(),
                 model: Some("opus".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "done".to_owned(),
                 model: None,
+                duty: None,
             },
         ]
     }
@@ -637,18 +660,22 @@ mod tests {
             TaskPhaseConfig {
                 name: "pending".to_owned(),
                 model: None,
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "in_progress".to_owned(),
                 model: Some("sonnet".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "security_review".to_owned(),
                 model: Some("opus".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "done".to_owned(),
                 model: None,
+                duty: None,
             },
         ];
 
@@ -1371,18 +1398,22 @@ mod tests {
             TaskPhaseConfig {
                 name: "pending".to_owned(),
                 model: None,
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "security_review".to_owned(),
                 model: Some("opus".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "compliance_review".to_owned(),
                 model: Some("haiku".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "done".to_owned(),
                 model: None,
+                duty: None,
             },
         ];
 
@@ -1577,5 +1608,191 @@ mod tests {
         assert!(prompt.contains("## Phase Duty"));
         assert!(prompt.contains(duty));
         assert!(!prompt.contains("## Verification Commands"));
+    }
+
+    #[test]
+    fn task_machine_duty_shown_when_stored_on_phase() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            TaskPhaseConfig {
+                name: "security_review".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: Some("Check for SQL injection vulnerabilities".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+
+        store
+            .add_task(
+                "Custom duty task",
+                "",
+                vec![],
+                Some("security_review"),
+                Some(state_machine),
+            )
+            .unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains("Check for SQL injection vulnerabilities"));
+    }
+
+    #[test]
+    fn task_machine_duty_falls_back_to_global_when_phase_matches() {
+        // A phase reused from global config carries duty: None in state_machine
+        // but duty is still shown by falling back to the global config's phase duty.
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config
+            .phases
+            .iter_mut()
+            .find(|p| p.name == "enriching")
+            .unwrap()
+            .duty = Some("global enriching duty".to_owned());
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            TaskPhaseConfig {
+                name: "enriching".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: None, // no task-level duty; should fall back to global
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+
+        store
+            .add_task(
+                "Fallback task",
+                "",
+                vec![],
+                Some("enriching"),
+                Some(state_machine),
+            )
+            .unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains("global enriching duty"));
+    }
+
+    #[test]
+    fn task_machine_new_phase_with_no_global_duty_shows_task_duty() {
+        // A new phase (not in global) with a duty stored on the task's state_machine
+        // shows that duty and does NOT fall back to anything.
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            TaskPhaseConfig {
+                name: "new_custom_phase".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: Some("custom phase specific duty".to_owned()),
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+
+        store
+            .add_task(
+                "New phase task",
+                "",
+                vec![],
+                Some("new_custom_phase"),
+                Some(state_machine),
+            )
+            .unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(prompt.contains("## Phase Duty"));
+        assert!(prompt.contains("custom phase specific duty"));
+    }
+
+    #[test]
+    fn task_machine_new_phase_without_duty_omits_section() {
+        // A new phase (not in global) with duty: None → no duty section.
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        let state_machine = vec![
+            TaskPhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            TaskPhaseConfig {
+                name: "new_custom_phase".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: None,
+            },
+            TaskPhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+
+        store
+            .add_task(
+                "No duty task",
+                "",
+                vec![],
+                Some("new_custom_phase"),
+                Some(state_machine),
+            )
+            .unwrap();
+
+        let prompt = format_task_prompt(
+            store.get_task("task-001").unwrap(),
+            &config,
+            None,
+            temp_dir.path(),
+        );
+
+        assert!(!prompt.contains("## Phase Duty"));
     }
 }

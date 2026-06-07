@@ -256,6 +256,9 @@ enum TaskCommands {
         /// Override the project state machine for this task: comma-separated name[:model] entries
         #[arg(long, value_name = "phases")]
         phases: Option<String>,
+        /// Set duties for new phases introduced by --phases: repeatable PHASE:DUTY entries
+        #[arg(long, value_name = "PHASE:DUTY")]
+        duties: Vec<String>,
     },
     /// Update editable fields of an existing task
     Update {
@@ -376,6 +379,7 @@ fn main() -> ExitCode {
                 depends_on,
                 phase,
                 phases,
+                duties,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
                     &project,
@@ -384,6 +388,11 @@ fn main() -> ExitCode {
                     &depends_on,
                     phase.as_deref(),
                     phases.as_deref(),
+                    if duties.is_empty() {
+                        None
+                    } else {
+                        Some(&duties)
+                    },
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -818,6 +827,7 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
         commands::AddError::UnknownDependency { .. }
         | commands::AddError::UnknownPhase { .. }
         | commands::AddError::InvalidPhases { .. }
+        | commands::AddError::InvalidDuties { .. }
         | commands::AddError::DuplicateTitle { .. }
         | commands::AddError::ConfigNotFound { .. }
         | commands::AddError::ConfigLoad { .. }

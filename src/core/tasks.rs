@@ -15,6 +15,8 @@ pub struct TaskPhaseConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duty: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -629,14 +631,17 @@ mod tests {
             TaskPhaseConfig {
                 name: "pending".to_owned(),
                 model: None,
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "security_review".to_owned(),
                 model: Some("opus".to_owned()),
+                duty: None,
             },
             TaskPhaseConfig {
                 name: "done".to_owned(),
                 model: None,
+                duty: None,
             },
         ]
     }

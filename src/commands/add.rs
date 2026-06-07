@@ -23,6 +23,9 @@ pub enum AddError {
     #[error("invalid --phases: {reason}")]
     InvalidPhases { reason: String },
 
+    #[error("invalid --duties: {reason}")]
+    InvalidDuties { reason: String },
+
     #[error("a task with this title already exists: {id} \"{title}\"")]
     DuplicateTitle { id: String, title: String },
 
@@ -57,6 +60,7 @@ pub fn run_add(
     depends_on: &[String],
     phase: Option<&str>,
     phases: Option<&str>,
+    duties: Option<&[String]>,
 ) -> Result<(), AddError> {
     let config_path = project.state_dir.join("config.json");
     let config =
@@ -83,10 +87,19 @@ pub fn run_add(
         return Err(AddError::DuplicateTitle { id, title });
     }
 
-    let state_machine = phases
+    let mut state_machine = phases
         .map(parse_phases)
         .transpose()
         .map_err(|reason| AddError::InvalidPhases { reason })?;
+
+    if let Some(duty_entries) = duties {
+        if state_machine.is_none() {
+            return Err(AddError::InvalidDuties {
+                reason: "--phases is required when --duties is used".to_owned(),
+            });
+        }
+        apply_duties(duty_entries, state_machine.as_mut().unwrap(), &config)?;
+    }
 
     add_task_flow(
         project,
@@ -132,6 +145,7 @@ fn parse_phases(input: &str) -> Result<Vec<TaskPhaseConfig>, String> {
         parsed.push(TaskPhaseConfig {
             name: name.to_owned(),
             model,
+            duty: None,
         });
     }
 
@@ -166,8 +180,64 @@ fn parse_phases(input: &str) -> Result<Vec<TaskPhaseConfig>, String> {
         .map(|phase| TaskPhaseConfig {
             name: phase.name,
             model: phase.model,
+            duty: None,
         })
         .collect())
+}
+
+fn apply_duties(
+    duty_entries: &[String],
+    state_machine: &mut [TaskPhaseConfig],
+    config: &crate::core::config::Config,
+) -> Result<(), AddError> {
+    let mut seen = HashSet::new();
+
+    for entry in duty_entries {
+        let Some((phase_name, duty_text)) = entry.split_once(':') else {
+            return Err(AddError::InvalidDuties {
+                reason: format!("invalid format '{entry}': expected PHASE:DUTY"),
+            });
+        };
+
+        if duty_text.is_empty() {
+            return Err(AddError::InvalidDuties {
+                reason: format!("empty duty for phase '{phase_name}'"),
+            });
+        }
+
+        if !seen.insert(phase_name.to_owned()) {
+            return Err(AddError::InvalidDuties {
+                reason: format!("duplicate phase '{phase_name}' in --duties"),
+            });
+        }
+
+        if phase_name == INITIAL_PHASE_NAME || phase_name == TERMINAL_PHASE_NAME {
+            return Err(AddError::InvalidDuties {
+                reason: format!(
+                    "cannot set duty on mandatory phase '{phase_name}': pending and done are transition phases with no duty"
+                ),
+            });
+        }
+
+        if config.phases.iter().any(|p| p.name == phase_name) {
+            return Err(AddError::InvalidDuties {
+                reason: format!(
+                    "cannot set duty on existing phase '{phase_name}'; use 'agira phase update --set-duty'"
+                ),
+            });
+        }
+
+        let phase = state_machine
+            .iter_mut()
+            .find(|p| p.name == phase_name)
+            .ok_or_else(|| AddError::InvalidDuties {
+                reason: format!("phase '{phase_name}' not found in --phases"),
+            })?;
+
+        phase.duty = Some(duty_text.to_owned());
+    }
+
+    Ok(())
 }
 
 fn validate_phase_name(name: &str) -> Result<(), String> {
@@ -452,8 +522,17 @@ mod tests {
     fn add_task_creates_with_first_phase() {
         let (_temp_dir, project, config) = test_project_with_config();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "Implement login endpoint", None, &[], None, None));
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Implement login endpoint",
+                None,
+                &[],
+                None,
+                None,
+                None,
+            )
+        });
         result.unwrap();
 
         assert_eq!(output, "added task-001: Implement login endpoint\n");
@@ -492,6 +571,7 @@ mod tests {
                 &[],
                 None,
                 Some("pending,security_review:opus,done"),
+                None,
             )
         });
         result.unwrap();
@@ -521,6 +601,7 @@ mod tests {
                 &[],
                 None,
                 Some("pending,in_progress,in_progress,done"),
+                None,
             )
         });
         let error = result.unwrap_err();
@@ -542,7 +623,7 @@ mod tests {
     #[test]
     fn add_task_with_dependencies() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Prepare", None, &[], None, None))
+        capture_output(|| run_add(&project, "Prepare", None, &[], None, None, None))
             .0
             .unwrap();
 
@@ -553,6 +634,7 @@ mod tests {
                 "Deploy",
                 Some("ship release"),
                 &depends_on,
+                None,
                 None,
                 None,
             )
@@ -576,7 +658,7 @@ mod tests {
         let depends_on = vec!["task-999".to_owned()];
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Blocked", None, &depends_on, None, None));
+            capture_output(|| run_add(&project, "Blocked", None, &depends_on, None, None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -592,8 +674,17 @@ mod tests {
     fn add_task_with_unknown_phase_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
 
-        let (result, output) =
-            capture_output(|| run_add(&project, "Review me", None, &[], Some("reviewing"), None));
+        let (result, output) = capture_output(|| {
+            run_add(
+                &project,
+                "Review me",
+                None,
+                &[],
+                Some("reviewing"),
+                None,
+                None,
+            )
+        });
         let error = result.unwrap_err();
 
         match &error {
@@ -608,12 +699,12 @@ mod tests {
     #[test]
     fn add_task_with_same_case_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None, None))
             .0
             .unwrap();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "Deploy", None, &[], None, None));
+            capture_output(|| run_add(&project, "Deploy", None, &[], None, None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -634,12 +725,12 @@ mod tests {
     #[test]
     fn add_task_with_case_insensitive_duplicate_title_returns_error() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None, None))
             .0
             .unwrap();
 
         let (result, output) =
-            capture_output(|| run_add(&project, "deploy", None, &[], None, None));
+            capture_output(|| run_add(&project, "deploy", None, &[], None, None, None));
         let error = result.unwrap_err();
 
         match &error {
@@ -660,11 +751,11 @@ mod tests {
     #[test]
     fn add_task_allows_duplicate_title_when_existing_task_is_done() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Repeatable", None, &[], Some("done"), None))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], Some("done"), None, None))
             .0
             .unwrap();
 
-        capture_output(|| run_add(&project, "Repeatable", None, &[], None, None))
+        capture_output(|| run_add(&project, "Repeatable", None, &[], None, None, None))
             .0
             .unwrap();
 
@@ -676,10 +767,10 @@ mod tests {
     #[test]
     fn add_task_allows_distinct_titles() {
         let (_temp_dir, project, _config) = test_project_with_config();
-        capture_output(|| run_add(&project, "Deploy", None, &[], None, None))
+        capture_output(|| run_add(&project, "Deploy", None, &[], None, None, None))
             .0
             .unwrap();
-        capture_output(|| run_add(&project, "Release", None, &[], None, None))
+        capture_output(|| run_add(&project, "Release", None, &[], None, None, None))
             .0
             .unwrap();
 
@@ -691,7 +782,7 @@ mod tests {
         let (_temp_dir, project, _config) = test_project_with_config();
 
         for title in ["First", "Second", "Third"] {
-            capture_output(|| run_add(&project, title, None, &[], None, None))
+            capture_output(|| run_add(&project, title, None, &[], None, None, None))
                 .0
                 .unwrap();
         }
@@ -712,7 +803,7 @@ mod tests {
         project.global_config.default_max_retries = 5;
         write_config_without_max_retries(&project);
 
-        capture_output(|| run_add(&project, "Uses global retries", None, &[], None, None))
+        capture_output(|| run_add(&project, "Uses global retries", None, &[], None, None, None))
             .0
             .unwrap();
 
@@ -725,17 +816,26 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
 
-        let error = run_add(&project, "Missing config", None, &[], None, None).unwrap_err();
+        let error = run_add(&project, "Missing config", None, &[], None, None, None).unwrap_err();
         assert!(matches!(error, AddError::ConfigNotFound { .. }));
 
         fs::write(project.state_dir.join("config.json"), "{").unwrap();
-        let error = run_add(&project, "Malformed config", None, &[], None, None).unwrap_err();
+        let error = run_add(&project, "Malformed config", None, &[], None, None, None).unwrap_err();
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
         config.phases.clear();
         write_config(&project, &config);
-        run_add(&project, "Mandatory-only config", None, &[], None, None).unwrap();
+        run_add(
+            &project,
+            "Mandatory-only config",
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let tasks_file = read_tasks(&project);
         assert_eq!(tasks_file.tasks[0].state, "pending");
     }
@@ -777,6 +877,7 @@ mod tests {
                 &[],
                 Some("enriching"),
                 None,
+                None,
             )
         });
         result.unwrap();
@@ -801,6 +902,7 @@ mod tests {
                 &[],
                 Some("nonexistent"),
                 None,
+                None,
             )
         });
         let error = result.unwrap_err();
@@ -811,5 +913,333 @@ mod tests {
         }
         assert_eq!(output, "");
         assert_eq!(error.to_string(), "unknown phase: nonexistent");
+    }
+
+    // --duties tests
+
+    #[test]
+    fn duties_without_phases_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review:Check for SQL injection".to_owned()];
+        let (result, _) =
+            capture_output(|| run_add(&project, "Task", None, &[], None, None, Some(&duties)));
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("--phases")),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid --duties: --phases is required when --duties is used"
+        );
+    }
+
+    #[test]
+    fn duties_phase_not_in_phases_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["other_phase:some duty".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("'other_phase'") && reason.contains("not found in --phases")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_on_existing_global_phase_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        // enriching is in the global config
+        let duties = vec!["enriching:some duty".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("enriching:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("'enriching'") && reason.contains("agira phase update --set-duty")),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid --duties: cannot set duty on existing phase 'enriching'; use 'agira phase update --set-duty'"
+        );
+    }
+
+    #[test]
+    fn duties_on_mandatory_pending_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["pending:some duty".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("'pending'") && reason.contains("mandatory")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_on_mandatory_done_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["done:some duty".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("'done'") && reason.contains("mandatory")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_empty_text_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review:".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("empty duty")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_missing_separator_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("invalid format")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_duplicate_phase_returns_error() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec![
+            "security_review:first duty".to_owned(),
+            "security_review:second duty".to_owned(),
+        ];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, AddError::InvalidDuties { reason } if reason.contains("duplicate") && reason.contains("'security_review'")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duties_stored_in_state_machine() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review:Check for SQL injection vulnerabilities".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Secure task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        result.unwrap();
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        let state_machine = task.state_machine.as_ref().unwrap();
+        let review = state_machine
+            .iter()
+            .find(|p| p.name == "security_review")
+            .unwrap();
+
+        assert_eq!(
+            review.duty.as_deref(),
+            Some("Check for SQL injection vulnerabilities")
+        );
+    }
+
+    #[test]
+    fn duties_duty_text_may_contain_colon() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review:Run: cargo test && cargo clippy".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Task with colon duty",
+                None,
+                &[],
+                None,
+                Some("security_review:opus"),
+                Some(&duties),
+            )
+        });
+        result.unwrap();
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        let state_machine = task.state_machine.as_ref().unwrap();
+        let review = state_machine
+            .iter()
+            .find(|p| p.name == "security_review")
+            .unwrap();
+
+        assert_eq!(
+            review.duty.as_deref(),
+            Some("Run: cargo test && cargo clippy")
+        );
+    }
+
+    #[test]
+    fn multiple_duties_all_stored() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec![
+            "security_review:Check for SQL injection".to_owned(),
+            "compliance_check:Verify GDPR compliance".to_owned(),
+        ];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Multi-duty task",
+                None,
+                &[],
+                None,
+                Some("security_review:opus,compliance_check:haiku"),
+                Some(&duties),
+            )
+        });
+        result.unwrap();
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        let state_machine = task.state_machine.as_ref().unwrap();
+
+        let security = state_machine
+            .iter()
+            .find(|p| p.name == "security_review")
+            .unwrap();
+        let compliance = state_machine
+            .iter()
+            .find(|p| p.name == "compliance_check")
+            .unwrap();
+
+        assert_eq!(security.duty.as_deref(), Some("Check for SQL injection"));
+        assert_eq!(compliance.duty.as_deref(), Some("Verify GDPR compliance"));
+    }
+
+    #[test]
+    fn phases_without_duties_have_none_duty() {
+        let (_temp_dir, project, _config) = test_project_with_config();
+
+        let duties = vec!["security_review:Check security".to_owned()];
+        let (result, _) = capture_output(|| {
+            run_add(
+                &project,
+                "Partial duties",
+                None,
+                &[],
+                None,
+                Some("security_review:opus,compliance_check:haiku"),
+                Some(&duties),
+            )
+        });
+        result.unwrap();
+
+        let tasks_file = read_tasks(&project);
+        let task = &tasks_file.tasks[0];
+        let state_machine = task.state_machine.as_ref().unwrap();
+        let compliance = state_machine
+            .iter()
+            .find(|p| p.name == "compliance_check")
+            .unwrap();
+
+        assert!(compliance.duty.is_none());
     }
 }
