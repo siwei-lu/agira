@@ -376,6 +376,15 @@ Read and record findings from each of the following before asking the user anyth
 6. **Commit conventions** — run `git log --no-merges -10 --format="%s"` and note the pattern
    (Conventional Commits, Angular, freeform, etc.).
 
+7. **Observable runtime behavior** — check for end-to-end or acceptance test infrastructure:
+   `playwright.config.*`, `cypress.config.*`, `jest.e2e.*`, `e2e/`, `cypress/`, `playwright/`,
+   `tests/e2e/`, `tests/acceptance/`, `docker-compose*.yml` used for tests.
+   Also flag the presence of a UI framework (next, react, vue, svelte, angular) or HTTP server
+   (express, fastify, koa, hapi, nest, or any framework that binds a port).
+   Record whether the project has an observable runtime behavior layer beyond unit tests
+   (UI rendering, API endpoints, CLI output, e2e suite). This finding feeds directly into
+   the `accepting` phase decision in Step 3.
+
 ## Step 2 — Prove the project starts (REQUIRED)
 
 After scanning and before recommending flags, you MUST make a real local start/run attempt.
@@ -416,19 +425,29 @@ A bare phase name is valid when the phase should be model-less in config. If a p
 - Independent review / acceptance phases → `sonnet`, `codex`, or another code-aware label
 - Verification / linting phases → `haiku` or another fast mechanical-check label
 
-Principle of phases:
+Phase selection rules:
 - Each middle phase is one dedicated subagent invocation.
 - Add a phase only when that step genuinely needs its own focused context.
-- The principle is to prefer fewer phases because each handoff has cost.
-- A simple CLI tool or library often needs only `in_progress + verifying`.
-- Reserve multi-phase pipelines for projects that genuinely need spec elaboration and/or independent review.
+- Prefer fewer phases because each handoff has cost.
+
+**`verifying` vs `accepting` — use both when the project has observable behavior:**
+- `verifying` answers "Is this code written correctly?" — runs lint, format, type-check, and
+  unit tests. It runs without the app and completes mechanically and quickly.
+- `accepting` answers "Does this feature work?" — must start the app, exercise it from outside
+  (browser, HTTP client, CLI invocation, e2e suite), and confirm that observable behavior matches spec.
+  It requires a running process.
+
+**Rule:** add `accepting` whenever the project has observable runtime behavior — UI, API
+endpoints, CLI output, or an e2e suite. Omit `accepting` only for pure libraries or utilities
+where unit tests ARE the complete acceptance criterion and there is no runtime to start.
 
 Present the full resulting state machine to the user, including built-ins, in arrow form:
 `pending -> [chosen phases] -> done`
 
 Examples:
 - Project with review loop: `enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku`
-- CLI tool or library: `in_progress:codex,verifying:haiku`
+- CLI binary or API server: `in_progress:sonnet,accepting:sonnet,verifying:haiku`
+- Pure library (no runtime): `in_progress:codex,verifying:haiku`
 - Prototype with explicit model: `in_progress:sonnet`
 - Prototype using a configured default model: `in_progress`
 
@@ -442,6 +461,12 @@ agira phase update --set-duty <phase> "<text>"
 ```
 
 For an enriching phase, a good default duty is: "Rewrite the task description as a complete spec with sections: ## Goal, ## Acceptance Criteria, ## Constraints. Persist with agira task update <id> --description \"...\", then advance."
+
+For an accepting phase, choose the template that matches what Step 1.7 found:
+- **e2e suite present**: "Run the e2e suite against a locally running instance. All scenarios must pass. Capture the test report and advance."
+- **frontend UI**: "Start the app, open the feature in a browser, exercise the key user flows, capture screenshots proving the observable behavior matches the spec. Advance when all flows pass."
+- **API/HTTP server**: "Start the server, send representative HTTP requests to the new endpoint(s), verify response status codes and payloads match the spec. Capture the request/response pairs and advance."
+- **CLI binary**: "Build the binary and run it with representative inputs. Capture stdout/stderr and exit codes and confirm they match the spec. Advance when all cases pass."
 
 Do not set duties on `pending` or `done`; they are mandatory phases and reject duties.
 
@@ -465,6 +490,11 @@ Ask how they verify a feature is truly complete for this project: screenshots fo
 API request/response for backend, stdout/stderr for CLI, or other proof of correctness.
 Ask what evidence each phase should deliver, then draft a suitable `duty` paragraph per
 middle phase for the user to confirm.
+
+If Step 1.7 found observable runtime behavior (UI, API endpoints, CLI output, or an e2e suite),
+propose `accepting` as the **default recommendation** — not as an implicit option. Explain
+clearly why: the project has a runtime that can be exercised from outside, and `verifying`
+alone cannot confirm that behavior. The user may override, but the default must include it.
 
 ## Step 5 — Run agira init
 
@@ -834,8 +864,6 @@ mod tests {
         assert!(prompt.contains("## Acceptance Criteria"));
         assert!(prompt.contains("## Constraints"));
         assert!(prompt.contains("one dedicated subagent"));
-        assert!(prompt.contains("prefer fewer phases"));
-        assert!(prompt.contains("in_progress + verifying"));
         assert!(prompt.contains("truly complete for this project"));
         assert!(!prompt.contains("--models"));
         assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
@@ -860,10 +888,34 @@ mod tests {
         assert!(prompt.contains("smoke"));
         assert!(prompt.contains("server"));
         assert!(prompt.contains("endpoint"));
+        // The --acceptance-testing flag was removed; ensure it does not creep back.
         let removed_acceptance_flag = format!("--{}-{}", "acceptance", "testing");
         assert!(!prompt.contains(&removed_acceptance_flag));
-        let removed_acceptance_testing_phrase = format!("{} {}", "acceptance", "test");
-        assert!(!prompt.contains(&removed_acceptance_testing_phrase));
+
+        // Change 1: Step 1 bullet 7 — e2e / observable-behavior detection
+        assert!(prompt.contains("playwright.config"));
+        assert!(prompt.contains("cypress.config"));
+        assert!(prompt.contains("observable runtime behavior"));
+        assert!(prompt.contains("e2e/"));
+
+        // Change 2: verifying vs accepting semantic rule (replaces old "Principle of phases")
+        assert!(prompt.contains("`verifying` answers"));
+        assert!(prompt.contains("`accepting` answers"));
+        assert!(prompt.contains("runs without the app"));
+        assert!(prompt.contains("start the app"));
+        assert!(prompt.contains("observable behavior matches spec"));
+        // The heuristic "A simple CLI tool or library often needs only in_progress + verifying"
+        // is intentionally removed; it should not appear.
+        assert!(!prompt.contains("A simple CLI tool or library often needs only"));
+
+        // Change 3: accepting duty templates for the four concrete cases
+        assert!(prompt.contains("e2e suite present"));
+        assert!(prompt.contains("frontend UI"));
+        assert!(prompt.contains("API/HTTP server"));
+        assert!(prompt.contains("CLI binary"));
+
+        // Change 4: proactive accepting recommendation in Step 4
+        assert!(prompt.contains("observable behavior") && prompt.contains("propose `accepting`"));
     }
 
     #[test]
