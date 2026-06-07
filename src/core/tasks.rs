@@ -52,6 +52,8 @@ pub struct Task {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_machine: Option<Vec<TaskPhaseConfig>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_at: Option<String>,
 }
 
 fn default_max_retries() -> u32 {
@@ -259,6 +261,7 @@ impl TaskStore {
             }],
             created_at,
             state_machine,
+            locked_at: None,
         };
 
         let mut tasks_file = self.tasks_file.clone();
@@ -348,6 +351,7 @@ impl TaskStore {
         let target_state = machine[target_index].clone();
         let task = &mut tasks_file.tasks[task_index];
         task.state = target_state.clone();
+        task.locked_at = None;
         task.history.push(HistoryEntry {
             from: Some(previous_state),
             to: target_state,
@@ -381,6 +385,7 @@ impl TaskStore {
 
         let task = &mut tasks_file.tasks[task_index];
         task.state = "failed".to_owned();
+        task.locked_at = None;
         task.history.push(HistoryEntry {
             from: Some(previous_state),
             to: "failed".to_owned(),
@@ -420,6 +425,7 @@ impl TaskStore {
         task.state = "blocked".to_owned();
         task.blocked_at_phase = Some(previous_state.clone());
         task.blocked_reason = Some(reason.to_owned());
+        task.locked_at = None;
         task.history.push(HistoryEntry {
             from: Some(previous_state),
             to: "blocked".to_owned(),
@@ -573,6 +579,7 @@ impl TaskStore {
         let max_retries = task.max_retries;
         task.retry_count = new_retry_count;
         task.state = first_phase.clone();
+        task.locked_at = None;
         task.history.push(HistoryEntry {
             from: Some(previous_state),
             to: first_phase,
@@ -583,6 +590,28 @@ impl TaskStore {
         self.save(tasks_file)?;
 
         Ok((new_retry_count, max_retries))
+    }
+
+    pub fn lock_task(&mut self, id: &str) -> Result<(), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task = tasks_file
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or(StoreError::NotFound)?;
+        task.locked_at = Some(Utc::now().to_rfc3339());
+        self.save(tasks_file)
+    }
+
+    pub fn unlock_task(&mut self, id: &str) -> Result<(), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task = tasks_file
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or(StoreError::NotFound)?;
+        task.locked_at = None;
+        self.save(tasks_file)
     }
 }
 
@@ -1377,5 +1406,175 @@ mod tests {
 
         let task = store.add_task("Fourth", "", vec![], None, None).unwrap();
         assert_eq!(task.id, "task-004");
+    }
+
+    #[test]
+    fn lock_unlock_round_trip_persists_to_disk() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+
+        store.lock_task("task-001").unwrap();
+        let task = store.get_task("task-001").unwrap();
+        let ts = task.locked_at.as_deref().unwrap();
+        assert!(DateTime::parse_from_rfc3339(ts).is_ok());
+
+        let store2 = test_store(&temp_dir);
+        assert!(store2.get_task("task-001").unwrap().locked_at.is_some());
+
+        let mut store = test_store(&temp_dir);
+        store.unlock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+
+        let store3 = test_store(&temp_dir);
+        assert!(store3.get_task("task-001").unwrap().locked_at.is_none());
+
+        let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
+        assert!(!contents.contains("locked_at"));
+    }
+
+    #[test]
+    fn lock_task_on_already_locked_refreshes_timestamp() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+
+        store.lock_task("task-001").unwrap();
+        let ts1 = store
+            .get_task("task-001")
+            .unwrap()
+            .locked_at
+            .clone()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.lock_task("task-001").unwrap();
+        let ts2 = store
+            .get_task("task-001")
+            .unwrap()
+            .locked_at
+            .clone()
+            .unwrap();
+
+        assert_ne!(ts1, ts2, "second lock should update the timestamp");
+    }
+
+    #[test]
+    fn unlock_task_on_not_locked_is_noop_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+
+        store.unlock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn lock_task_unknown_id_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let err = store.lock_task("task-999").unwrap_err();
+        assert!(matches!(err, StoreError::NotFound));
+    }
+
+    #[test]
+    fn unlock_task_unknown_id_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+
+        let err = store.unlock_task("task-999").unwrap_err();
+        assert!(matches!(err, StoreError::NotFound));
+    }
+
+    #[test]
+    fn next_phase_clears_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_some());
+
+        store.next_phase("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn fail_task_clears_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_some());
+
+        store.fail_task("task-001", "oops").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn block_task_clears_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_some());
+
+        store.block_task("task-001", "waiting").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn retry_task_clears_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store.add_task("First", "", vec![], None, None).unwrap();
+        store.next_phase("task-001").unwrap();
+        store.lock_task("task-001").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_some());
+
+        store.retry_task("task-001", "redo").unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn backward_compat_loads_without_locked_at() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("tasks.json"),
+            r#"{
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Legacy task",
+      "description": "",
+      "state": "pending",
+      "dependencies": [],
+      "retry_count": 0,
+      "max_retries": 3,
+      "phases": {},
+      "history": [
+        {
+          "from": null,
+          "to": "pending",
+          "timestamp": "2026-06-06T00:00:00Z",
+          "reason": "task created"
+        }
+      ],
+      "created_at": "2026-06-06T00:00:00Z"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let mut store = test_store(&temp_dir);
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+
+        let tasks_file = TasksFile {
+            tasks: store.all_tasks().to_vec(),
+        };
+        store.save(tasks_file).unwrap();
+        let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
+        assert!(!contents.contains("locked_at"));
     }
 }

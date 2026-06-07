@@ -281,6 +281,18 @@ enum TaskCommands {
         #[arg(value_name = "id")]
         id: String,
     },
+    /// Mark a task as worker-locked (advisory; skipped by task todo until lock expires or is cleared)
+    Lock {
+        /// Task ID to lock (e.g. task-001)
+        #[arg(value_name = "id")]
+        id: String,
+    },
+    /// Clear the worker lock on a task
+    Unlock {
+        /// Task ID to unlock (e.g. task-001)
+        #[arg(value_name = "id")]
+        id: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -437,6 +449,32 @@ fn main() -> ExitCode {
                     Err(error) => {
                         eprintln!("error: {error}");
                         exit_code_for_remove(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Lock { id } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_lock(&project, &id) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_lock(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Unlock { id } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_unlock(&project, &id) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_unlock(&error)
                     }
                 },
                 Err(error) => {
@@ -755,6 +793,40 @@ fn exit_code_for_unblock(error: &commands::UnblockError) -> ExitCode {
         | ConfigNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_lock(error: &commands::LockError) -> ExitCode {
+    use commands::LockError::*;
+
+    match error {
+        TaskNotFound { .. } | ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } => {
+            ExitCode::from(1)
+        }
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_unlock(error: &commands::UnlockError) -> ExitCode {
+    use commands::UnlockError::*;
+
+    match error {
+        TaskNotFound { .. } | ConfigNotFound { .. } | ConfigLoad { .. } | InvalidConfig { .. } => {
+            ExitCode::from(1)
+        }
         ConfigRead { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }

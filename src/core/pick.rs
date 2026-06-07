@@ -1,12 +1,16 @@
 use std::cmp::{Ordering, Reverse};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::core::{
     config::{Config, INITIAL_PHASE_NAME, TERMINAL_PHASE_NAME},
     tasks::{Task, TaskPhase},
 };
+
+/// Single source of truth for the advisory lock staleness threshold. A lock older than this is
+/// treated as expired and the task becomes actionable again. Default: 1 hour.
+const LOCK_STALE_AFTER_SECS: i64 = 3600;
 
 const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \"<title>\"`";
 const BLOCKED_STATE: &str = "blocked";
@@ -64,12 +68,22 @@ pub(crate) fn format_pick_output_with_git_root(
 }
 
 pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
+    select_next_task_at(all_tasks, config, Utc::now())
+}
+
+fn select_next_task_at<'a>(
+    all_tasks: &'a [Task],
+    config: &Config,
+    now: DateTime<Utc>,
+) -> Option<&'a Task> {
     let terminal_phase = config.terminal_phase()?;
 
     all_tasks
         .iter()
         .filter(|task| {
-            is_actionable(task, config) && deps_satisfied(task, all_tasks, terminal_phase)
+            is_actionable(task, config)
+                && !is_lock_live(task.locked_at.as_deref(), now)
+                && deps_satisfied(task, all_tasks, terminal_phase)
         })
         .max_by_key(|task| {
             (
@@ -77,6 +91,21 @@ pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Op
                 Reverse(task_id_number(&task.id)),
             )
         })
+}
+
+/// Returns true when the lock is present and NOT yet stale (i.e. the task should be skipped).
+/// Fail-safe: an unparseable timestamp is treated as a live lock.
+fn is_lock_live(locked_at: Option<&str>, now: DateTime<Utc>) -> bool {
+    match locked_at {
+        None => false,
+        Some(ts) => match DateTime::parse_from_rfc3339(ts) {
+            Err(_) => true,
+            Ok(locked_time) => {
+                let age_secs = (now - locked_time.with_timezone(&Utc)).num_seconds();
+                age_secs < LOCK_STALE_AFTER_SECS
+            }
+        },
+    }
 }
 
 fn phase_index(phase: &str, config: &Config) -> Option<usize> {
@@ -403,6 +432,8 @@ fn task_id_number(id: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -1931,5 +1962,86 @@ mod tests {
         );
 
         assert!(!prompt.contains("## Phase Duty"));
+    }
+
+    #[test]
+    fn fresh_locked_task_is_skipped_by_select() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Only task", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+
+        let now = Utc::now();
+        let result = select_next_task_at(store.all_tasks(), &config, now);
+        assert!(result.is_none(), "fresh-locked task should not be selected");
+    }
+
+    #[test]
+    fn fresh_locked_task_skipped_next_actionable_selected() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("Locked task", "", vec![], None, None)
+            .unwrap();
+        store.add_task("Free task", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+
+        let now = Utc::now();
+        let selected = select_next_task_at(store.all_tasks(), &config, now).unwrap();
+        assert_eq!(selected.id, "task-002");
+    }
+
+    #[test]
+    fn stale_locked_task_is_selected() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Task", "", vec![], None, None).unwrap();
+        store.lock_task("task-001").unwrap();
+
+        // Inject a `now` that is 2 hours after the lock was set — stale
+        let now = Utc::now() + chrono::Duration::seconds(LOCK_STALE_AFTER_SECS + 1);
+        let selected = select_next_task_at(store.all_tasks(), &config, now).unwrap();
+        assert_eq!(selected.id, "task-001");
+    }
+
+    #[test]
+    fn unparseable_locked_at_treated_as_live_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Task", "", vec![], None, None).unwrap();
+
+        // Write a corrupt locked_at directly
+        let tasks_path = temp_dir.path().join("tasks.json");
+        let json = fs::read_to_string(&tasks_path).unwrap_or_else(|_| {
+            r#"{"tasks":[{"id":"task-001","title":"Task","description":"","state":"pending","dependencies":[],"retry_count":0,"max_retries":3,"phases":{},"history":[{"from":null,"to":"pending","timestamp":"2026-01-01T00:00:00Z","reason":"task created"}],"created_at":"2026-01-01T00:00:00Z"}]}"#.to_owned()
+        });
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["tasks"][0]["locked_at"] = serde_json::Value::String("not-a-timestamp".to_owned());
+        fs::write(&tasks_path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let store2 = TaskStore::new(temp_dir.path(), &config).unwrap();
+        let now = Utc::now();
+        let result = select_next_task_at(store2.all_tasks(), &config, now);
+        assert!(
+            result.is_none(),
+            "unparseable locked_at should be treated as live lock"
+        );
+    }
+
+    #[test]
+    fn unlocked_task_is_always_actionable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config();
+        let mut store = test_store(&temp_dir, &config);
+        store.add_task("Task", "", vec![], None, None).unwrap();
+        assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+
+        let now = Utc::now();
+        let selected = select_next_task_at(store.all_tasks(), &config, now).unwrap();
+        assert_eq!(selected.id, "task-001");
     }
 }
