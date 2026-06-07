@@ -110,7 +110,16 @@ fn register_all_tasks_done_hook(home: &Path, repo: &Path, hook_output: &Path) {
         shell_quote(hook_output)
     );
 
-    run_ok(agira(home, repo).args(["hook", "add", "all_tasks_done", &hook_command]));
+    run_ok(agira(home, repo).args(["hook", "add", "--on", "all_tasks_done", &hook_command]));
+}
+
+fn register_labeled_hook(home: &Path, repo: &Path, event: &str, hook_output: &Path, label: &str) {
+    let hook_command = format!(
+        "printf '%s\\n' \"{label}:$AGIRA_TASK_ID|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" >> {}",
+        shell_quote(hook_output)
+    );
+
+    run_ok(agira(home, repo).args(["hook", "add", "--on", event, &hook_command]));
 }
 
 #[test]
@@ -147,6 +156,32 @@ fn all_tasks_done_hook_does_not_fire_when_non_terminal_tasks_remain() {
 }
 
 #[test]
+fn all_tasks_done_hook_runs_after_done_hook_when_last_task_transitions_to_done() {
+    let (home, _workspace, repo) = setup_repo("Done Order Repo");
+    let hook_output = home.path().join("done-order-output.txt");
+    register_labeled_hook(home.path(), &repo, "done", &hook_output, "done");
+    register_labeled_hook(
+        home.path(),
+        &repo,
+        "all_tasks_done",
+        &hook_output,
+        "all_tasks_done",
+    );
+
+    run_ok(agira(home.path(), &repo).args(["task", "add", "Only task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "pending artifact"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "terminal artifact"]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("ordered hook output was not written within 2s");
+
+    assert_eq!(
+        contents,
+        "done:task-001|done|terminal artifact\nall_tasks_done:task-001|done|terminal artifact\n"
+    );
+}
+
+#[test]
 fn all_tasks_done_hook_fires_when_all_tasks_are_failed() {
     let (home, _workspace, repo) = setup_repo_with_max_retries("All Failed Repo", 1);
     let hook_output = home.path().join("all-failed-output.txt");
@@ -173,6 +208,31 @@ fn all_tasks_done_hook_fires_when_all_tasks_are_failed() {
         .expect("all_tasks_done hook did not write output within 2s");
 
     assert_eq!(contents, "task-002|failed|\n");
+}
+
+#[test]
+fn all_tasks_done_hook_runs_after_failed_hook_when_last_task_transitions_to_failed() {
+    let (home, _workspace, repo) = setup_repo_with_max_retries("Failed Order Repo", 1);
+    let hook_output = home.path().join("failed-order-output.txt");
+    register_labeled_hook(home.path(), &repo, "failed", &hook_output, "failed");
+    register_labeled_hook(
+        home.path(),
+        &repo,
+        "all_tasks_done",
+        &hook_output,
+        "all_tasks_done",
+    );
+
+    run_ok(agira(home.path(), &repo).args(["task", "add", "Only task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "fail", "task-001", "--reason", "terminal"]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("ordered hook output was not written within 2s");
+
+    assert_eq!(
+        contents,
+        "failed:task-001|failed|\nall_tasks_done:task-001|failed|\n"
+    );
 }
 
 #[test]

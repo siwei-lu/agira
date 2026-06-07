@@ -154,11 +154,11 @@ enum HookCommands {
         #[arg(long = "global")]
         global: bool,
         /// Hook event name: *, task_added, all_tasks_done, failed, or a configured phase
-        #[arg(value_name = "event")]
-        event: String,
-        /// Shell command to run for the hook
-        #[arg(value_name = "command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
+        #[arg(long = "on", value_name = "event")]
+        on: Option<String>,
+        /// Hook event followed by command, or just command when --on is provided
+        #[arg(value_name = "event command", num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Update lifecycle hooks for an event
     #[command(
@@ -536,18 +536,17 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            HookCommands::Add {
-                global,
-                event,
-                command,
-            } => match resolve_project() {
-                Ok(project) => match commands::run_hook_add(&project, &event, &command, global) {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(error) => {
-                        eprintln!("error: {error}");
-                        exit_code_for_hook(&error)
+            HookCommands::Add { global, on, args } => match resolve_project() {
+                Ok(project) => {
+                    let (event, command) = split_hook_add_args(on, args);
+                    match commands::run_hook_add(&project, &event, &command, global) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_hook(&error)
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for(&error)
@@ -618,6 +617,17 @@ fn main() -> ExitCode {
         Commands::Version => {
             println!("agira {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
+        }
+    }
+}
+
+fn split_hook_add_args(on: Option<String>, args: Vec<String>) -> (String, Vec<String>) {
+    match on {
+        Some(event) => (event, args),
+        None => {
+            let mut args = args.into_iter();
+            let event = args.next().unwrap_or_default();
+            (event, args.collect())
         }
     }
 }
