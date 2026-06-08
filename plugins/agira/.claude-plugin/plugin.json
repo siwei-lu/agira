@@ -1,0 +1,7 @@
+{
+  "name": "agira",
+  "description": "Skills for Agira task management: add tasks via the CLI and launch autonomous tmux executors",
+  "author": {
+    "name": "Siwei LU"
+  }
+}
