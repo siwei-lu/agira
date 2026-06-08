@@ -1,0 +1,22 @@
+{
+  "name": "agira",
+  "version": "0.1.0",
+  "description": "Skills for Agira task management: add tasks via the CLI and launch autonomous tmux executors",
+  "author": {
+    "name": "Siwei LU"
+  },
+  "homepage": "https://github.com/siwei-lu/agira",
+  "repository": "https://github.com/siwei-lu/agira",
+  "license": "MIT",
+  "keywords": ["agira", "task-management", "automation"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agira",
+    "shortDescription": "AI-assisted task management for software projects",
+    "longDescription": "Add tasks to an Agira project and launch autonomous tmux executors that dispatch work until your task queue is empty.",
+    "developerName": "Siwei LU",
+    "category": "Development",
+    "capabilities": [],
+    "websiteURL": "https://github.com/siwei-lu/agira"
+  }
+}

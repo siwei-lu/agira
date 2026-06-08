@@ -1,0 +1,19 @@
+{
+  "name": "agira",
+  "interface": {
+    "displayName": "Agira"
+  },
+  "plugins": [
+    {
+      "name": "agira",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agira"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Development"
+    }
+  ]
+}
