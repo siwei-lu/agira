@@ -29,12 +29,13 @@ Add the marketplace and install the plugin:
 
 ### Codex
 
-Add the marketplace and install the plugin:
+Install via the Codex plugin settings — add this marketplace URL:
 
 ```
-/plugin marketplace add https://github.com/siwei-lu/agira.git
-/plugin install agira@agira
+https://github.com/siwei-lu/agira.git
 ```
+
+Then install the **agira** plugin.
 
 ## Quick start
 
