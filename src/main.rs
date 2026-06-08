@@ -731,7 +731,7 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
         NoActionableTask | EmptyArtifact | ConfigLoad { .. } | InvalidConfig { .. } => {
             ExitCode::from(1)
         }
-        Io { .. } | PromptFileWrite { .. } => ExitCode::from(2),
+        Io { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }
             | crate::core::StoreError::Serialize(_)

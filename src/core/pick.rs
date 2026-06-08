@@ -1,5 +1,5 @@
 use std::cmp::{Ordering, Reverse};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, Utc};
 
@@ -16,55 +16,20 @@ const NO_TASKS_MESSAGE: &str = "No tasks found. Add tasks with `agira task add \
 const BLOCKED_STATE: &str = "blocked";
 const FAILED_STATE: &str = "failed";
 
-pub(crate) struct FormattedPickOutput {
-    pub(crate) stdout: String,
-    pub(crate) dispatch_prompt_file: Option<DispatchPromptFile>,
-}
-
-pub(crate) struct DispatchPromptFile {
-    pub(crate) path: PathBuf,
-    pub(crate) contents: String,
-}
-
-impl FormattedPickOutput {
-    fn stdout(stdout: String) -> Self {
-        Self {
-            stdout,
-            dispatch_prompt_file: None,
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn format_pick_output(
-    config: &Config,
-    tasks: &[Task],
-    just_done: Option<(&str, &str)>,
-    state_dir: &Path,
-) -> String {
-    format_pick_output_with_git_root(config, tasks, just_done, state_dir, state_dir).stdout
-}
-
-pub(crate) fn format_pick_output_with_git_root(
-    config: &Config,
-    tasks: &[Task],
-    just_done: Option<(&str, &str)>,
-    state_dir: &Path,
-    git_root: &Path,
-) -> FormattedPickOutput {
+pub(crate) fn format_pick_output(config: &Config, tasks: &[Task], state_dir: &Path) -> String {
     if tasks.is_empty() {
-        return FormattedPickOutput::stdout(NO_TASKS_MESSAGE.to_owned());
+        return NO_TASKS_MESSAGE.to_owned();
     }
 
     if is_all_done(tasks, config) {
-        return FormattedPickOutput::stdout(format_completion_summary(tasks));
+        return format_completion_summary(tasks);
     }
 
     if let Some(task) = select_next_task(tasks, config) {
-        return format_task_prompt_output(task, config, just_done, state_dir, git_root);
+        return format_task_prompt_output(task, config, state_dir);
     }
 
-    FormattedPickOutput::stdout(format_non_actionable_summary(tasks))
+    format_non_actionable_summary(tasks)
 }
 
 pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
@@ -161,27 +126,14 @@ fn is_all_done(tasks: &[Task], config: &Config) -> bool {
 }
 
 #[cfg(test)]
-fn format_task_prompt(
-    task: &Task,
-    config: &Config,
-    just_done: Option<(&str, &str)>,
-    state_dir: &Path,
-) -> String {
-    format_task_prompt_output(task, config, just_done, state_dir, state_dir).stdout
+fn format_task_prompt(task: &Task, config: &Config, state_dir: &Path) -> String {
+    format_task_prompt_output(task, config, state_dir)
 }
 
-fn format_task_prompt_output(
-    task: &Task,
-    config: &Config,
-    _just_done: Option<(&str, &str)>,
-    state_dir: &Path,
-    git_root: &Path,
-) -> FormattedPickOutput {
+fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> String {
     if task.state == INITIAL_PHASE_NAME {
-        return FormattedPickOutput::stdout(
-            "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
-                .to_owned(),
-        );
+        return "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase."
+            .to_owned();
     }
 
     let model = effective_task_model(task, &task.state, config);
@@ -243,52 +195,7 @@ fn format_task_prompt_output(
         task.id
     ));
 
-    subagent.push_str(&format!(
-        "\n\n## Advance State\nWhen this phase is complete, run:\n`agira task todo --artifact \"<artifact>\"`\n\nIf this phase cannot be completed, run:\n`agira task fail {} --reason \"<reason>\"`",
-        task.id
-    ));
-
-    // Orchestrator wrapper: only present when the phase has a model (i.e. AI-driven).
-    if let Some(model) = model {
-        if model.starts_with("dispatch") {
-            let prompt_path = dispatch_prompt_path(&task.id);
-            let log_path = dispatch_log_path(&task.id);
-            let command = format!(
-                "{model} exec -C {} --log-file {} --prompt-file {}",
-                git_root.display(),
-                log_path.display(),
-                prompt_path.display()
-            );
-            return FormattedPickOutput {
-                stdout: format!(
-                    "# Agira Orchestrator Instructions\n\nRun the following command with run_in_background: true:\n{command}"
-                ),
-                dispatch_prompt_file: Some(DispatchPromptFile {
-                    path: prompt_path,
-                    contents: subagent,
-                }),
-            };
-        }
-
-        let steps = format!(
-            "1. Read the task title and description exactly as given in the subagent prompt below.\n2. Write a SHORT, CLEAR problem statement for the subagent based solely on that title and description. Do not add assumptions, repo context, or findings from any other source.\n3. Use the Agent tool with model `{model}` and run_in_background: true, passing the subagent prompt below."
-        );
-
-        FormattedPickOutput::stdout(format!(
-            "# Agira Orchestrator Instructions\n\nYou are the **orchestrator** for this task. Do NOT perform this work yourself. This includes investigation and analysis: do not read files, explore the codebase, run commands, or try to understand the problem before delegating.\n\nYour ONLY job is:\n{steps}\n\nThe configured model is `{model}`.\nThe subagent is responsible for all investigation, reasoning, analysis, file reading, command execution, implementation, verification, and state advancement.\n\n--- SUBAGENT PROMPT ---\n{subagent}\n--- END SUBAGENT PROMPT ---"
-        ))
-    } else {
-        // No effective model: return subagent prompt directly without orchestrator wrapper.
-        FormattedPickOutput::stdout(subagent)
-    }
-}
-
-fn dispatch_prompt_path(task_id: &str) -> PathBuf {
-    PathBuf::from("/tmp").join(format!("agira-{task_id}.txt"))
-}
-
-fn dispatch_log_path(task_id: &str) -> PathBuf {
-    PathBuf::from("/tmp").join(format!("agira-{task_id}.log"))
+    subagent
 }
 
 fn description_warning_applies(task: &Task, config: &Config) -> bool {
@@ -505,7 +412,7 @@ mod tests {
         let config = test_config();
         let store = test_store(&temp_dir, &config);
 
-        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
+        let output = format_pick_output(&config, store.all_tasks(), temp_dir.path());
 
         assert_eq!(output, NO_TASKS_MESSAGE);
     }
@@ -652,7 +559,7 @@ mod tests {
         store.block_task("task-001", "waiting").unwrap();
         store.fail_task("task-002", "broken").unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
+        let output = format_pick_output(&config, store.all_tasks(), temp_dir.path());
 
         assert!(output.contains("All remaining tasks are blocked, failed, or complete."));
         assert!(output.contains("task-001: Blocked task (blocked)"));
@@ -660,12 +567,11 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_has_orchestrator_preamble_and_delimiters() {
+    fn task_prompt_returns_raw_task_data_without_orchestrator_wrapper() {
         let temp_dir = TempDir::new().unwrap();
         let config = test_config();
         let mut store = test_store(&temp_dir, &config);
 
-        // Advance to enriching phase which has a model (opus) — orchestrator wrapper is present.
         store
             .add_task("Implement pick", "", vec![], None, None)
             .unwrap();
@@ -674,25 +580,18 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
-        assert!(prompt.contains("# Agira Orchestrator Instructions"));
-        assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
-        assert!(prompt.contains("--- END SUBAGENT PROMPT ---"));
-        assert!(prompt.contains("# Agira Task Prompt"));
+        assert!(prompt.starts_with("# Agira Task Prompt"));
         assert!(prompt.contains("- Agent role: opus"));
-        assert!(prompt.contains("The configured model is `opus`"));
-        assert!(prompt.contains(
-            "Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
-        ));
-        assert!(prompt.contains("Do NOT perform this work yourself"));
-        assert!(prompt.contains("do not read files"));
-        assert!(prompt.contains("explore the codebase"));
-        assert!(prompt.contains("run commands"));
-        assert!(prompt.contains("try to understand the problem before delegating"));
-        assert!(prompt.contains("The subagent is responsible for all investigation"));
+        assert!(prompt.contains("## Checkpoints"));
+        assert!(!prompt.contains("## Advance State"));
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("Do NOT perform this work yourself"));
+        assert!(!prompt.contains("Use the Agent tool"));
     }
 
     #[test]
@@ -714,13 +613,12 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
         assert!(prompt.contains("- Agent role: opus"));
-        assert!(prompt.contains("# Agira Orchestrator Instructions"));
-        assert!(prompt.contains("The configured model is `opus`"));
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(!prompt.contains("The configured model is `opus`"));
     }
 
     #[test]
@@ -743,7 +641,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -797,7 +694,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         assert!(prompt.contains("## Phase Duty"));
@@ -815,7 +711,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-002").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         assert!(!prompt.contains("## Phase Duty"));
@@ -835,7 +730,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -862,7 +756,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -896,7 +789,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let duty_index = prompt.find("## Phase Duty").unwrap();
@@ -920,7 +812,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let expected = temp_dir
@@ -947,7 +838,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -972,7 +862,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1007,7 +896,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let acceptance_index = prompt.find("## Acceptance Criteria").unwrap();
@@ -1031,7 +919,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1061,7 +948,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1090,13 +976,11 @@ mod tests {
         let short_prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let long_prompt = format_task_prompt(
             store.get_task("task-002").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1118,7 +1002,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1138,7 +1021,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1160,7 +1042,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1189,7 +1070,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let description_index = prompt.find("## Description").unwrap();
@@ -1238,13 +1118,11 @@ mod tests {
         let in_progress_prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
         let pending_prompt = format_task_prompt(
             store.get_task("task-002").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1267,12 +1145,11 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
         assert!(prompt.contains("- Agent role: opus"));
-        assert!(prompt.contains("The configured model is `opus`"));
+        assert!(!prompt.contains("The configured model is `opus`"));
         assert!(!prompt.contains("- Agent role: codex"));
     }
 
@@ -1291,7 +1168,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1321,7 +1197,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1370,15 +1245,14 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
-        assert!(prompt.contains("# Agira Orchestrator Instructions"));
-        assert!(prompt.contains("--- SUBAGENT PROMPT ---"));
         assert!(prompt.contains("# Agira Task Prompt"));
         assert!(prompt.contains("- Agent role: codex"));
-        assert!(prompt.contains("The configured model is `codex`"));
+        assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+        assert!(!prompt.contains("The configured model is `codex`"));
     }
 
     #[test]
@@ -1416,7 +1290,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1437,7 +1310,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1457,7 +1329,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1500,7 +1371,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1564,7 +1434,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1590,7 +1459,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1602,99 +1470,63 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_without_just_done_has_three_steps() {
+    fn task_prompt_model_variants_share_unified_raw_format() {
         let temp_dir = TempDir::new().unwrap();
-        let config = test_config();
-        let mut store = test_store(&temp_dir, &config);
-
-        // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", vec![], None, None).unwrap();
-        store.next_phase("task-001").unwrap();
-
-        let prompt = format_task_prompt(
-            store.get_task("task-001").unwrap(),
-            &config,
-            None,
-            temp_dir.path(),
-        );
-
-        assert!(prompt.contains("1. Read the task title and description"));
-        assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains(
-            "3. Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
-        ));
-        assert!(prompt.contains("The configured model is `opus`"));
-        assert!(!prompt.contains("Once the subagent finishes"));
-        assert!(!prompt.contains("1. Spawn a subagent"));
-        assert!(!prompt.contains("2. Pass the content"));
-        assert!(!prompt.contains("3. Once the subagent finishes"));
-    }
-
-    #[test]
-    fn task_prompt_just_done_does_not_add_orchestrator_commands() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = test_config();
-        let mut store = test_store(&temp_dir, &config);
-
-        // Advance to enriching (has model: opus) so orchestrator wrapper is present.
-        store.add_task("Next task", "", vec![], None, None).unwrap();
-        store.next_phase("task-001").unwrap();
-
-        let prompt = format_task_prompt(
-            store.get_task("task-001").unwrap(),
-            &config,
-            Some(("task-000", "Previous Task")),
-            temp_dir.path(),
-        );
-
-        assert!(!prompt.contains("Commit all changes"));
-        assert!(!prompt.contains("task-000 \"Previous Task\""));
-        assert!(prompt.contains("1. Read the task title and description"));
-        assert!(prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(prompt.contains(
-            "3. Use the Agent tool with model `opus` and run_in_background: true, passing the subagent prompt below."
-        ));
-        assert!(!prompt.contains("Once the subagent finishes"));
-        assert!(!prompt.contains("4. Once the subagent finishes"));
-    }
-
-    #[test]
-    fn dispatch_model_task_prompt_emits_prompt_file_command_only() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut config = test_config();
-        config
-            .phases
-            .iter_mut()
-            .find(|phase| phase.name == "enriching")
-            .unwrap()
-            .model = Some("dispatch -a codex".to_owned());
-        let mut store = test_store(&temp_dir, &config);
-
-        store
-            .add_task("Dispatch task", "", vec![], None, None)
+        let baseline_config = test_config();
+        let mut baseline_store = test_store(&temp_dir, &baseline_config);
+        baseline_store
+            .add_task(
+                "Unified prompt",
+                "implement unified raw output",
+                vec![],
+                None,
+                None,
+            )
             .unwrap();
-        store.next_phase("task-001").unwrap();
+        baseline_store.next_phase("task-001").unwrap();
 
-        let prompt = format_task_prompt(
-            store.get_task("task-001").unwrap(),
-            &config,
+        let variants = [
+            Some("dispatch -a codex".to_owned()),
+            Some("codex".to_owned()),
             None,
-            temp_dir.path(),
-        );
-        let expected_command = format!(
-            "dispatch -a codex exec -C {} --log-file /tmp/agira-task-001.log --prompt-file /tmp/agira-task-001.txt",
-            temp_dir.path().display()
-        );
+        ];
+        let mut normalized_prompts = Vec::new();
 
-        assert!(prompt.contains("# Agira Orchestrator Instructions"));
-        assert!(prompt.contains("run_in_background: true"));
-        assert!(prompt.contains(&expected_command));
-        assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
-        assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
-        assert!(!prompt.contains("1. Read the task title and description"));
-        assert!(!prompt.contains("2. Write a SHORT, CLEAR problem statement"));
-        assert!(!prompt.contains("Spawn a subagent"));
-        assert!(!prompt.contains("Use the Agent tool"));
+        for model in variants {
+            let mut config = test_config();
+            config
+                .phases
+                .iter_mut()
+                .find(|phase| phase.name == "enriching")
+                .unwrap()
+                .model = model;
+            let store = test_store(&temp_dir, &config);
+
+            let prompt = format_task_prompt(
+                store.get_task("task-001").unwrap(),
+                &config,
+                temp_dir.path(),
+            );
+
+            assert!(prompt.starts_with("# Agira Task Prompt"));
+            assert!(prompt.contains("## Checkpoints"));
+            assert!(!prompt.contains("## Advance State"));
+            assert!(!prompt.contains("# Agira Orchestrator Instructions"));
+            assert!(!prompt.contains("--- SUBAGENT PROMPT ---"));
+            assert!(!prompt.contains("--- END SUBAGENT PROMPT ---"));
+            assert!(!prompt.contains("dispatch -a codex exec"));
+            assert!(!prompt.contains("Use the Agent tool"));
+
+            let normalized = prompt
+                .lines()
+                .filter(|line| !line.starts_with("- Agent role:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            normalized_prompts.push(normalized);
+        }
+
+        assert_eq!(normalized_prompts[0], normalized_prompts[1]);
+        assert_eq!(normalized_prompts[0], normalized_prompts[2]);
     }
 
     #[test]
@@ -1707,7 +1539,7 @@ mod tests {
             .add_task("Implement pick", "", vec![], None, None)
             .unwrap();
 
-        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
+        let output = format_pick_output(&config, store.all_tasks(), temp_dir.path());
 
         assert!(!output.as_bytes().contains(&0x1B));
     }
@@ -1731,7 +1563,7 @@ mod tests {
             store.next_phase(id).unwrap();
         }
 
-        let output = format_pick_output(&config, store.all_tasks(), None, temp_dir.path());
+        let output = format_pick_output(&config, store.all_tasks(), temp_dir.path());
 
         assert!(output.contains("# Agira Completion Summary"));
         assert!(output.contains("task-001"));
@@ -1769,7 +1601,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1814,7 +1645,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1866,7 +1696,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1912,7 +1741,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
@@ -1957,7 +1785,6 @@ mod tests {
         let prompt = format_task_prompt(
             store.get_task("task-001").unwrap(),
             &config,
-            None,
             temp_dir.path(),
         );
 
