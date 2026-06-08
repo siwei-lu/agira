@@ -1,14 +1,17 @@
 # agira
 
-Claude Code skills for the [Agira](https://github.com/siwei-lu/agira) task management workflow.
+Skills for the [Agira](https://github.com/siwei-lu/agira) task management workflow.
 
 ## Installation
 
+### Claude Code
+
 ```
+/plugin marketplace add https://github.com/siwei-lu/agira.git
 /plugin install agira@agira
 ```
 
-Or add the marketplace first:
+### Codex
 
 ```
 /plugin marketplace add https://github.com/siwei-lu/agira.git
@@ -17,7 +20,7 @@ Or add the marketplace first:
 
 ## Skills
 
-### `agira-task-add`
+### `add`
 
 Safely adds a task to an Agira project via the CLI. Triggers when you ask to create, add, or register an Agira task. It will:
 
@@ -25,7 +28,7 @@ Safely adds a task to an Agira project via the CLI. Triggers when you ask to cre
 2. Check for duplicate tasks and conflicts
 3. Confirm the task details with you before running `agira task add`
 
-### `agira-todo-executor`
+### `todo`
 
 Launches or reuses a tmux-backed Claude orchestrator that dispatches Agira tasks until all queued work is done. Triggers when you ask to run, start, or resume an Agira executor.
 
