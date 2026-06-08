@@ -17,7 +17,8 @@
         "source": "git-subdir",
         "url": "https://github.com/siwei-lu/agira.git",
         "path": "plugins/agira",
-        "ref": "main"
+        "ref": "main",
+        "sha": "2b526f3ee8cce0b66c836b77d3e3d48bb50a820c"
       },
       "homepage": "https://github.com/siwei-lu/agira"
     }
