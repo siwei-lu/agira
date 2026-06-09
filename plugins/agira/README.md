@@ -42,6 +42,36 @@ Requires:
 
 The bundled `scripts/ensure_executor.py` handles session lifecycle — it is idempotent and safe to call repeatedly.
 
+## Agents
+
+The plugin ships three predefined sub-agent role definitions in `plugins/agira/agents/`. Once the plugin is installed they become namespaced subagent types usable from any Claude Code context.
+
+| Agent | Namespaced type | Tool scope |
+|---|---|---|
+| `enricher.md` | `agira:enricher` | Read, WebSearch, WebFetch, Bash |
+| `implementer.md` | `agira:implementer` | Read, Write, Edit, Bash |
+| `verifier.md` | `agira:verifier` | Read, Bash |
+
+Each agent covers one standard Agira workflow phase:
+
+- **`agira:enricher`** — researches context and rewrites rough task descriptions into complete, unambiguous specs before implementation begins.
+- **`agira:implementer`** — implements the task following TDD, commits the result, and advances with a commit hash as evidence.
+- **`agira:verifier`** — runs all checks and acceptance tests, advances on pass, or blocks the task on failure. Read-only; never modifies code.
+
+### Workspace override
+
+Place a same-named file in your project's `.claude/agents/` directory to override the plugin default for that workspace:
+
+```
+.claude/
+  agents/
+    enricher.md      ← overrides agira:enricher for this project
+    implementer.md   ← overrides agira:implementer for this project
+    verifier.md      ← overrides agira:verifier for this project
+```
+
+The workspace file takes precedence over the plugin-bundled definition. Only the files you place override the defaults; any file you omit continues to use the plugin version.
+
 ## Requirements
 
 - `agira` CLI installed and on PATH
