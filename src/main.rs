@@ -84,7 +84,11 @@ enum Commands {
 #[derive(Subcommand)]
 enum PhaseCommands {
     /// List current phases in the state machine
-    Get,
+    Get {
+        /// Target a specific named workflow (defaults to config.default_workflow)
+        #[arg(long, value_name = "workflow")]
+        workflow: Option<String>,
+    },
     /// Add, insert, remove, or update phases in the state machine
     Update {
         /// Phase to add: bare name (e.g. review) or name:model (e.g. review:codex)
@@ -111,6 +115,9 @@ enum PhaseCommands {
         /// Clear the duty from an existing non-mandatory phase
         #[arg(long = "clear-duty", value_name = "phase")]
         clear_duty: Option<String>,
+        /// Target a specific named workflow (defaults to config.default_workflow)
+        #[arg(long, value_name = "workflow")]
+        workflow: Option<String>,
     },
 }
 
@@ -520,8 +527,8 @@ fn main() -> ExitCode {
             }
         },
         Commands::Phase { command } => match command {
-            PhaseCommands::Get => match resolve_project() {
-                Ok(project) => match commands::run_phase_get(&project) {
+            PhaseCommands::Get { workflow } => match resolve_project() {
+                Ok(project) => match commands::run_phase_get(&project, workflow.as_deref()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -542,6 +549,7 @@ fn main() -> ExitCode {
                 clear_model,
                 set_duty,
                 clear_duty,
+                workflow,
             } => match resolve_project() {
                 Ok(project) => match commands::run_phase_update_with_clear_model(
                     &project,
@@ -553,6 +561,7 @@ fn main() -> ExitCode {
                     clear_model.as_deref(),
                     set_duty.as_deref(),
                     clear_duty.as_deref(),
+                    workflow.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -956,7 +965,9 @@ fn exit_code_for_phase_get(error: &commands::PhaseGetError) -> ExitCode {
     use commands::PhaseGetError::*;
 
     match error {
-        NotFound { .. } | Load { .. } | InvalidConfig { .. } => ExitCode::from(1),
+        NotFound { .. } | Load { .. } | InvalidConfig { .. } | UnknownWorkflow { .. } => {
+            ExitCode::from(1)
+        }
         Read { .. } => ExitCode::from(2),
     }
 }
@@ -977,6 +988,7 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
         | CannotInsertBeforeInitial { .. }
         | CannotInsertAfterTerminal { .. }
         | PhaseBusy { .. }
+        | UnknownWorkflow { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),

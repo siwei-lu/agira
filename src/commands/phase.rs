@@ -35,6 +35,12 @@ pub enum PhaseGetError {
 
     #[error("invalid config {path}: {reason}")]
     InvalidConfig { path: PathBuf, reason: String },
+
+    #[error("unknown workflow '{name}'; available: {}", available.join(", "))]
+    UnknownWorkflow {
+        name: String,
+        available: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -110,17 +116,32 @@ pub enum PhaseUpdateError {
         source: io::Error,
     },
 
+    #[error("unknown workflow '{name}'; available: {}", available.join(", "))]
+    UnknownWorkflow {
+        name: String,
+        available: Vec<String>,
+    },
+
     #[error(transparent)]
     StoreError(#[from] StoreError),
 }
 
-pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
+pub fn run_phase_get(project: &Project, workflow: Option<&str>) -> Result<(), PhaseGetError> {
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_get_config_error)?;
 
-    let display: Vec<String> = config
-        .phases()
+    let target = workflow.unwrap_or(&config.default_workflow);
+    let phases = config.phases_in(target).ok_or_else(|| {
+        let mut available: Vec<String> = config.workflows.keys().cloned().collect();
+        available.sort();
+        PhaseGetError::UnknownWorkflow {
+            name: target.to_owned(),
+            available,
+        }
+    })?;
+
+    let display: Vec<String> = phases
         .iter()
         .map(|p| match p.model.as_deref() {
             Some(m) => format!("{}:{}", p.name, m),
@@ -142,7 +163,22 @@ fn run_phase_update(
     set_model: Option<&[String]>,
 ) -> Result<(), PhaseUpdateError> {
     run_phase_update_inner(
-        project, add, after, before, remove, set_model, None, None, None,
+        project, add, after, before, remove, set_model, None, None, None, None,
+    )
+}
+
+#[cfg(test)]
+fn run_phase_update_with_workflow(
+    project: &Project,
+    add: Option<&str>,
+    after: Option<&str>,
+    before: Option<&str>,
+    remove: Option<&str>,
+    set_model: Option<&[String]>,
+    workflow: Option<&str>,
+) -> Result<(), PhaseUpdateError> {
+    run_phase_update_inner(
+        project, add, after, before, remove, set_model, None, None, None, workflow,
     )
 }
 
@@ -157,6 +193,7 @@ pub fn run_phase_update_with_clear_model(
     clear_model: Option<&str>,
     set_duty: Option<&[String]>,
     clear_duty: Option<&str>,
+    workflow: Option<&str>,
 ) -> Result<(), PhaseUpdateError> {
     run_phase_update_inner(
         project,
@@ -168,6 +205,7 @@ pub fn run_phase_update_with_clear_model(
         clear_model,
         set_duty,
         clear_duty,
+        workflow,
     )
 }
 
@@ -182,6 +220,7 @@ fn run_phase_update_inner(
     clear_model: Option<&str>,
     set_duty: Option<&[String]>,
     clear_duty: Option<&str>,
+    workflow: Option<&str>,
 ) -> Result<(), PhaseUpdateError> {
     if add.is_none()
         && remove.is_none()
@@ -212,8 +251,19 @@ fn run_phase_update_inner(
     let config = load_project_config(&config_path, &project.global_config)
         .map_err(map_update_config_error)?;
 
+    // Resolve the target workflow (defaults to config.default_workflow)
+    let target_workflow = workflow.unwrap_or(&config.default_workflow);
+    let target_phases = config.phases_in(target_workflow).ok_or_else(|| {
+        let mut available: Vec<String> = config.workflows.keys().cloned().collect();
+        available.sort();
+        PhaseUpdateError::UnknownWorkflow {
+            name: target_workflow.to_owned(),
+            available,
+        }
+    })?;
+
     if let Some(after) = after {
-        if !config.phases().iter().any(|p| p.name == after) {
+        if !target_phases.iter().any(|p| p.name == after) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: after.to_owned(),
             });
@@ -221,7 +271,7 @@ fn run_phase_update_inner(
     }
 
     if let Some(before) = before {
-        if !config.phases().iter().any(|p| p.name == before) {
+        if !target_phases.iter().any(|p| p.name == before) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: before.to_owned(),
             });
@@ -229,11 +279,7 @@ fn run_phase_update_inner(
     }
 
     if let Some(ref p) = new_phase {
-        if config
-            .phases()
-            .iter()
-            .any(|existing| existing.name == p.name)
-        {
+        if target_phases.iter().any(|existing| existing.name == p.name) {
             return Err(PhaseUpdateError::DuplicatePhase {
                 name: p.name.clone(),
             });
@@ -289,7 +335,7 @@ fn run_phase_update_inner(
                 name: phase_name.clone(),
             });
         }
-        if !config.phases().iter().any(|p| &p.name == phase_name) {
+        if !target_phases.iter().any(|p| &p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.clone(),
             });
@@ -302,7 +348,7 @@ fn run_phase_update_inner(
                 name: phase_name.to_owned(),
             });
         }
-        if !config.phases().iter().any(|p| p.name == phase_name) {
+        if !target_phases.iter().any(|p| p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.to_owned(),
             });
@@ -316,7 +362,7 @@ fn run_phase_update_inner(
                 name: phase_name.clone(),
             });
         }
-        if !config.phases().iter().any(|p| &p.name == phase_name) {
+        if !target_phases.iter().any(|p| &p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.clone(),
             });
@@ -329,14 +375,14 @@ fn run_phase_update_inner(
                 name: phase_name.to_owned(),
             });
         }
-        if !config.phases().iter().any(|p| p.name == phase_name) {
+        if !target_phases.iter().any(|p| p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.to_owned(),
             });
         }
     }
 
-    let mut new_phases = config.phases().to_vec();
+    let mut new_phases = target_phases.to_vec();
 
     if let Some(remove) = remove {
         new_phases.retain(|p| p.name != remove);
@@ -393,7 +439,7 @@ fn run_phase_update_inner(
     }
 
     validate_updated_phases(&config_path, &new_phases)?;
-    patch_phases(&config_path, &new_phases, &config.default_workflow)?;
+    patch_phases(&config_path, &new_phases, target_workflow)?;
 
     let display: Vec<String> = new_phases
         .iter()
@@ -610,7 +656,7 @@ mod tests {
     #[test]
     fn get_returns_ok_with_valid_config() {
         let (_temp_dir, project, _config) = setup();
-        run_phase_get(&project).unwrap();
+        run_phase_get(&project, None).unwrap();
     }
 
     #[test]
@@ -624,7 +670,7 @@ mod tests {
             global_hooks: crate::core::hooks::HookConfig::default(),
             project_hooks: crate::core::hooks::HookConfig::default(),
         };
-        let err = run_phase_get(&project).unwrap_err();
+        let err = run_phase_get(&project, None).unwrap_err();
         assert!(matches!(err, PhaseGetError::NotFound { .. }));
     }
 
@@ -947,6 +993,7 @@ mod tests {
             Some("enriching"),
             None,
             None,
+            None,
         )
         .unwrap();
         let phases = loaded_phases(&project);
@@ -970,6 +1017,7 @@ mod tests {
             None,
             None,
             Some(&args),
+            None,
             None,
         )
         .unwrap();
@@ -998,6 +1046,7 @@ mod tests {
             None,
             None,
             Some("enriching"),
+            None,
         )
         .unwrap();
 
@@ -1020,6 +1069,7 @@ mod tests {
             None,
             Some(&args),
             None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1036,6 +1086,7 @@ mod tests {
             None,
             None,
             Some("pending"),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1057,6 +1108,7 @@ mod tests {
             None,
             Some(&args),
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1074,6 +1126,7 @@ mod tests {
             None,
             None,
             Some("done"),
+            None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1096,6 +1149,7 @@ mod tests {
             None,
             Some(&args),
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
@@ -1110,6 +1164,7 @@ mod tests {
             None,
             None,
             Some("nonexistent"),
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
@@ -1132,6 +1187,7 @@ mod tests {
             Some(&model_args),
             None,
             Some(&duty_args),
+            None,
             None,
         )
         .unwrap();
@@ -1158,6 +1214,7 @@ mod tests {
             Some("nonexistent"),
             None,
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, PhaseUpdateError::PhaseNotFound { name } if name == "nonexistent"));
@@ -1174,6 +1231,7 @@ mod tests {
             None,
             None,
             Some("pending"),
+            None,
             None,
             None,
         )
@@ -1254,6 +1312,7 @@ mod tests {
             None,
             Some(&args),
             None,
+            None,
         )
         .unwrap();
 
@@ -1301,6 +1360,262 @@ mod tests {
                 assert!(task_ids.contains(&"task-002".to_owned()));
             }
             other => panic!("expected PhaseBusy, got: {other}"),
+        }
+    }
+
+    // ---- --workflow tests (TDD: written before implementation) ----
+
+    fn multi_workflow_config() -> Config {
+        use crate::core::config::{DEFAULT_WORKFLOW_NAME, WorkflowDef};
+        use std::collections::HashMap;
+
+        let default_phases = vec![
+            PhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            PhaseConfig {
+                name: "enriching".to_owned(),
+                model: Some("opus".to_owned()),
+                duty: None,
+            },
+            PhaseConfig {
+                name: "in_progress".to_owned(),
+                model: Some("sonnet".to_owned()),
+                duty: None,
+            },
+            PhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+        let hotfix_phases = vec![
+            PhaseConfig {
+                name: "pending".to_owned(),
+                model: None,
+                duty: None,
+            },
+            PhaseConfig {
+                name: "in_progress".to_owned(),
+                model: Some("haiku".to_owned()),
+                duty: None,
+            },
+            PhaseConfig {
+                name: "verifying".to_owned(),
+                model: Some("haiku".to_owned()),
+                duty: None,
+            },
+            PhaseConfig {
+                name: "done".to_owned(),
+                model: None,
+                duty: None,
+            },
+        ];
+        let mut workflows = HashMap::new();
+        workflows.insert(
+            DEFAULT_WORKFLOW_NAME.to_owned(),
+            WorkflowDef {
+                phases: default_phases,
+            },
+        );
+        workflows.insert(
+            "hotfix".to_owned(),
+            WorkflowDef {
+                phases: hotfix_phases,
+            },
+        );
+        Config {
+            stack: "rust".to_owned(),
+            workflows,
+            default_workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            default_model: None,
+            max_retries: 3,
+        }
+    }
+
+    fn setup_multi_workflow() -> (TempDir, Project, Config) {
+        let temp_dir = TempDir::new().unwrap();
+        let project = test_project(&temp_dir);
+        let config = multi_workflow_config();
+        write_config(&project, &config);
+        (temp_dir, project, config)
+    }
+
+    fn loaded_phases_in(project: &Project, workflow: &str) -> Vec<PhaseConfig> {
+        let config_path = project.state_dir.join("config.json");
+        let config = load_project_config(&config_path, &GlobalConfig::default()).unwrap();
+        config.phases_in(workflow).unwrap().to_vec()
+    }
+
+    #[test]
+    fn phase_get_without_workflow_uses_default() {
+        let (_temp_dir, project, _config) = setup();
+        // Must succeed — same as today's behavior
+        run_phase_get(&project, None).unwrap();
+    }
+
+    #[test]
+    fn phase_get_with_named_workflow_succeeds() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        // hotfix workflow exists — must succeed
+        run_phase_get(&project, Some("hotfix")).unwrap();
+    }
+
+    #[test]
+    fn phase_get_unknown_workflow_returns_error() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        let err = run_phase_get(&project, Some("nonexistent")).unwrap_err();
+        match err {
+            PhaseGetError::UnknownWorkflow {
+                name,
+                ref available,
+            } => {
+                assert_eq!(name, "nonexistent");
+                // available must list both workflow names (sorted)
+                assert!(available.contains(&"default".to_owned()));
+                assert!(available.contains(&"hotfix".to_owned()));
+            }
+            other => panic!("expected UnknownWorkflow, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn phase_update_add_with_workflow_only_affects_that_workflow() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        // Insert "review" into hotfix workflow after verifying
+        run_phase_update_with_workflow(
+            &project,
+            Some("review:opus"),
+            Some("verifying"),
+            None,
+            None,
+            None,
+            Some("hotfix"),
+        )
+        .unwrap();
+
+        // hotfix should now have "review"
+        let hotfix = loaded_phases_in(&project, "hotfix");
+        assert!(hotfix.iter().any(|p| p.name == "review"));
+
+        // default workflow must be unchanged
+        let default = loaded_phases_in(&project, "default");
+        assert!(!default.iter().any(|p| p.name == "review"));
+    }
+
+    #[test]
+    fn phase_update_remove_with_workflow_only_affects_that_workflow() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        // Remove "verifying" from hotfix workflow
+        run_phase_update_with_workflow(
+            &project,
+            None,
+            None,
+            None,
+            Some("verifying"),
+            None,
+            Some("hotfix"),
+        )
+        .unwrap();
+
+        // hotfix should no longer have "verifying"
+        let hotfix = loaded_phases_in(&project, "hotfix");
+        assert!(!hotfix.iter().any(|p| p.name == "verifying"));
+
+        // default workflow must be unchanged
+        let default = loaded_phases_in(&project, "default");
+        // default never had "verifying", also unchanged
+        assert!(!default.iter().any(|p| p.name == "verifying"));
+        assert!(default.iter().any(|p| p.name == "enriching"));
+    }
+
+    #[test]
+    fn phase_update_default_fallback_targets_default_workflow() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        // Omitting --workflow should target the default workflow
+        run_phase_update_with_workflow(
+            &project,
+            Some("review:sonnet"),
+            None,
+            Some("done"),
+            None,
+            None,
+            None, // no --workflow
+        )
+        .unwrap();
+
+        // default workflow must have "review"
+        let default = loaded_phases_in(&project, "default");
+        assert!(default.iter().any(|p| p.name == "review"));
+
+        // hotfix must be unchanged
+        let hotfix = loaded_phases_in(&project, "hotfix");
+        assert!(!hotfix.iter().any(|p| p.name == "review"));
+    }
+
+    #[test]
+    fn phase_update_remove_pending_from_named_workflow_returns_error() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        let err = run_phase_update_with_workflow(
+            &project,
+            None,
+            None,
+            None,
+            Some("pending"),
+            None,
+            Some("hotfix"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PhaseUpdateError::MandatoryPhase { ref name } if name == "pending"),
+            "expected MandatoryPhase for pending, got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase_update_remove_done_from_named_workflow_returns_error() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        let err = run_phase_update_with_workflow(
+            &project,
+            None,
+            None,
+            None,
+            Some("done"),
+            None,
+            Some("hotfix"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PhaseUpdateError::MandatoryPhase { ref name } if name == "done"),
+            "expected MandatoryPhase for done, got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase_update_unknown_workflow_returns_error() {
+        let (_temp_dir, project, _config) = setup_multi_workflow();
+        let err = run_phase_update_with_workflow(
+            &project,
+            None,
+            None,
+            None,
+            Some("in_progress"),
+            None,
+            Some("nonexistent"),
+        )
+        .unwrap_err();
+        match err {
+            PhaseUpdateError::UnknownWorkflow {
+                name,
+                ref available,
+            } => {
+                assert_eq!(name, "nonexistent");
+                assert!(available.contains(&"default".to_owned()));
+                assert!(available.contains(&"hotfix".to_owned()));
+            }
+            other => panic!("expected UnknownWorkflow, got: {other}"),
         }
     }
 }
