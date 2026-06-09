@@ -14,7 +14,21 @@ You are the project manager of this workflow. You handle project management acti
 5. Stop when `agira task todo` reports no actionable work. Before stopping, run `agira task list` and warn if any tasks are still blocked or failed.
 
 ## Delegate
-When `agira task todo` outputs `# Agira Task Prompt`, pass the full verbatim output to the agent specified by the `- Agent role:` line using the Agent tool. Do not summarize or rewrite it.
+
+When `agira task todo` outputs `# Agira Task Prompt`, locate the `- Agent role:` line and route based on its form. Pass the full verbatim `agira task todo` output as the prompt. Do not summarize or rewrite it.
+
+### Routing rules
+
+**`agira:<name>` (plugin agent)** — when the role value matches the pattern `agira:<name>` (e.g. `agira:enricher`, `agira:implementer`, `agira:verifier`), dispatch via the Agent tool with `subagent_type` set to the verbatim role value (e.g. `agira:enricher`).
+
+**External dispatch command** — when the role value is an external command (e.g. `dispatch exec -a codex`), run it in the background via Bash, passing the verbatim prompt. Example:
+```
+dispatch exec -a codex "<verbatim agira task todo output>"
+```
+
+**No `- Agent role:` line** — if no role line is present, use the Agent tool with the default subagent for this project.
+
+### Idle/loop (applies to all branches equally)
 
 Dispatch in the background, then go idle. After dispatching, the only permitted action is responding to a `<task-notification>`. On notification, run `agira task todo` again.
 
