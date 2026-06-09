@@ -17,7 +17,7 @@ You are helping the user add a task to an Agira project safely and correctly.
 
 2. **Investigate before writing anything.**
 
-   a. Run `agira task status --json`. Scan only the `title` and `status` fields. If any non-done
+   a. Run `agira task list --json`. Scan only the `title` and `state` fields. If any non-done
       task has the same or very similar title, stop — flag the duplicate and ask the user whether
       to update the existing task instead (`agira task update <id> --description "..."`).
 
@@ -44,7 +44,7 @@ You are helping the user add a task to an Agira project safely and correctly.
    ```
    agira task add "<title>" --description "<details>"
    ```
-   Add `--prd`, `--depends-on`, or `--phase` only when explicitly supplied or clearly implied by
+   Add `--depends-on`, `--phase`, `--phases`, or `--duties` only when explicitly supplied or clearly implied by
    your investigation. After the background command completes, run `agira task list` to confirm
    the task was created.
 
