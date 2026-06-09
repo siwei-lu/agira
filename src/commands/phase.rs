@@ -839,7 +839,7 @@ mod tests {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Blocked task", "", vec![], None, None)
+            .add_task("Blocked task", "", vec![], None, None, None)
             .unwrap();
         store.next_phase("task-001").unwrap();
         let error =
@@ -1285,8 +1285,12 @@ mod tests {
     fn multiple_tasks_blocked_removal_lists_all() {
         let (temp_dir, project, config) = setup();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task A", "", vec![], None, None).unwrap();
-        store.add_task("Task B", "", vec![], None, None).unwrap();
+        store
+            .add_task("Task A", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Task B", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-002").unwrap();
         let error =

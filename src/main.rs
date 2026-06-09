@@ -259,6 +259,9 @@ enum TaskCommands {
         /// Set duties for new phases introduced by --phases: repeatable PHASE:DUTY entries
         #[arg(long, value_name = "PHASE:DUTY")]
         duties: Vec<String>,
+        /// Use a named workflow from the project config for this task's state machine
+        #[arg(long, value_name = "workflow")]
+        workflow: Option<String>,
     },
     /// Update editable fields of an existing task
     Update {
@@ -392,6 +395,7 @@ fn main() -> ExitCode {
                 phase,
                 phases,
                 duties,
+                workflow,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
                     &project,
@@ -405,6 +409,7 @@ fn main() -> ExitCode {
                     } else {
                         Some(&duties)
                     },
+                    workflow.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -900,6 +905,8 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
         | commands::AddError::UnknownPhase { .. }
         | commands::AddError::InvalidPhases { .. }
         | commands::AddError::InvalidDuties { .. }
+        | commands::AddError::WorkflowPhasesConflict
+        | commands::AddError::UnknownWorkflow { .. }
         | commands::AddError::DuplicateTitle { .. }
         | commands::AddError::ConfigNotFound { .. }
         | commands::AddError::ConfigLoad { .. }

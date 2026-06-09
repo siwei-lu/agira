@@ -197,7 +197,9 @@ mod tests {
     fn successful_unblock_restores_phase_and_prints_output() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
@@ -217,7 +219,9 @@ mod tests {
     fn unblocking_non_blocked_task_returns_not_blocked() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         let error = run_unblock(&project, "task-001").unwrap_err();
 

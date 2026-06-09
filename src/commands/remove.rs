@@ -231,8 +231,12 @@ mod tests {
     fn successful_remove_deletes_pending_task_and_prints_output() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
-        store.add_task("Second", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Second", "", vec![], None, None, None)
+            .unwrap();
 
         let (result, output) = capture_output(|| run_remove(&project, "task-001"));
         result.unwrap();
@@ -262,7 +266,9 @@ mod tests {
     fn removing_non_pending_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let error = run_remove(&project, "task-001").unwrap_err();
@@ -320,9 +326,16 @@ mod tests {
     fn removing_task_with_dependents_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Dep", "", vec![], None, None).unwrap();
+        store.add_task("Dep", "", vec![], None, None, None).unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
+            .add_task(
+                "Dependent",
+                "",
+                vec!["task-001".to_owned()],
+                None,
+                None,
+                None,
+            )
             .unwrap();
 
         let error = run_remove(&project, "task-001").unwrap_err();
@@ -344,7 +357,9 @@ mod tests {
     fn removing_blocked_task_returns_not_pending() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.block_task("task-001", "waiting").unwrap();
 
         let error = run_remove(&project, "task-001").unwrap_err();
@@ -356,7 +371,9 @@ mod tests {
     fn removing_done_task_returns_not_pending() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();

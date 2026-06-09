@@ -53,6 +53,8 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_machine: Option<Vec<TaskPhaseConfig>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked_at: Option<String>,
 }
 
@@ -197,6 +199,7 @@ impl TaskStore {
         dependencies: Vec<String>,
         phase_override: Option<&str>,
         state_machine: Option<Vec<TaskPhaseConfig>>,
+        workflow: Option<String>,
     ) -> Result<Task, StoreError> {
         let next_num = self
             .tasks_file
@@ -261,6 +264,7 @@ impl TaskStore {
             }],
             created_at,
             state_machine,
+            workflow,
             locked_at: None,
         };
 
@@ -678,7 +682,9 @@ mod tests {
     fn task_with_state(state: &str) -> Task {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        let mut task = store.add_task("Task", "", vec![], None, None).unwrap();
+        let mut task = store
+            .add_task("Task", "", vec![], None, None, None)
+            .unwrap();
         task.state = state.to_owned();
         task
     }
@@ -720,7 +726,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("First task", "Description", vec![], None, None)
+            .add_task("First task", "Description", vec![], None, None, None)
             .unwrap();
 
         assert_eq!(task.id, "task-001");
@@ -743,7 +749,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("First task", "", vec![], Some("enriching"), None)
+            .add_task("First task", "", vec![], Some("enriching"), None, None)
             .unwrap();
 
         assert_eq!(task.state, "enriching");
@@ -758,7 +764,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let error = store
-            .add_task("First task", "", vec![], Some("reviewing"), None)
+            .add_task("First task", "", vec![], Some("reviewing"), None, None)
             .unwrap_err();
 
         match error {
@@ -774,9 +780,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        let first = store.add_task("First", "", vec![], None, None).unwrap();
-        let second = store.add_task("Second", "", vec![], None, None).unwrap();
-        let third = store.add_task("Third", "", vec![], None, None).unwrap();
+        let first = store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
+        let second = store
+            .add_task("Second", "", vec![], None, None, None)
+            .unwrap();
+        let third = store
+            .add_task("Third", "", vec![], None, None, None)
+            .unwrap();
 
         assert_eq!(first.id, "task-001");
         assert_eq!(second.id, "task-002");
@@ -788,7 +800,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -804,7 +818,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -817,7 +833,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.next_phase("task-001").unwrap_err();
@@ -829,7 +847,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-001", "provided reason").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -844,7 +864,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -857,7 +879,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
 
         let (retry_count, max_retries) = store.retry_task("task-001", "try again").unwrap();
@@ -878,7 +902,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("Done", "", vec![], None, None).unwrap();
+        store
+            .add_task("Done", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before_done = store.get_task("task-001").unwrap().clone();
@@ -887,7 +913,9 @@ mod tests {
         assert!(matches!(error, StoreError::AlreadyTerminal));
         assert_eq!(store.get_task("task-001").unwrap(), &before_done);
 
-        store.add_task("Failed", "", vec![], None, None).unwrap();
+        store
+            .add_task("Failed", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-002", "failed").unwrap();
         let before_failed = store.get_task("task-002").unwrap().clone();
 
@@ -901,7 +929,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
@@ -925,7 +955,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-001", "failed").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -949,10 +981,17 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         store
-            .add_task("Dependency", "", vec![], None, None)
+            .add_task("Dependency", "", vec![], None, None, None)
             .unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
+            .add_task(
+                "Dependent",
+                "",
+                vec!["task-001".to_owned()],
+                None,
+                None,
+                None,
+            )
             .unwrap();
 
         let error = store.next_phase("task-002").unwrap_err();
@@ -974,10 +1013,17 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         store
-            .add_task("Dependency", "", vec![], None, None)
+            .add_task("Dependency", "", vec![], None, None, None)
             .unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
+            .add_task(
+                "Dependent",
+                "",
+                vec!["task-001".to_owned()],
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -993,10 +1039,17 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         store
-            .add_task("Dependency", "", vec![], None, None)
+            .add_task("Dependency", "", vec![], None, None, None)
             .unwrap();
         store
-            .add_task("Dependent", "", vec!["task-001".to_owned()], None, None)
+            .add_task(
+                "Dependent",
+                "",
+                vec!["task-001".to_owned()],
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store.fail_task("task-001", "dependency failed").unwrap();
 
@@ -1009,7 +1062,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.block_task("task-001", "waiting on api").unwrap();
         let task = store.get_task("task-001").unwrap();
 
@@ -1028,7 +1083,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
 
@@ -1041,7 +1098,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-001", "failed").unwrap();
 
         let error = store.block_task("task-001", "reason").unwrap_err();
@@ -1053,7 +1112,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.block_task("task-001", "first reason").unwrap();
 
         let error = store.block_task("task-001", "second reason").unwrap_err();
@@ -1074,7 +1135,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
         store.unblock_task("task-001").unwrap();
@@ -1094,7 +1157,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         let error = store.unblock_task("task-001").unwrap_err();
         assert!(matches!(error, StoreError::NotBlocked));
@@ -1114,8 +1179,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
-        store.add_task("Second", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Second", "", vec![], None, None, None)
+            .unwrap();
 
         store.remove_task("task-001").unwrap();
 
@@ -1147,7 +1216,9 @@ mod tests {
         {
             let temp_dir = TempDir::new().unwrap();
             let mut store = test_store(&temp_dir);
-            store.add_task("First", "", vec![], None, None).unwrap();
+            store
+                .add_task("First", "", vec![], None, None, None)
+                .unwrap();
             make_non_pending(&mut store);
             let before = store.get_task("task-001").unwrap().clone();
 
@@ -1193,9 +1264,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
         store
-            .add_task("Second", "", vec!["task-001".to_owned()], None, None)
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Second", "", vec!["task-001".to_owned()], None, None, None)
             .unwrap();
 
         let error = store.remove_task("task-001").unwrap_err();
@@ -1217,7 +1290,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
         let value: Value = serde_json::from_str(&contents).unwrap();
@@ -1230,7 +1305,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("Backfilled", "", vec![], Some("enriching"), None)
+            .add_task("Backfilled", "", vec![], Some("enriching"), None, None)
             .unwrap();
 
         assert_eq!(task.state, "enriching");
@@ -1246,7 +1321,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let task = store
-            .add_task("Already done", "", vec![], Some("done"), None)
+            .add_task("Already done", "", vec![], Some("done"), None, None)
             .unwrap();
 
         assert_eq!(task.state, "done");
@@ -1259,7 +1334,7 @@ mod tests {
         let mut store = test_store(&temp_dir);
 
         let error = store
-            .add_task("Bad phase", "", vec![], Some("nonexistent"), None)
+            .add_task("Bad phase", "", vec![], Some("nonexistent"), None, None)
             .unwrap_err();
 
         assert!(matches!(
@@ -1283,6 +1358,7 @@ mod tests {
                 vec![],
                 None,
                 Some(state_machine.clone()),
+                None,
             )
             .unwrap();
 
@@ -1307,6 +1383,7 @@ mod tests {
                 vec![],
                 None,
                 Some(custom_state_machine()),
+                None,
             )
             .unwrap();
 
@@ -1325,7 +1402,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
         store
-            .add_task("Fails", "", vec![], None, Some(custom_state_machine()))
+            .add_task(
+                "Fails",
+                "",
+                vec![],
+                None,
+                Some(custom_state_machine()),
+                None,
+            )
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.fail_task("task-001", "failed review").unwrap();
@@ -1334,7 +1418,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
         store
-            .add_task("Blocks", "", vec![], None, Some(custom_state_machine()))
+            .add_task(
+                "Blocks",
+                "",
+                vec![],
+                None,
+                Some(custom_state_machine()),
+                None,
+            )
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.block_task("task-001", "waiting").unwrap();
@@ -1345,7 +1436,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
         store
-            .add_task("Retries", "", vec![], None, Some(custom_state_machine()))
+            .add_task(
+                "Retries",
+                "",
+                vec![],
+                None,
+                Some(custom_state_machine()),
+                None,
+            )
             .unwrap();
         store.next_phase("task-001").unwrap();
         store.retry_task("task-001", "redo").unwrap();
@@ -1399,12 +1497,20 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
 
-        store.add_task("First", "", vec![], None, None).unwrap();
-        store.add_task("Second", "", vec![], None, None).unwrap();
-        store.add_task("Third", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Second", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Third", "", vec![], None, None, None)
+            .unwrap();
         store.remove_task("task-002").unwrap();
 
-        let task = store.add_task("Fourth", "", vec![], None, None).unwrap();
+        let task = store
+            .add_task("Fourth", "", vec![], None, None, None)
+            .unwrap();
         assert_eq!(task.id, "task-004");
     }
 
@@ -1412,7 +1518,9 @@ mod tests {
     fn lock_unlock_round_trip_persists_to_disk() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         store.lock_task("task-001").unwrap();
         let task = store.get_task("task-001").unwrap();
@@ -1437,7 +1545,9 @@ mod tests {
     fn lock_task_on_already_locked_refreshes_timestamp() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         store.lock_task("task-001").unwrap();
         let ts1 = store
@@ -1462,7 +1572,9 @@ mod tests {
     fn unlock_task_on_not_locked_is_noop_success() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_none());
 
         store.unlock_task("task-001").unwrap();
@@ -1491,7 +1603,9 @@ mod tests {
     fn next_phase_clears_lock() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.lock_task("task-001").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_some());
 
@@ -1503,7 +1617,9 @@ mod tests {
     fn fail_task_clears_lock() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.lock_task("task-001").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_some());
 
@@ -1515,7 +1631,9 @@ mod tests {
     fn block_task_clears_lock() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.lock_task("task-001").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_some());
 
@@ -1527,7 +1645,9 @@ mod tests {
     fn retry_task_clears_lock() {
         let temp_dir = TempDir::new().unwrap();
         let mut store = test_store(&temp_dir);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.lock_task("task-001").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_some());

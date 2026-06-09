@@ -167,7 +167,9 @@ mod tests {
     fn successful_lock_persists_and_prints_output() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
 
         let (result, output) = capture_output(|| run_lock(&project, "task-001"));
         result.unwrap();

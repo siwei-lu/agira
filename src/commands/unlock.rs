@@ -167,7 +167,9 @@ mod tests {
     fn successful_unlock_clears_lock_and_prints_output() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         store.lock_task("task-001").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_some());
 
@@ -184,7 +186,9 @@ mod tests {
     fn unlock_on_not_locked_task_is_noop_success() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("First", "", vec![], None, None).unwrap();
+        store
+            .add_task("First", "", vec![], None, None, None)
+            .unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_none());
 
         let (result, output) = capture_output(|| run_unlock(&project, "task-001"));

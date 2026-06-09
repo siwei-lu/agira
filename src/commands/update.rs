@@ -244,7 +244,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Original title", "", vec![], None, None)
+            .add_task("Original title", "", vec![], None, None, None)
             .unwrap();
 
         let (result, output) = capture_output(|| {
@@ -270,7 +270,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Task", "original desc", vec![], None, None)
+            .add_task("Task", "original desc", vec![], None, None, None)
             .unwrap();
 
         run_update(
@@ -292,10 +292,14 @@ mod tests {
     fn update_depends_on_replaces_list() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Dep A", "", vec![], None, None).unwrap();
-        store.add_task("Dep B", "", vec![], None, None).unwrap();
         store
-            .add_task("Subject", "", vec!["task-001".to_owned()], None, None)
+            .add_task("Dep A", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Dep B", "", vec![], None, None, None)
+            .unwrap();
+        store
+            .add_task("Subject", "", vec!["task-001".to_owned()], None, None, None)
             .unwrap();
 
         run_update(
@@ -320,7 +324,9 @@ mod tests {
     fn update_depends_on_unknown_dep_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", vec![], None, None).unwrap();
+        store
+            .add_task("Task", "", vec![], None, None, None)
+            .unwrap();
 
         let error = run_update(
             &project,
@@ -343,7 +349,9 @@ mod tests {
     fn update_done_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", vec![], None, None).unwrap();
+        store
+            .add_task("Task", "", vec![], None, None, None)
+            .unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
         store.next_phase("task-001").unwrap();
@@ -374,7 +382,9 @@ mod tests {
     fn update_failed_task_returns_error() {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
-        store.add_task("Task", "", vec![], None, None).unwrap();
+        store
+            .add_task("Task", "", vec![], None, None, None)
+            .unwrap();
         store.fail_task("task-001", "oops").unwrap();
         let before = store.get_task("task-001").unwrap().clone();
 
@@ -404,7 +414,7 @@ mod tests {
         let (temp_dir, project, config) = test_project_with_config();
         let mut store = test_store(&temp_dir, &config);
         store
-            .add_task("Old title", "old desc", vec![], None, None)
+            .add_task("Old title", "old desc", vec![], None, None, None)
             .unwrap();
 
         run_update(
