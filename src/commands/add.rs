@@ -65,7 +65,7 @@ pub fn run_add(
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    if config.phases.is_empty() {
+    if config.phases().is_empty() {
         return Err(AddError::InvalidConfig {
             path: config_path,
             reason: "phases must not be empty".to_owned(),
@@ -219,7 +219,7 @@ fn apply_duties(
             });
         }
 
-        if config.phases.iter().any(|p| p.name == phase_name) {
+        if config.phases().iter().any(|p| p.name == phase_name) {
             return Err(AddError::InvalidDuties {
                 reason: format!(
                     "cannot set duty on existing phase '{phase_name}'; use 'agira phase update --set-duty'"
@@ -338,9 +338,9 @@ mod tests {
     };
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -357,9 +357,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_project(temp_dir: &TempDir) -> Project {
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(task.id, "task-001");
         assert_eq!(task.title, "Implement login endpoint");
         assert_eq!(task.description, "");
-        assert_eq!(task.state, config.phases[0].name);
+        assert_eq!(task.state, config.phases()[0].name);
         assert!(task.dependencies.is_empty());
         assert_eq!(task.retry_count, 0);
         assert_eq!(task.max_retries, config.max_retries);
@@ -824,7 +824,7 @@ mod tests {
         assert!(matches!(error, AddError::ConfigLoad { .. }));
 
         let mut config = test_config();
-        config.phases.clear();
+        config.phases_mut().clear();
         write_config(&project, &config);
         run_add(
             &project,

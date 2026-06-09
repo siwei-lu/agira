@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -11,6 +11,7 @@ use crate::core::global_config::GlobalConfig;
 
 pub const INITIAL_PHASE_NAME: &str = "pending";
 pub const TERMINAL_PHASE_NAME: &str = "done";
+pub const DEFAULT_WORKFLOW_NAME: &str = "default";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhaseConfig {
@@ -22,9 +23,15 @@ pub struct PhaseConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowDef {
+    pub phases: Vec<PhaseConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub stack: String,
-    pub phases: Vec<PhaseConfig>,
+    pub workflows: HashMap<String, WorkflowDef>,
+    pub default_workflow: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     #[serde(default = "default_max_retries")]
@@ -32,8 +39,62 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the phases of the default workflow.
+    pub fn phases(&self) -> &[PhaseConfig] {
+        self.workflows
+            .get(&self.default_workflow)
+            .map(|w| w.phases.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Returns the phases of the named workflow.
+    // Used in tests and available for future multi-workflow feature callers.
+    #[allow(dead_code)]
+    pub fn phases_in(&self, workflow: &str) -> Option<&[PhaseConfig]> {
+        self.workflows.get(workflow).map(|w| w.phases.as_slice())
+    }
+
     pub fn terminal_phase(&self) -> Option<&str> {
-        self.phases.last().map(|p| p.name.as_str())
+        self.phases().last().map(|p| p.name.as_str())
+    }
+
+    /// Returns the terminal phase name of the named workflow.
+    // Available for future multi-workflow feature callers.
+    #[allow(dead_code)]
+    pub fn terminal_phase_in(&self, workflow: &str) -> Option<&str> {
+        self.phases_in(workflow)
+            .and_then(|phases| phases.last())
+            .map(|p| p.name.as_str())
+    }
+
+    /// Returns a mutable reference to the phases of the default workflow.
+    /// Panics if the default workflow is not found (should never happen after load).
+    // Used in tests to mutate the phase list.
+    #[allow(dead_code)]
+    pub fn phases_mut(&mut self) -> &mut Vec<PhaseConfig> {
+        &mut self
+            .workflows
+            .get_mut(&self.default_workflow)
+            .expect("default_workflow must exist in workflows")
+            .phases
+    }
+
+    /// Convenience constructor: creates a Config with a single default workflow.
+    pub fn new_single_workflow(
+        stack: impl Into<String>,
+        phases: Vec<PhaseConfig>,
+        default_model: Option<String>,
+        max_retries: u32,
+    ) -> Self {
+        let mut workflows = HashMap::new();
+        workflows.insert(DEFAULT_WORKFLOW_NAME.to_owned(), WorkflowDef { phases });
+        Config {
+            stack: stack.into(),
+            workflows,
+            default_workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            default_model,
+            max_retries,
+        }
     }
 }
 
@@ -67,10 +128,15 @@ pub enum ConfigError {
 #[derive(Deserialize)]
 struct ProjectConfigFile {
     stack: String,
-    // New format
+    // New multi-workflow format
+    #[serde(default)]
+    workflows: Option<HashMap<String, WorkflowDef>>,
+    #[serde(default)]
+    default_workflow: Option<String>,
+    // Single-workflow format (legacy v2)
     #[serde(default)]
     phases: Option<Vec<PhaseConfig>>,
-    // Old format (backward compat)
+    // Old format (backward compat v1)
     #[serde(default)]
     state_machine: Option<Vec<String>>,
     #[serde(default)]
@@ -112,23 +178,59 @@ pub fn load_project_config(
         })?;
 
     let default_model = project_config.default_model;
-    let phases = match project_config.phases {
-        Some(phases) => phases,
-        None => migrate_state_machine(
-            project_config.state_machine.unwrap_or_default(),
-            project_config.models.as_ref(),
-            default_model.as_deref(),
-        ),
+
+    // Precedence: workflows > phases > state_machine
+    let (workflows, default_workflow) = if let Some(workflows) = project_config.workflows {
+        let default_workflow = project_config
+            .default_workflow
+            .unwrap_or_else(|| DEFAULT_WORKFLOW_NAME.to_owned());
+        let workflows: HashMap<String, WorkflowDef> = workflows
+            .into_iter()
+            .map(|(name, def)| {
+                let phases = normalize_mandatory_phases(def.phases);
+                (name, WorkflowDef { phases })
+            })
+            .collect();
+        (workflows, default_workflow)
+    } else {
+        // Legacy single-workflow: phases or state_machine
+        let phases = match project_config.phases {
+            Some(phases) => phases,
+            None => migrate_state_machine(
+                project_config.state_machine.unwrap_or_default(),
+                project_config.models.as_ref(),
+                default_model.as_deref(),
+            ),
+        };
+        let phases = normalize_mandatory_phases(phases);
+        let default_workflow = DEFAULT_WORKFLOW_NAME.to_owned();
+        let mut workflows = HashMap::new();
+        workflows.insert(default_workflow.clone(), WorkflowDef { phases });
+        (workflows, default_workflow)
     };
-    let phases = normalize_mandatory_phases(phases);
-    validate_terminal_phase(&phases).map_err(|reason| ConfigError::Invalid {
+
+    // Validate default_workflow names an existing key
+    if !workflows.contains_key(&default_workflow) {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            reason: format!(
+                "default_workflow '{}' not found in workflows map",
+                default_workflow
+            ),
+        });
+    }
+
+    // Validate terminal phase for the default workflow
+    let default_phases = &workflows[&default_workflow].phases;
+    validate_terminal_phase(default_phases).map_err(|reason| ConfigError::Invalid {
         path: path.to_path_buf(),
         reason,
     })?;
 
     Ok(Config {
         stack: project_config.stack,
-        phases,
+        workflows,
+        default_workflow,
         default_model,
         max_retries: project_config
             .max_retries
@@ -242,6 +344,24 @@ mod tests {
         }
     }
 
+    /// Build a `Config` with a single default workflow from a flat phases list.
+    fn config_with_phases(
+        stack: &str,
+        phases: Vec<PhaseConfig>,
+        default_model: Option<String>,
+        max_retries: u32,
+    ) -> Config {
+        let mut workflows = HashMap::new();
+        workflows.insert(DEFAULT_WORKFLOW_NAME.to_owned(), WorkflowDef { phases });
+        Config {
+            stack: stack.to_owned(),
+            workflows,
+            default_workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            default_model,
+            max_retries,
+        }
+    }
+
     fn write_new_format_config(path: &Path, fields: &str) {
         fs::write(
             path,
@@ -345,15 +465,15 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        assert_eq!(config.phases.len(), 4);
-        assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, None);
-        assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, Some("opus".to_owned()));
-        assert_eq!(config.phases[2].name, "in_progress");
-        assert_eq!(config.phases[2].model, Some("sonnet".to_owned()));
-        assert_eq!(config.phases[3].name, "done");
-        assert_eq!(config.phases[3].model, None);
+        assert_eq!(config.phases().len(), 4);
+        assert_eq!(config.phases()[0].name, "pending");
+        assert_eq!(config.phases()[0].model, None);
+        assert_eq!(config.phases()[1].name, "enriching");
+        assert_eq!(config.phases()[1].model, Some("opus".to_owned()));
+        assert_eq!(config.phases()[2].name, "in_progress");
+        assert_eq!(config.phases()[2].model, Some("sonnet".to_owned()));
+        assert_eq!(config.phases()[3].name, "done");
+        assert_eq!(config.phases()[3].model, None);
     }
 
     #[test]
@@ -380,11 +500,11 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config.phases().iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["pending", "enriching", "review", "done"]);
         // Mandatory phases always have no model regardless of what the JSON says.
-        assert_eq!(config.phases[0].model, None);
-        assert_eq!(config.phases[3].model, None);
+        assert_eq!(config.phases()[0].model, None);
+        assert_eq!(config.phases()[3].model, None);
     }
 
     #[test]
@@ -395,13 +515,13 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        assert_eq!(config.phases.len(), 3);
-        assert_eq!(config.phases[0].name, "pending");
-        assert_eq!(config.phases[0].model, None);
-        assert_eq!(config.phases[1].name, "enriching");
-        assert_eq!(config.phases[1].model, Some("sonnet".to_owned()));
-        assert_eq!(config.phases[2].name, "done");
-        assert_eq!(config.phases[2].model, None);
+        assert_eq!(config.phases().len(), 3);
+        assert_eq!(config.phases()[0].name, "pending");
+        assert_eq!(config.phases()[0].model, None);
+        assert_eq!(config.phases()[1].name, "enriching");
+        assert_eq!(config.phases()[1].model, Some("sonnet".to_owned()));
+        assert_eq!(config.phases()[2].name, "done");
+        assert_eq!(config.phases()[2].model, None);
     }
 
     #[test]
@@ -421,7 +541,7 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config.phases().iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["pending", "enriching", "verifying", "done"]);
     }
 
@@ -453,7 +573,7 @@ mod tests {
 
         let legacy_config = load_project_config(&legacy_path, &global_config(3)).unwrap();
         assert_eq!(legacy_config.stack, "rust");
-        assert_eq!(legacy_config.phases[1].name, "in_progress");
+        assert_eq!(legacy_config.phases()[1].name, "in_progress");
         assert_eq!(legacy_config.max_retries, 3);
     }
 
@@ -499,7 +619,7 @@ mod tests {
 
         assert_eq!(config.default_model, Some("opus".to_owned()));
         let enriching = config
-            .phases
+            .phases()
             .iter()
             .find(|p| p.name == "enriching")
             .unwrap();
@@ -526,17 +646,17 @@ mod tests {
 
         let config = load_project_config(&path, &global_config(3)).unwrap();
 
-        let names: Vec<&str> = config.phases.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config.phases().iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
             ["pending", "enriching", "triage", "in_progress", "done"]
         );
         // model-less middle phase preserves None
-        let triage = config.phases.iter().find(|p| p.name == "triage").unwrap();
+        let triage = config.phases().iter().find(|p| p.name == "triage").unwrap();
         assert_eq!(triage.model, None);
         // model-bearing phases are unchanged
         let enriching = config
-            .phases
+            .phases()
             .iter()
             .find(|p| p.name == "enriching")
             .unwrap();
@@ -545,9 +665,9 @@ mod tests {
 
     #[test]
     fn terminal_phase_returns_last_phase() {
-        let config = Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        let config = config_with_phases(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "enriching".to_owned(),
                     model: Some("opus".to_owned()),
@@ -559,10 +679,183 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        };
+            None,
+            3,
+        );
 
         assert_eq!(config.terminal_phase(), Some("done"));
+    }
+
+    // ---- New tests for workflows map and default_workflow (TDD: written before implementation) ----
+
+    #[test]
+    fn legacy_phases_config_loads_as_default_workflow() {
+        // A legacy config with a top-level `phases` array (no `workflows` map) must be
+        // auto-migrated by wrapping the phases under `workflows["default"]` and setting
+        // `default_workflow = "default"`.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "phases": [
+    {"name":"enriching","model":"opus"},
+    {"name":"in_progress","model":"sonnet"}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let config = load_project_config(&path, &global_config(3)).unwrap();
+
+        assert_eq!(config.default_workflow, DEFAULT_WORKFLOW_NAME);
+        assert!(config.workflows.contains_key(DEFAULT_WORKFLOW_NAME));
+        let phases = config.phases();
+        // normalize_mandatory_phases should have run: pending/done inserted
+        assert_eq!(phases[0].name, "pending");
+        assert_eq!(phases[1].name, "enriching");
+        assert_eq!(phases[2].name, "in_progress");
+        assert_eq!(phases[3].name, "done");
+    }
+
+    #[test]
+    fn multi_workflow_config_round_trips() {
+        // A new-format config with multiple named workflows must serialize and
+        // deserialize without data loss.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "default_workflow": "fast",
+  "workflows": {
+    "fast": {
+      "phases": [
+        {"name":"pending"},
+        {"name":"in_progress","model":"sonnet"},
+        {"name":"done"}
+      ]
+    },
+    "full": {
+      "phases": [
+        {"name":"pending"},
+        {"name":"enriching","model":"opus"},
+        {"name":"in_progress","model":"sonnet"},
+        {"name":"verifying","model":"haiku"},
+        {"name":"done"}
+      ]
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let config = load_project_config(&path, &global_config(3)).unwrap();
+
+        assert_eq!(config.default_workflow, "fast");
+        assert_eq!(config.workflows.len(), 2);
+
+        // Default workflow phases
+        let fast_phases = config.phases();
+        assert_eq!(fast_phases[0].name, "pending");
+        assert_eq!(fast_phases[1].name, "in_progress");
+        assert_eq!(fast_phases[2].name, "done");
+
+        // Non-default workflow accessible via phases_in
+        let full_phases = config.phases_in("full").unwrap();
+        assert_eq!(full_phases.len(), 5);
+        assert_eq!(full_phases[1].name, "enriching");
+        assert_eq!(full_phases[3].name, "verifying");
+
+        // Round-trip: serialize then deserialize
+        let serialized = serde_json::to_string_pretty(&config).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert!(value.get("workflows").is_some());
+        assert_eq!(
+            value.get("default_workflow").and_then(|v| v.as_str()),
+            Some("fast")
+        );
+        assert!(value.get("phases").is_none()); // new format never has top-level phases
+
+        // Write and re-read
+        fs::write(&path, &serialized).unwrap();
+        let reloaded = load_project_config(&path, &global_config(3)).unwrap();
+        assert_eq!(reloaded.default_workflow, config.default_workflow);
+        assert_eq!(reloaded.workflows.len(), config.workflows.len());
+        assert_eq!(reloaded.phases(), config.phases());
+    }
+
+    #[test]
+    fn each_workflow_independently_gets_pending_and_done() {
+        // normalize_mandatory_phases must run per-workflow. Each workflow that omits
+        // pending/done must have them inserted at head and tail independently.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "default_workflow": "default",
+  "workflows": {
+    "default": {
+      "phases": [
+        {"name":"enriching","model":"opus"},
+        {"name":"in_progress","model":"sonnet"}
+      ]
+    },
+    "minimal": {
+      "phases": [
+        {"name":"in_progress","model":"sonnet"}
+      ]
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let config = load_project_config(&path, &global_config(3)).unwrap();
+
+        let default_phases = config.phases();
+        let names_default: Vec<&str> = default_phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names_default,
+            ["pending", "enriching", "in_progress", "done"]
+        );
+
+        let minimal_phases = config.phases_in("minimal").unwrap();
+        let names_minimal: Vec<&str> = minimal_phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names_minimal, ["pending", "in_progress", "done"]);
+    }
+
+    #[test]
+    fn invalid_default_workflow_name_errors() {
+        // default_workflow must name an existing key in workflows.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "stack": "rust",
+  "default_workflow": "nonexistent",
+  "workflows": {
+    "default": {
+      "phases": [
+        {"name":"pending"},
+        {"name":"in_progress","model":"sonnet"},
+        {"name":"done"}
+      ]
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let err = load_project_config(&path, &global_config(3)).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid { ref reason, .. } if reason.contains("nonexistent")),
+            "expected Invalid error about 'nonexistent', got: {err}"
+        );
     }
 }

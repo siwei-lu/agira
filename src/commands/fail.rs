@@ -221,9 +221,9 @@ mod tests {
     };
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -245,9 +245,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_project(temp_dir: &TempDir) -> Project {
@@ -508,7 +508,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let project = test_project(&temp_dir);
         let mut config = test_config();
-        config.phases.clear();
+        config.phases_mut().clear();
         write_config(&project, &config);
 
         let error = run_fail(&project, "task-001", Some("x")).unwrap_err();

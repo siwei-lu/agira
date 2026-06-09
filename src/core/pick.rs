@@ -74,7 +74,7 @@ fn is_lock_live(locked_at: Option<&str>, now: DateTime<Utc>) -> bool {
 }
 
 fn phase_index(phase: &str, config: &Config) -> Option<usize> {
-    config.phases.iter().position(|p| p.name == phase)
+    config.phases().iter().position(|p| p.name == phase)
 }
 
 fn task_phase_names<'a>(task: &'a Task, config: &'a Config) -> Vec<&'a str> {
@@ -83,7 +83,7 @@ fn task_phase_names<'a>(task: &'a Task, config: &'a Config) -> Vec<&'a str> {
         .map(|machine| machine.iter().map(|phase| phase.name.as_str()).collect())
         .unwrap_or_else(|| {
             config
-                .phases
+                .phases()
                 .iter()
                 .map(|phase| phase.name.as_str())
                 .collect()
@@ -234,7 +234,7 @@ fn effective_task_model<'a>(task: &'a Task, phase: &str, config: &'a Config) -> 
     }
 
     config
-        .phases
+        .phases()
         .iter()
         .find(|candidate| candidate.name == phase)
         .and_then(|phase_cfg| effective_phase_model(phase_cfg, config))
@@ -248,7 +248,7 @@ fn effective_task_duty<'a>(task: &'a Task, phase: &str, config: &'a Config) -> O
             }
             // task-level phase has no duty; fall back to global config phase of same name
             return config
-                .phases
+                .phases()
                 .iter()
                 .find(|p| p.name == phase)
                 .and_then(|p| p.duty.as_deref())
@@ -258,7 +258,7 @@ fn effective_task_duty<'a>(task: &'a Task, phase: &str, config: &'a Config) -> O
     }
 
     config
-        .phases
+        .phases()
         .iter()
         .find(|p| p.name == phase)
         .and_then(|p| p.duty.as_deref())
@@ -348,9 +348,9 @@ mod tests {
     use crate::core::tasks::{TaskPhaseConfig, TaskStore};
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -377,9 +377,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_store(temp_dir: &TempDir, config: &Config) -> TaskStore {
@@ -494,7 +494,7 @@ mod tests {
     fn select_skips_blocked_state_even_if_configured_as_phase() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
-        config.phases.insert(
+        config.phases_mut().insert(
             1,
             PhaseConfig {
                 name: "blocked".to_owned(),
@@ -521,7 +521,7 @@ mod tests {
     fn select_skips_failed_state_even_if_configured_as_phase() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
-        config.phases.insert(
+        config.phases_mut().insert(
             1,
             PhaseConfig {
                 name: "failed".to_owned(),
@@ -626,7 +626,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "enriching")
             .unwrap()
@@ -653,7 +653,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "in_progress")
             .unwrap()
@@ -741,7 +741,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "enriching")
             .unwrap()
@@ -767,7 +767,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "enriching")
             .unwrap()
@@ -873,7 +873,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "in_progress")
             .unwrap()
@@ -1054,7 +1054,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "in_progress")
             .unwrap()
@@ -1083,9 +1083,9 @@ mod tests {
     #[test]
     fn enriching_absent_branch_warns_after_pending_only() {
         let temp_dir = TempDir::new().unwrap();
-        let config = Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        let config = Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -1102,9 +1102,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        };
+            None,
+            3,
+        );
         let mut store = test_store(&temp_dir, &config);
 
         store
@@ -1184,7 +1184,7 @@ mod tests {
         let mut config = test_config();
         config.default_model = Some("codex".to_owned());
         // Remove in_progress so the task lands in an unknown phase with no model.
-        config.phases.retain(|p| p.name != "in_progress");
+        config.phases_mut().retain(|p| p.name != "in_progress");
         let mut store = test_store(&temp_dir, &test_config());
 
         store
@@ -1208,9 +1208,9 @@ mod tests {
     fn model_less_non_mandatory_phase_uses_configured_default_model() {
         let temp_dir = TempDir::new().unwrap();
         // Build a config with a model-less middle phase "triage".
-        let config = Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        let config = Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -1232,9 +1232,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: Some("codex".to_owned()),
-            max_retries: 3,
-        };
+            Some("codex".to_owned()),
+            3,
+        );
         let mut store = test_store(&temp_dir, &config);
 
         store
@@ -1258,9 +1258,9 @@ mod tests {
     #[test]
     fn model_less_non_mandatory_phase_without_default_stays_model_less() {
         let temp_dir = TempDir::new().unwrap();
-        let config = Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        let config = Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -1277,9 +1277,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        };
+            None,
+            3,
+        );
         let mut store = test_store(&temp_dir, &config);
 
         store
@@ -1495,7 +1495,7 @@ mod tests {
         for model in variants {
             let mut config = test_config();
             config
-                .phases
+                .phases_mut()
                 .iter_mut()
                 .find(|phase| phase.name == "enriching")
                 .unwrap()
@@ -1578,7 +1578,7 @@ mod tests {
         let mut config = test_config();
         let duty = "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance.";
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "verifying")
             .unwrap()
@@ -1659,7 +1659,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut config = test_config();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|p| p.name == "enriching")
             .unwrap()

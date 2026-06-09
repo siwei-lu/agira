@@ -82,7 +82,7 @@ fn remove_task_flow(
 
 fn pending_phase(config: &Config, path: PathBuf) -> Result<String, RemoveError> {
     config
-        .phases
+        .phases()
         .first()
         .map(|phase| phase.name.clone())
         .ok_or_else(|| RemoveError::InvalidConfig {
@@ -158,9 +158,9 @@ mod tests {
     };
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -182,9 +182,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_project(temp_dir: &TempDir) -> Project {
@@ -309,7 +309,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("config.json");
         let mut config = test_config();
-        config.phases.clear();
+        config.phases_mut().clear();
 
         let error = pending_phase(&config, path).unwrap_err();
 

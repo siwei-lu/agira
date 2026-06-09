@@ -265,7 +265,7 @@ fn valid_hook_events(config: &Config) -> Vec<String> {
     ["*", TASK_ADDED_EVENT, ALL_TASKS_DONE_EVENT, "failed"]
         .into_iter()
         .map(str::to_owned)
-        .chain(config.phases.iter().map(|phase| phase.name.clone()))
+        .chain(config.phases().iter().map(|phase| phase.name.clone()))
         .collect()
 }
 
@@ -341,9 +341,9 @@ mod tests {
     use super::*;
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -370,9 +370,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn write_config(project: &Project) {

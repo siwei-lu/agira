@@ -140,7 +140,7 @@ fn machine_names(task: &Task, global: &[String]) -> Vec<String> {
 impl TaskStore {
     pub fn new(state_dir: impl AsRef<Path>, config: &Config) -> Result<Self, StoreError> {
         let tasks_path = state_dir.as_ref().join("tasks.json");
-        let state_machine: Vec<String> = config.phases.iter().map(|p| p.name.clone()).collect();
+        let state_machine: Vec<String> = config.phases().iter().map(|p| p.name.clone()).collect();
         let terminal_phase =
             state_machine
                 .last()
@@ -627,9 +627,9 @@ mod tests {
     use crate::core::config::PhaseConfig;
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -646,9 +646,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_store(temp_dir: &TempDir) -> TaskStore {

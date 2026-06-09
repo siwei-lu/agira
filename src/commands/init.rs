@@ -74,12 +74,12 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
         });
     }
 
-    let config = Config {
-        stack: stack.to_owned(),
-        phases: parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
-        default_model: None,
-        max_retries: project.global_config.default_max_retries,
-    };
+    let config = Config::new_single_workflow(
+        stack,
+        parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
+        None,
+        project.global_config.default_max_retries,
+    );
 
     let config_path = project.state_dir.join("config.json");
     write_config(&config_path, &config)
@@ -188,12 +188,7 @@ fn scan_result_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -
 }
 
 fn config_for_stack(stack: &str, max_retries: u32) -> Config {
-    Config {
-        stack: stack.to_owned(),
-        phases: default_phases(),
-        default_model: None,
-        max_retries,
-    }
+    Config::new_single_workflow(stack, default_phases(), None, max_retries)
 }
 
 fn default_phases() -> Vec<PhaseConfig> {
@@ -690,25 +685,25 @@ mod tests {
             ]
         );
         assert_eq!(result.config.max_retries, 5);
-        assert_eq!(result.config.phases[0].name, "pending");
-        assert_eq!(result.config.phases[0].model, None);
-        assert_eq!(result.config.phases[1].name, "enriching");
-        assert_eq!(result.config.phases[1].model, Some("opus".to_owned()));
-        assert_eq!(result.config.phases.len(), 6);
+        assert_eq!(result.config.phases()[0].name, "pending");
+        assert_eq!(result.config.phases()[0].model, None);
+        assert_eq!(result.config.phases()[1].name, "enriching");
+        assert_eq!(result.config.phases()[1].model, Some("opus".to_owned()));
+        assert_eq!(result.config.phases().len(), 6);
         assert!(
             result
                 .config
-                .phases
+                .phases()
                 .iter()
                 .all(|phase| phase.duty.is_none())
         );
-        assert_eq!(result.config.phases[2].name, "in_progress");
-        assert_eq!(result.config.phases[2].model, Some("sonnet".to_owned()));
-        assert_eq!(result.config.phases[3].name, "accepting");
-        assert_eq!(result.config.phases[3].model, Some("sonnet".to_owned()));
-        assert_eq!(result.config.phases[4].name, "verifying");
-        assert_eq!(result.config.phases[4].model, Some("haiku".to_owned()));
-        assert_eq!(result.config.phases[5].name, "done");
+        assert_eq!(result.config.phases()[2].name, "in_progress");
+        assert_eq!(result.config.phases()[2].model, Some("sonnet".to_owned()));
+        assert_eq!(result.config.phases()[3].name, "accepting");
+        assert_eq!(result.config.phases()[3].model, Some("sonnet".to_owned()));
+        assert_eq!(result.config.phases()[4].name, "verifying");
+        assert_eq!(result.config.phases()[4].model, Some("haiku".to_owned()));
+        assert_eq!(result.config.phases()[5].name, "done");
     }
 
     #[test]
@@ -939,7 +934,9 @@ mod tests {
         let value: Value = serde_json::from_str(&contents).unwrap();
 
         assert!(value.get("stack").is_some());
-        assert!(value.get("phases").is_some());
+        assert!(value.get("workflows").is_some());
+        assert!(value.get("default_workflow").is_some());
+        assert!(value.get("phases").is_none()); // new format has no top-level phases
         assert!(value.get("state_machine").is_none());
         assert!(value.get("models").is_none());
         assert!(value.get("verification").is_none());

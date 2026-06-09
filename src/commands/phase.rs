@@ -120,7 +120,7 @@ pub fn run_phase_get(project: &Project) -> Result<(), PhaseGetError> {
         load_project_config(&config_path, &project.global_config).map_err(map_get_config_error)?;
 
     let display: Vec<String> = config
-        .phases
+        .phases()
         .iter()
         .map(|p| match p.model.as_deref() {
             Some(m) => format!("{}:{}", p.name, m),
@@ -213,7 +213,7 @@ fn run_phase_update_inner(
         .map_err(map_update_config_error)?;
 
     if let Some(after) = after {
-        if !config.phases.iter().any(|p| p.name == after) {
+        if !config.phases().iter().any(|p| p.name == after) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: after.to_owned(),
             });
@@ -221,7 +221,7 @@ fn run_phase_update_inner(
     }
 
     if let Some(before) = before {
-        if !config.phases.iter().any(|p| p.name == before) {
+        if !config.phases().iter().any(|p| p.name == before) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: before.to_owned(),
             });
@@ -229,7 +229,11 @@ fn run_phase_update_inner(
     }
 
     if let Some(ref p) = new_phase {
-        if config.phases.iter().any(|existing| existing.name == p.name) {
+        if config
+            .phases()
+            .iter()
+            .any(|existing| existing.name == p.name)
+        {
             return Err(PhaseUpdateError::DuplicatePhase {
                 name: p.name.clone(),
             });
@@ -285,7 +289,7 @@ fn run_phase_update_inner(
                 name: phase_name.clone(),
             });
         }
-        if !config.phases.iter().any(|p| &p.name == phase_name) {
+        if !config.phases().iter().any(|p| &p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.clone(),
             });
@@ -298,7 +302,7 @@ fn run_phase_update_inner(
                 name: phase_name.to_owned(),
             });
         }
-        if !config.phases.iter().any(|p| p.name == phase_name) {
+        if !config.phases().iter().any(|p| p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.to_owned(),
             });
@@ -312,7 +316,7 @@ fn run_phase_update_inner(
                 name: phase_name.clone(),
             });
         }
-        if !config.phases.iter().any(|p| &p.name == phase_name) {
+        if !config.phases().iter().any(|p| &p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.clone(),
             });
@@ -325,14 +329,14 @@ fn run_phase_update_inner(
                 name: phase_name.to_owned(),
             });
         }
-        if !config.phases.iter().any(|p| p.name == phase_name) {
+        if !config.phases().iter().any(|p| p.name == phase_name) {
             return Err(PhaseUpdateError::PhaseNotFound {
                 name: phase_name.to_owned(),
             });
         }
     }
 
-    let mut new_phases = config.phases.clone();
+    let mut new_phases = config.phases().to_vec();
 
     if let Some(remove) = remove {
         new_phases.retain(|p| p.name != remove);
@@ -389,7 +393,7 @@ fn run_phase_update_inner(
     }
 
     validate_updated_phases(&config_path, &new_phases)?;
-    patch_phases(&config_path, &new_phases)?;
+    patch_phases(&config_path, &new_phases, &config.default_workflow)?;
 
     let display: Vec<String> = new_phases
         .iter()
@@ -446,7 +450,11 @@ fn validate_updated_phases(
     })
 }
 
-fn patch_phases(config_path: &Path, new_phases: &[PhaseConfig]) -> Result<(), PhaseUpdateError> {
+fn patch_phases(
+    config_path: &Path,
+    new_phases: &[PhaseConfig],
+    default_workflow: &str,
+) -> Result<(), PhaseUpdateError> {
     let contents =
         fs::read_to_string(config_path).map_err(|source| PhaseUpdateError::ConfigRead {
             path: config_path.to_path_buf(),
@@ -459,11 +467,30 @@ fn patch_phases(config_path: &Path, new_phases: &[PhaseConfig]) -> Result<(), Ph
             source,
         })?;
 
-    value["phases"] = serde_json::json!(new_phases);
-    // Remove old keys if present (migration)
-    if let Some(obj) = value.as_object_mut() {
+    // Patch the correct location depending on format:
+    // - New format: workflows.<default_workflow>.phases
+    // - Legacy format: top-level phases (migrated to new format on write)
+    let has_workflows = value.get("workflows").is_some();
+    if has_workflows {
+        value["workflows"][default_workflow]["phases"] = serde_json::json!(new_phases);
+    } else {
+        // Migrate legacy format to new format
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("phases");
         obj.remove("state_machine");
         obj.remove("models");
+        let mut workflow_phases = serde_json::Map::new();
+        workflow_phases.insert("phases".to_owned(), serde_json::json!(new_phases));
+        let mut workflows = serde_json::Map::new();
+        workflows.insert(
+            default_workflow.to_owned(),
+            serde_json::Value::Object(workflow_phases),
+        );
+        obj.insert("workflows".to_owned(), serde_json::Value::Object(workflows));
+        obj.insert(
+            "default_workflow".to_owned(),
+            serde_json::Value::String(default_workflow.to_owned()),
+        );
     }
 
     let bytes =
@@ -517,9 +544,9 @@ mod tests {
     };
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -541,9 +568,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_project(temp_dir: &TempDir) -> Project {
@@ -577,7 +604,7 @@ mod tests {
     fn loaded_phases(project: &Project) -> Vec<PhaseConfig> {
         let config_path = project.state_dir.join("config.json");
         let config = load_project_config(&config_path, &GlobalConfig::default()).unwrap();
-        config.phases
+        config.phases().to_vec()
     }
 
     #[test]
@@ -958,7 +985,7 @@ mod tests {
     #[test]
     fn clear_duty_unsets_existing_phase_duty() {
         let (_temp_dir, project, mut config) = setup();
-        config.phases[1].duty = Some("Clarify requirements".to_owned());
+        config.phases_mut()[1].duty = Some("Clarify requirements".to_owned());
         write_config(&project, &config);
 
         run_phase_update_inner(
@@ -1233,8 +1260,10 @@ mod tests {
         let updated = fs::read_to_string(&config_path).unwrap();
         let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
 
+        // `workflows` is the only field that should change (phases inside it updated).
+        // All other top-level fields must remain identical.
         for (key, orig_val) in original_value.as_object().unwrap() {
-            if key != "phases" {
+            if key != "workflows" && key != "phases" {
                 assert_eq!(
                     updated_value.get(key),
                     Some(orig_val),

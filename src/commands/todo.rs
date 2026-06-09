@@ -230,9 +230,9 @@ mod tests {
         "Run: agira task todo --artifact \"task accepted\" to advance this task to the next phase.";
 
     fn test_config() -> Config {
-        Config {
-            stack: "rust".to_owned(),
-            phases: vec![
+        Config::new_single_workflow(
+            "rust",
+            vec![
                 PhaseConfig {
                     name: "pending".to_owned(),
                     model: None,
@@ -254,9 +254,9 @@ mod tests {
                     duty: None,
                 },
             ],
-            default_model: None,
-            max_retries: 3,
-        }
+            None,
+            3,
+        )
     }
 
     fn test_project(temp_dir: &TempDir) -> Project {
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn no_artifact_skips_blocked_current_task() {
         let (temp_dir, project, mut config) = setup();
-        config.phases.insert(
+        config.phases_mut().insert(
             1,
             PhaseConfig {
                 name: "blocked".to_owned(),
@@ -420,7 +420,7 @@ mod tests {
     fn no_artifact_dispatch_model_prints_raw_prompt_without_writing_prompt_file() {
         let (temp_dir, project, mut config) = setup();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "enriching")
             .unwrap()
@@ -584,7 +584,7 @@ mod tests {
     fn with_artifact_terminal_next_dispatch_task_prints_raw_prompt_without_writing_prompt_file() {
         let (temp_dir, project, mut config) = setup();
         config
-            .phases
+            .phases_mut()
             .iter_mut()
             .find(|phase| phase.name == "enriching")
             .unwrap()
