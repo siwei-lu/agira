@@ -18,6 +18,7 @@ const NO_TASKS_MESSAGE: &str = "No tasks. Run `agira task add` to get started.";
 const TITLE_LIMIT: usize = 40;
 const LAST_ACTION_LIMIT: usize = 30;
 const STATE_LIMIT: usize = 13;
+const WORKFLOW_LIMIT: usize = 14;
 
 #[derive(Debug, Error)]
 pub enum StatusError {
@@ -235,10 +236,12 @@ fn format_task_detail(task: &Task) -> String {
     };
     let blocked = format_blocked(task);
     let description = format_multiline_value(&task.description, 2);
+    let workflow = task.workflow.as_deref().unwrap_or("-");
 
     writeln!(output, "ID:           {}", task.id).unwrap();
     writeln!(output, "Title:        {}", task.title).unwrap();
     writeln!(output, "State:        {}", task.state).unwrap();
+    writeln!(output, "Workflow:     {workflow}").unwrap();
     writeln!(output, "Created:      {}", task.created_at).unwrap();
     writeln!(
         output,
@@ -312,12 +315,12 @@ fn format_multiline_value(value: &str, indent: usize) -> String {
 fn format_status_table(tasks: &[&Task], terminal_phase: &str) -> String {
     let mut lines = vec![
         format!(
-            "{:<10}  {:<41}  {:<15}  {:>7}  {}",
-            "ID", "Title", "State", "Retries", "Last Action"
+            "{:<10}  {:<41}  {:<15}  {:>7}  {:<15}  {}",
+            "ID", "Title", "State", "Retries", "Workflow", "Last Action"
         ),
         format!(
-            "{:-<10}  {:-<41}  {:-<15}  {:-<7}  {:-<30}",
-            "", "", "", "", ""
+            "{:-<10}  {:-<41}  {:-<15}  {:-<7}  {:-<15}  {:-<30}",
+            "", "", "", "", "", ""
         ),
     ];
 
@@ -349,6 +352,11 @@ fn format_status_row(task: &Task, terminal_phase: &str) -> String {
     let title = format_title(&task.title);
     let state = format_state(&task.state, terminal_phase);
     let retries = format!("{}/{}", task.retry_count, task.max_retries);
+    let workflow = task
+        .workflow
+        .as_deref()
+        .map(|w| truncate_chars(w, WORKFLOW_LIMIT))
+        .unwrap_or_else(|| "-".to_owned());
     let last_action = task
         .history
         .last()
@@ -357,8 +365,8 @@ fn format_status_row(task: &Task, terminal_phase: &str) -> String {
     let last_action = truncate_chars(last_action, LAST_ACTION_LIMIT);
 
     format!(
-        "{:<10}  {:<41}  {:<15}  {:>7}  {}",
-        task.id, title, state, retries, last_action
+        "{:<10}  {:<41}  {:<15}  {:>7}  {:<15}  {}",
+        task.id, title, state, retries, workflow, last_action
     )
 }
 
@@ -1152,5 +1160,247 @@ mod tests {
         let error = run_status(&project, false, Some("task-001"), Some(20), Some(0)).unwrap_err();
 
         assert!(matches!(error, StatusError::TaskNotFound { .. }));
+    }
+
+    // --- workflow column tests ---
+
+    #[test]
+    fn table_shows_workflow_column_header() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("A task", "", vec![], None, None, None)
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
+
+        result.unwrap();
+        assert!(output.contains("Workflow"));
+    }
+
+    #[test]
+    fn table_shows_workflow_name_when_set() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "A task",
+                "",
+                vec![],
+                None,
+                None,
+                Some("my-workflow".to_owned()),
+            )
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
+
+        result.unwrap();
+        assert!(output.contains("my-workflow"));
+    }
+
+    #[test]
+    fn table_shows_dash_for_task_with_no_workflow() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("No workflow task", "", vec![], None, None, None)
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
+
+        result.unwrap();
+        // The Workflow column should show "-" for tasks with no workflow.
+        // The row format is: id  title  state  retries  workflow  last_action
+        // Workflow column is padded to 15 chars, so "-" followed by spaces then last_action.
+        let task_line = output
+            .lines()
+            .find(|line| line.contains("task-001"))
+            .expect("task-001 row not found");
+        // workflow column shows "-" padded to 15: check the padded cell is present
+        assert!(
+            task_line.contains("  -                ") || task_line.contains("  -  "),
+            "expected '-' for no workflow in row, got: {task_line}"
+        );
+    }
+
+    #[test]
+    fn inspect_shows_workflow_line() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "Workflow task",
+                "",
+                vec![],
+                None,
+                None,
+                Some("release-workflow".to_owned()),
+            )
+            .unwrap();
+
+        let (result, output) = capture_output(|| run_inspect(&project, "task-001"));
+
+        result.unwrap();
+        assert!(output.contains("Workflow:"));
+        assert!(output.contains("release-workflow"));
+    }
+
+    #[test]
+    fn inspect_shows_dash_for_task_with_no_workflow() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("No workflow task", "", vec![], None, None, None)
+            .unwrap();
+
+        let (result, output) = capture_output(|| run_inspect(&project, "task-001"));
+
+        result.unwrap();
+        assert!(output.contains("Workflow:"));
+        // The line should contain "Workflow:      -"
+        let workflow_line = output
+            .lines()
+            .find(|line| line.contains("Workflow:"))
+            .expect("Workflow: line not found");
+        assert!(
+            workflow_line.ends_with('-'),
+            "expected '-' for no workflow, got: {workflow_line}"
+        );
+    }
+
+    #[test]
+    fn json_list_includes_workflow_field_as_null_for_no_workflow() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("No workflow task", "", vec![], None, None, None)
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, true, None, Some(20), Some(0)));
+
+        result.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let workflow = &value["tasks"][0]["workflow"];
+        assert!(
+            workflow.is_null(),
+            "expected workflow null in JSON, got: {workflow}"
+        );
+    }
+
+    #[test]
+    fn json_list_includes_workflow_field_as_string_when_set() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "Workflow task",
+                "",
+                vec![],
+                None,
+                None,
+                Some("ci-workflow".to_owned()),
+            )
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, true, None, Some(20), Some(0)));
+
+        result.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["tasks"][0]["workflow"], "ci-workflow");
+    }
+
+    #[test]
+    fn json_inspect_includes_workflow_field_as_null_for_no_workflow() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task("No workflow task", "", vec![], None, None, None)
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, true, Some("task-001"), Some(20), Some(0)));
+
+        result.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let workflow = &value["workflow"];
+        assert!(
+            workflow.is_null(),
+            "expected workflow null in JSON, got: {workflow}"
+        );
+    }
+
+    #[test]
+    fn json_inspect_includes_workflow_field_as_string_when_set() {
+        let (temp_dir, project, config) = test_project_with_config();
+        let mut store = test_store(&temp_dir, &config);
+        store
+            .add_task(
+                "Workflow task",
+                "",
+                vec![],
+                None,
+                None,
+                Some("ci-workflow".to_owned()),
+            )
+            .unwrap();
+
+        let (result, output) =
+            capture_output(|| run_status(&project, true, Some("task-001"), Some(20), Some(0)));
+
+        result.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["workflow"], "ci-workflow");
+    }
+
+    #[test]
+    fn no_panic_on_task_with_workflow_none() {
+        let (temp_dir, project, config) = test_project_with_config();
+        // Write a task JSON without a workflow field (legacy format)
+        let raw = r#"{
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Legacy task",
+      "description": "",
+      "state": "pending",
+      "dependencies": [],
+      "retry_count": 0,
+      "max_retries": 3,
+      "phases": {},
+      "history": [
+        {
+          "from": null,
+          "to": "pending",
+          "timestamp": "2026-06-06T00:00:00Z",
+          "reason": "task created"
+        }
+      ],
+      "created_at": "2026-06-06T00:00:00Z"
+    }
+  ]
+}"#;
+        fs::write(project.state_dir.join("tasks.json"), raw).unwrap();
+        write_config(&project, &config);
+
+        // Both plain-text and inspect should not panic
+        let (result, output) =
+            capture_output(|| run_status(&project, false, None, Some(20), Some(0)));
+        result.unwrap();
+        assert!(output.contains("task-001"));
+
+        let (result, output) = capture_output(|| run_inspect(&project, "task-001"));
+        result.unwrap();
+        assert!(output.contains("Workflow:"));
+        let workflow_line = output
+            .lines()
+            .find(|line| line.contains("Workflow:"))
+            .unwrap();
+        assert!(workflow_line.ends_with('-'));
     }
 }

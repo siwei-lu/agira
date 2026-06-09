@@ -52,7 +52,7 @@ pub struct Task {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_machine: Option<Vec<TaskPhaseConfig>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub workflow: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked_at: Option<String>,
@@ -1654,6 +1654,43 @@ mod tests {
 
         store.retry_task("task-001", "redo").unwrap();
         assert!(store.get_task("task-001").unwrap().locked_at.is_none());
+    }
+
+    #[test]
+    fn workflow_none_serializes_as_null_in_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store
+            .add_task("No workflow", "", vec![], None, None, None)
+            .unwrap();
+
+        let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
+        let value: Value = serde_json::from_str(&contents).unwrap();
+        let workflow = &value["tasks"][0]["workflow"];
+        assert!(
+            workflow.is_null(),
+            "expected workflow to be null, got: {workflow}"
+        );
+    }
+
+    #[test]
+    fn workflow_some_serializes_as_string_in_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = test_store(&temp_dir);
+        store
+            .add_task(
+                "With workflow",
+                "",
+                vec![],
+                None,
+                None,
+                Some("my-workflow".to_owned()),
+            )
+            .unwrap();
+
+        let contents = fs::read_to_string(temp_dir.path().join("tasks.json")).unwrap();
+        let value: Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(value["tasks"][0]["workflow"], "my-workflow");
     }
 
     #[test]
