@@ -63,6 +63,12 @@ enum Commands {
         #[command(subcommand)]
         command: ProjectCommands,
     },
+    /// List and manage named workflows defined in the project config
+    #[command(subcommand_value_name = "command")]
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommands,
+    },
     /// Print prompts to install or uninstall an agira task-add personal skill
     #[command(subcommand_value_name = "command")]
     Skill {
@@ -120,6 +126,16 @@ enum SkillCommands {
     Install,
     /// Print a prompt asking an agent to delete the agira task-add personal skill
     Uninstall,
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommands {
+    /// List all named workflows defined in the project config
+    List {
+        /// Output raw JSON instead of the formatted table
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -646,6 +662,21 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Workflow { command } => match command {
+            WorkflowCommands::List { json } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_workflow_list(&project, json) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_workflow_list(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+        },
         Commands::Skill { command } => {
             let result = match command {
                 SkillCommands::Install => commands::run_skill_install(),
@@ -996,5 +1027,14 @@ fn exit_code_for_hook(error: &commands::HookError) -> ExitCode {
             | crate::core::HookConfigError::Serialize { .. }
             | crate::core::HookConfigError::Write { .. } => ExitCode::from(2),
         },
+    }
+}
+
+fn exit_code_for_workflow_list(error: &commands::WorkflowListError) -> ExitCode {
+    use commands::WorkflowListError::*;
+
+    match error {
+        NotFound { .. } | Load { .. } | InvalidConfig { .. } => ExitCode::from(1),
+        Read { .. } | JsonOutput(_) => ExitCode::from(2),
     }
 }
