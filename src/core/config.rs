@@ -45,6 +45,12 @@ impl Config {
         self.phases.get(name)
     }
 
+    pub fn initial_phase(&self) -> Option<&str> {
+        self.sequence(&self.default_workflow)
+            .first()
+            .map(String::as_str)
+    }
+
     pub fn terminal_phase(&self) -> Option<&str> {
         self.sequence(&self.default_workflow)
             .last()

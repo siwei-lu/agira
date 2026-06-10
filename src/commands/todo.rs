@@ -169,11 +169,11 @@ fn dirty_commit_target<'a>(
     tasks: &'a [Task],
     config: &crate::core::config::Config,
 ) -> Option<&'a Task> {
-    let terminal_phase = config.terminal_phase()?;
+    let initial_phase = config.initial_phase()?;
 
     tasks
         .iter()
-        .filter(|task| task.state == terminal_phase)
+        .filter(|task| task.state != initial_phase)
         .max_by(|left, right| latest_history_timestamp(left).cmp(latest_history_timestamp(right)))
 }
 
@@ -211,4 +211,96 @@ fn print_todo_output(message: &str) {
 #[cfg(test)]
 thread_local! {
     static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::core::{
+        config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
+        tasks::{HistoryEntry, Task},
+    };
+
+    use super::dirty_commit_target;
+
+    fn test_config() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        )
+    }
+
+    fn task_with_history(id: &str, state: &str, timestamp: &str) -> Task {
+        Task {
+            id: id.to_owned(),
+            title: format!("{id} title"),
+            description: "description".to_owned(),
+            state: state.to_owned(),
+            blocked_at_phase: None,
+            blocked_reason: None,
+            dependencies: Vec::new(),
+            retry_count: 0,
+            max_retries: 3,
+            phases: BTreeMap::new(),
+            history: vec![HistoryEntry {
+                from: None,
+                to: state.to_owned(),
+                timestamp: timestamp.to_owned(),
+                reason: "test".to_owned(),
+            }],
+            created_at: "2026-06-10T00:00:00Z".to_owned(),
+            workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            locked_at: None,
+        }
+    }
+
+    #[test]
+    fn dirty_commit_target_prefers_latest_reviewing_task_over_done_task() {
+        let config = test_config();
+        let tasks = vec![
+            task_with_history("task-older-done", "done", "2026-06-10T01:00:00Z"),
+            task_with_history("task-newer-reviewing", "reviewing", "2026-06-10T02:00:00Z"),
+        ];
+
+        let target = dirty_commit_target(&tasks, &config).expect("select task");
+
+        assert_eq!(target.id, "task-newer-reviewing");
+    }
+
+    #[test]
+    fn dirty_commit_target_still_selects_done_task_when_it_is_latest() {
+        let config = test_config();
+        let tasks = vec![
+            task_with_history("task-older-reviewing", "reviewing", "2026-06-10T01:00:00Z"),
+            task_with_history("task-newer-done", "done", "2026-06-10T02:00:00Z"),
+        ];
+
+        let target = dirty_commit_target(&tasks, &config).expect("select task");
+
+        assert_eq!(target.id, "task-newer-done");
+    }
+
+    #[test]
+    fn dirty_commit_target_returns_none_for_pending_only_or_empty_tasks() {
+        let config = test_config();
+        let pending_tasks = vec![
+            task_with_history("task-pending-1", "pending", "2026-06-10T01:00:00Z"),
+            task_with_history("task-pending-2", "pending", "2026-06-10T02:00:00Z"),
+        ];
+
+        assert!(dirty_commit_target(&pending_tasks, &config).is_none());
+        assert!(dirty_commit_target(&[], &config).is_none());
+    }
+
+    #[test]
+    fn config_initial_phase_returns_first_default_workflow_phase() {
+        let config = test_config();
+
+        assert_eq!(config.initial_phase(), Some("pending"));
+    }
 }
