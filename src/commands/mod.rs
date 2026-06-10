@@ -25,7 +25,8 @@ pub use hook::{HookError, run_hook_add, run_hook_list, run_hook_remove, run_hook
 pub use init::{InitError, InitFlags, run_init};
 pub use lock::{LockError, run_lock};
 pub use phase::{
-    PhaseGetError, PhaseUpdateError, run_phase_get, run_phase_update_with_clear_model,
+    PhaseGetError, PhaseUpdateError, run_phase_add, run_phase_list, run_phase_remove,
+    run_phase_update,
 };
 pub use project::{ProjectListError, run_project_list};
 pub use remove::{RemoveError, run_remove};
@@ -36,4 +37,7 @@ pub use todo::{TodoError, run_todo};
 pub use unblock::{UnblockError, run_unblock};
 pub use unlock::{UnlockError, run_unlock};
 pub use update::{UpdateError, UpdateInput, run_update};
-pub use workflow::{WorkflowListError, run_workflow_list};
+pub use workflow::{
+    WorkflowListError, run_workflow_add, run_workflow_list, run_workflow_remove,
+    run_workflow_set_default, run_workflow_update,
+};

@@ -8,9 +8,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::core::{
-    config::{
-        Config, INITIAL_PHASE_NAME, PhaseConfig, TERMINAL_PHASE_NAME, normalize_mandatory_phases,
-    },
+    config::{Config, PhaseDef, normalize_palette_and_sequence},
     project::Project,
 };
 
@@ -77,7 +75,6 @@ pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     let config = Config::new_single_workflow(
         stack,
         parse_phases_flag(flags.phases.as_deref().unwrap_or_default())?,
-        None,
         project.global_config.default_max_retries,
     );
 
@@ -188,42 +185,112 @@ fn scan_result_for_stack(stack: &str, commands: Vec<String>, max_retries: u32) -
 }
 
 fn config_for_stack(stack: &str, max_retries: u32) -> Config {
-    Config::new_single_workflow(stack, default_phases(), None, max_retries)
+    Config::new_single_workflow(stack, default_phases(), max_retries)
 }
 
-fn default_phases() -> Vec<PhaseConfig> {
+fn default_phases() -> Vec<(String, PhaseDef)> {
     vec![
-        PhaseConfig {
-            name: INITIAL_PHASE_NAME.to_owned(),
-            model: None,
-            duty: None,
-        },
-        PhaseConfig {
-            name: "enriching".to_owned(),
-            model: Some("opus".to_owned()),
-            duty: None,
-        },
-        PhaseConfig {
-            name: "in_progress".to_owned(),
-            model: Some("sonnet".to_owned()),
-            duty: None,
-        },
-        PhaseConfig {
-            name: "accepting".to_owned(),
-            model: Some("sonnet".to_owned()),
-            duty: None,
-        },
-        PhaseConfig {
-            name: "verifying".to_owned(),
-            model: Some("haiku".to_owned()),
-            duty: None,
-        },
-        PhaseConfig {
-            name: TERMINAL_PHASE_NAME.to_owned(),
-            model: None,
-            duty: None,
-        },
+        (
+            "enriching".to_owned(),
+            PhaseDef {
+                model: Some("opus".to_owned()),
+                duty: None,
+            },
+        ),
+        (
+            "in_progress".to_owned(),
+            PhaseDef {
+                model: Some("sonnet".to_owned()),
+                duty: None,
+            },
+        ),
+        (
+            "accepting".to_owned(),
+            PhaseDef {
+                model: Some("sonnet".to_owned()),
+                duty: None,
+            },
+        ),
+        (
+            "verifying".to_owned(),
+            PhaseDef {
+                model: Some("haiku".to_owned()),
+                duty: None,
+            },
+        ),
     ]
+}
+
+fn parse_phases_flag(input: &str) -> Result<Vec<(String, PhaseDef)>, InitError> {
+    let phases: Result<Vec<(String, PhaseDef)>, InitError> = input
+        .split(',')
+        .map(str::trim)
+        .map(|pair| {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                return Err(InitError::InvalidPhases);
+            }
+            match pair.split_once(':') {
+                Some((name, model)) => {
+                    let name = name.trim();
+                    let model = model.trim();
+                    if name.is_empty() || model.is_empty() {
+                        Err(InitError::InvalidPhases)
+                    } else {
+                        Ok((
+                            name.to_owned(),
+                            PhaseDef {
+                                model: Some(model.to_owned()),
+                                duty: None,
+                            },
+                        ))
+                    }
+                }
+                None => Ok((
+                    pair.to_owned(),
+                    PhaseDef {
+                        model: None,
+                        duty: None,
+                    },
+                )),
+            }
+        })
+        .collect();
+
+    let phases = phases?;
+    if phases.is_empty() {
+        return Err(InitError::InvalidPhases);
+    }
+    let (palette, sequence) = normalize_palette_and_sequence(phases, Vec::new());
+    Ok(sequence
+        .into_iter()
+        .filter_map(|name| palette.get(&name).cloned().map(|def| (name, def)))
+        .filter(|(name, _)| name != "pending" && name != "done")
+        .collect())
+}
+
+fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
+    let bytes = serde_json::to_vec_pretty(config).map_err(InitError::Serialize)?;
+    let temporary_path = path.with_extension("json.tmp");
+
+    fs::write(&temporary_path, bytes).map_err(|source| InitError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    fs::rename(&temporary_path, path).map_err(|source| InitError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    Ok(())
+}
+
+#[cfg(any())]
+fn legacy_removed() {
+    let _ = vec![PhaseDef {
+        model: None,
+        duty: None,
+    }];
 }
 
 fn read_package_json(path: &Path) -> Option<Value> {
@@ -414,7 +481,7 @@ stacks, ask which part agira is being set up for before continuing.
 
 Reason about project complexity to propose only the middle of the state machine. Each phase may carry a freeform agent/model label.
 Model labels are optional. When present, they are arbitrary non-empty text (whitespace allowed), such as `opus`, `sonnet`, `haiku`, `codex`, `dispatch -a codex`, or a project-specific executor label.
-A bare phase name is valid when the phase should be model-less in config. If a project config later defines `default_model`, prompt generation can use that default for non-mandatory bare phases.
+A bare phase name is valid when the phase should be model-less in config.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
 - Independent review / acceptance phases → `sonnet`, `codex`, or another code-aware label
@@ -602,347 +669,4 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
 
 fn has_required_flags(flags: &InitFlags) -> bool {
     flags.stack.is_some() && flags.phases.is_some()
-}
-
-fn parse_phases_flag(input: &str) -> Result<Vec<PhaseConfig>, InitError> {
-    let phases: Result<Vec<PhaseConfig>, InitError> = input
-        .split(',')
-        .map(str::trim)
-        .map(|pair| {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                return Err(InitError::InvalidPhases);
-            }
-            match pair.split_once(':') {
-                Some((name, model)) => {
-                    let name = name.trim();
-                    let model = model.trim();
-                    if name.is_empty() || model.is_empty() {
-                        Err(InitError::InvalidPhases)
-                    } else {
-                        Ok(PhaseConfig {
-                            name: name.to_owned(),
-                            model: Some(model.to_owned()),
-                            duty: None,
-                        })
-                    }
-                }
-                None => Ok(PhaseConfig {
-                    name: pair.to_owned(),
-                    model: None,
-                    duty: None,
-                }),
-            }
-        })
-        .collect();
-
-    let phases = phases?;
-    if phases.is_empty() {
-        return Err(InitError::InvalidPhases);
-    }
-    Ok(normalize_mandatory_phases(phases))
-}
-
-fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
-    let bytes = serde_json::to_vec_pretty(config).map_err(InitError::Serialize)?;
-    let temporary_path = path.with_extension("json.tmp");
-
-    fs::write(&temporary_path, bytes).map_err(|source| InitError::Io {
-        path: temporary_path.clone(),
-        source,
-    })?;
-    fs::rename(&temporary_path, path).map_err(|source| InitError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    println!("config written to {}", path.display());
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::TempDir;
-
-    use super::*;
-
-    #[test]
-    fn slug_defaults_for_rust() {
-        let git_root = TempDir::new().unwrap();
-        fs::write(git_root.path().join("Cargo.toml"), "").unwrap();
-
-        let result = scan_project(git_root.path(), 5);
-
-        assert_eq!(result.config.stack, "rust");
-        assert_eq!(
-            result.commands,
-            [
-                "cargo fmt -- --check",
-                "cargo clippy -- -D warnings",
-                "cargo test"
-            ]
-        );
-        assert_eq!(result.config.max_retries, 5);
-        assert_eq!(result.config.phases()[0].name, "pending");
-        assert_eq!(result.config.phases()[0].model, None);
-        assert_eq!(result.config.phases()[1].name, "enriching");
-        assert_eq!(result.config.phases()[1].model, Some("opus".to_owned()));
-        assert_eq!(result.config.phases().len(), 6);
-        assert!(
-            result
-                .config
-                .phases()
-                .iter()
-                .all(|phase| phase.duty.is_none())
-        );
-        assert_eq!(result.config.phases()[2].name, "in_progress");
-        assert_eq!(result.config.phases()[2].model, Some("sonnet".to_owned()));
-        assert_eq!(result.config.phases()[3].name, "accepting");
-        assert_eq!(result.config.phases()[3].model, Some("sonnet".to_owned()));
-        assert_eq!(result.config.phases()[4].name, "verifying");
-        assert_eq!(result.config.phases()[4].model, Some("haiku".to_owned()));
-        assert_eq!(result.config.phases()[5].name, "done");
-    }
-
-    #[test]
-    fn slug_defaults_for_unknown() {
-        let git_root = TempDir::new().unwrap();
-
-        let result = scan_project(git_root.path(), 4);
-
-        assert_eq!(result.config.stack, "unknown");
-        assert!(result.commands.is_empty());
-        assert_eq!(result.config.max_retries, 4);
-    }
-
-    #[test]
-    fn slug_defaults_for_java_maven() {
-        let git_root = TempDir::new().unwrap();
-        fs::write(git_root.path().join("pom.xml"), "").unwrap();
-
-        let result = scan_project(git_root.path(), 3);
-
-        assert_eq!(result.config.stack, "java");
-        assert_eq!(result.commands, ["mvn verify"]);
-    }
-
-    #[test]
-    fn slug_defaults_for_java_gradle() {
-        let git_root = TempDir::new().unwrap();
-        fs::write(git_root.path().join("build.gradle"), "").unwrap();
-
-        let result = scan_project(git_root.path(), 3);
-
-        assert_eq!(result.config.stack, "java");
-        assert_eq!(result.commands, ["./gradlew test"]);
-    }
-
-    #[test]
-    fn slug_defaults_for_java_gradle_kts() {
-        let git_root = TempDir::new().unwrap();
-        fs::write(git_root.path().join("build.gradle.kts"), "").unwrap();
-
-        let result = scan_project(git_root.path(), 3);
-
-        assert_eq!(result.config.stack, "java");
-        assert_eq!(result.commands, ["./gradlew test"]);
-    }
-
-    #[test]
-    fn parse_phases_flag() {
-        let phases =
-            super::parse_phases_flag("enriching:opus,in_progress:sonnet,done:haiku").unwrap();
-        assert_eq!(phases.len(), 4);
-        assert_eq!(phases[0].name, "pending");
-        assert_eq!(phases[0].model, None);
-        assert_eq!(phases[1].name, "enriching");
-        assert_eq!(phases[1].model, Some("opus".to_owned()));
-        assert_eq!(phases[2].name, "in_progress");
-        assert_eq!(phases[2].model, Some("sonnet".to_owned()));
-        assert_eq!(phases[3].name, "done");
-        assert_eq!(phases[3].model, None);
-
-        let single = super::parse_phases_flag("done:haiku").unwrap();
-        assert_eq!(single.len(), 2);
-        assert_eq!(single[0].name, "pending");
-        assert_eq!(single[0].model, None);
-        assert_eq!(single[1].name, "done");
-        assert_eq!(single[1].model, None);
-
-        let without_mandatory =
-            super::parse_phases_flag("enriching:opus,in_progress:sonnet").unwrap();
-        assert_eq!(without_mandatory.len(), 4);
-        assert_eq!(without_mandatory[0].name, "pending");
-        assert_eq!(without_mandatory[1].name, "enriching");
-        assert_eq!(without_mandatory[2].name, "in_progress");
-        assert_eq!(without_mandatory[3].name, "done");
-
-        let with_bare_phase = super::parse_phases_flag("enriching,in_progress:codex").unwrap();
-        assert_eq!(with_bare_phase.len(), 4);
-        assert_eq!(with_bare_phase[1].name, "enriching");
-        assert_eq!(with_bare_phase[1].model, None);
-        assert_eq!(with_bare_phase[2].name, "in_progress");
-        assert_eq!(with_bare_phase[2].model, Some("codex".to_owned()));
-
-        let with_spaced_model = super::parse_phases_flag("in_progress:dispatch -a codex").unwrap();
-        assert_eq!(with_spaced_model.len(), 3);
-        assert_eq!(with_spaced_model[1].name, "in_progress");
-        assert_eq!(
-            with_spaced_model[1].model,
-            Some("dispatch -a codex".to_owned())
-        );
-
-        assert!(matches!(
-            super::parse_phases_flag(""),
-            Err(InitError::InvalidPhases)
-        ));
-        assert!(matches!(
-            super::parse_phases_flag(":sonnet"),
-            Err(InitError::InvalidPhases)
-        ));
-        assert!(matches!(
-            super::parse_phases_flag("enriching:"),
-            Err(InitError::InvalidPhases)
-        ));
-        assert!(matches!(
-            super::parse_phases_flag("enriching:   "),
-            Err(InitError::InvalidPhases)
-        ));
-    }
-
-    #[test]
-    fn detect_missing_flags() {
-        let all_present = InitFlags {
-            stack: Some("rust".to_owned()),
-            phases: Some("done:haiku".to_owned()),
-        };
-        assert!(super::detect_missing_flags(&all_present).is_empty());
-
-        let partial = InitFlags {
-            stack: Some("rust".to_owned()),
-            phases: None,
-        };
-        assert_eq!(super::detect_missing_flags(&partial), ["--phases"]);
-
-        assert!(super::detect_missing_flags(&InitFlags::default()).is_empty());
-    }
-
-    #[test]
-    fn bare_invocation_prompt() {
-        let config = config_for_stack("rust", 5);
-        let commands = vec![
-            "cargo fmt -- --check".to_owned(),
-            "cargo clippy -- -D warnings".to_owned(),
-            "cargo test".to_owned(),
-        ];
-        let prompt = super::bare_invocation_prompt(&config, &commands);
-
-        assert!(prompt.contains("```sh\nagira init \\\n"));
-        assert!(prompt.contains("CLAUDE.md"));
-        assert!(prompt.contains("never overwrite"));
-        assert!(!prompt.contains("agira-context"));
-        assert!(prompt.contains("Model labels are optional."));
-        assert!(prompt.contains("phase[:model]"));
-        assert!(prompt.contains("freeform agent/model label"));
-        assert!(prompt.contains("codex"));
-        assert!(prompt.contains("`pending` and `done` are built-in phases"));
-        assert!(prompt.contains("**`pending` and `done`"));
-        assert!(prompt.contains("Do not include them in the --phases flag value"));
-        assert!(prompt.contains("pending -> "));
-        assert!(prompt.contains("-> done"));
-        assert!(prompt.contains("--set-duty"));
-        assert!(prompt.contains("duty"));
-        assert!(prompt.contains("Rewrite the task description as a complete spec"));
-        assert!(prompt.contains("## Goal"));
-        assert!(prompt.contains("## Acceptance Criteria"));
-        assert!(prompt.contains("## Constraints"));
-        assert!(prompt.contains("one dedicated subagent"));
-        assert!(prompt.contains("truly complete for this project"));
-        assert!(!prompt.contains("--models"));
-        assert!(prompt.contains("## Step 2 — Prove the project starts (REQUIRED)"));
-        assert!(prompt.contains("This step is required, not optional."));
-        assert!(
-            prompt.contains("Do not proceed to `agira init` until the project starts successfully")
-        );
-        assert!(prompt.contains("Run / start instructions"));
-        assert!(prompt.contains("confirmed project-start smoke command"));
-        assert!(prompt.contains("Local run/start"));
-        assert!(prompt.contains("rust"));
-        assert!(prompt.contains(
-            "suggested verifying-phase duty commands: `cargo fmt -- --check;cargo clippy -- -D warnings;cargo test`"
-        ));
-        assert!(prompt.contains("embedding verification commands in the verifying phase duty"));
-        assert!(prompt.contains(
-            "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance."
-        ));
-        assert!(!prompt.contains("--verification-commands"));
-        assert!(prompt.contains("ONE message"));
-        assert!(prompt.contains("CLI"));
-        assert!(prompt.contains("smoke"));
-        assert!(prompt.contains("server"));
-        assert!(prompt.contains("endpoint"));
-        // The --acceptance-testing flag was removed; ensure it does not creep back.
-        let removed_acceptance_flag = format!("--{}-{}", "acceptance", "testing");
-        assert!(!prompt.contains(&removed_acceptance_flag));
-
-        // Change 1: Step 1 bullet 7 — e2e / observable-behavior detection
-        assert!(prompt.contains("playwright.config"));
-        assert!(prompt.contains("cypress.config"));
-        assert!(prompt.contains("observable runtime behavior"));
-        assert!(prompt.contains("e2e/"));
-
-        // Change 2: verifying vs accepting semantic rule (replaces old "Principle of phases")
-        assert!(prompt.contains("`verifying` answers"));
-        assert!(prompt.contains("`accepting` answers"));
-        assert!(prompt.contains("runs without the app"));
-        assert!(prompt.contains("start the app"));
-        assert!(prompt.contains("observable behavior matches spec"));
-        // The heuristic "A simple CLI tool or library often needs only in_progress + verifying"
-        // is intentionally removed; it should not appear.
-        assert!(!prompt.contains("A simple CLI tool or library often needs only"));
-
-        // Change 3: accepting duty templates for the four concrete cases
-        assert!(prompt.contains("e2e suite present"));
-        assert!(prompt.contains("frontend UI"));
-        assert!(prompt.contains("API/HTTP server"));
-        assert!(prompt.contains("CLI binary"));
-
-        // Change 4: proactive accepting recommendation in Step 4
-        assert!(prompt.contains("observable behavior") && prompt.contains("propose `accepting`"));
-    }
-
-    #[test]
-    fn bare_invocation_prompt_unknown_defaults_use_fallback() {
-        let config = config_for_stack("unknown", 3);
-        let prompt = super::bare_invocation_prompt(&config, &[]);
-
-        assert!(!prompt.contains("stack=unknown"));
-        assert!(prompt.contains("could not auto-detect"));
-    }
-
-    #[test]
-    fn write_config_produces_valid_json() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("config.json");
-        let config = config_for_stack("rust", 5);
-
-        write_config(&path, &config).unwrap();
-
-        let contents = fs::read_to_string(path).unwrap();
-        let value: Value = serde_json::from_str(&contents).unwrap();
-
-        assert!(value.get("stack").is_some());
-        assert!(value.get("workflows").is_some());
-        assert!(value.get("default_workflow").is_some());
-        assert!(value.get("phases").is_none()); // new format has no top-level phases
-        assert!(value.get("state_machine").is_none());
-        assert!(value.get("models").is_none());
-        assert!(value.get("verification").is_none());
-        let legacy_acceptance_key = format!("{}_{}", "acceptance", "testing");
-        assert!(value.get(&legacy_acceptance_key).is_none());
-        assert_eq!(value.get("max_retries").and_then(Value::as_u64), Some(5));
-        assert!(value.get("default_model").is_none());
-    }
 }

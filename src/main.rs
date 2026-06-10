@@ -83,41 +83,34 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PhaseCommands {
-    /// List current phases in the state machine
-    Get {
-        /// Target a specific named workflow (defaults to config.default_workflow)
-        #[arg(long, value_name = "workflow")]
-        workflow: Option<String>,
+    /// List global phase definitions
+    List,
+    /// Add a global phase definition
+    Add {
+        #[arg(value_name = "name")]
+        name: String,
+        #[arg(long, value_name = "model")]
+        model: Option<String>,
+        #[arg(long, value_name = "duty")]
+        duty: Option<String>,
     },
-    /// Add, insert, remove, or update phases in the state machine
+    /// Update a global phase definition
     Update {
-        /// Phase to add: bare name (e.g. review) or name:model (e.g. review:codex)
-        #[arg(long, value_name = "add")]
-        add: Option<String>,
-        /// Insert the new phase after this existing phase
-        #[arg(long, value_name = "after")]
-        after: Option<String>,
-        /// Insert the new phase before this existing phase
-        #[arg(long, value_name = "before")]
-        before: Option<String>,
-        /// Phase name to remove (fails if any task is currently in that phase)
-        #[arg(long, value_name = "remove")]
-        remove: Option<String>,
-        /// Change the model of an existing phase: --set-model <phase> <model>
-        #[arg(long, num_args = 2, value_names = ["phase", "model"])]
-        set_model: Option<Vec<String>>,
-        /// Clear the model from an existing non-mandatory phase
-        #[arg(long = "clear-model", value_name = "phase")]
-        clear_model: Option<String>,
-        /// Set the duty paragraph on an existing non-mandatory phase: --set-duty <phase> <duty>
-        #[arg(long, num_args = 2, value_names = ["phase", "duty"])]
-        set_duty: Option<Vec<String>>,
-        /// Clear the duty from an existing non-mandatory phase
-        #[arg(long = "clear-duty", value_name = "phase")]
-        clear_duty: Option<String>,
-        /// Target a specific named workflow (defaults to config.default_workflow)
-        #[arg(long, value_name = "workflow")]
-        workflow: Option<String>,
+        #[arg(value_name = "name")]
+        name: String,
+        #[arg(long = "set-model", value_name = "model")]
+        set_model: Option<String>,
+        #[arg(long = "set-duty", value_name = "duty")]
+        set_duty: Option<String>,
+        #[arg(long = "clear-model")]
+        clear_model: bool,
+        #[arg(long = "clear-duty")]
+        clear_duty: bool,
+    },
+    /// Remove a global phase definition
+    Remove {
+        #[arg(value_name = "name")]
+        name: String,
     },
 }
 
@@ -142,6 +135,34 @@ enum WorkflowCommands {
         /// Output raw JSON instead of the formatted table
         #[arg(long)]
         json: bool,
+    },
+    /// Add a named workflow from existing phase references
+    Add {
+        #[arg(value_name = "name")]
+        name: String,
+        #[arg(long, value_delimiter = ',', value_name = "phases")]
+        phases: Vec<String>,
+    },
+    /// Update a workflow's ordered phase references
+    Update {
+        #[arg(value_name = "name")]
+        name: String,
+        #[arg(long, value_name = "phase")]
+        add: Option<String>,
+        #[arg(long, value_name = "phase")]
+        after: Option<String>,
+        #[arg(long, value_name = "phase")]
+        remove: Option<String>,
+    },
+    /// Remove a named workflow
+    Remove {
+        #[arg(value_name = "name")]
+        name: String,
+    },
+    /// Set the default workflow
+    SetDefault {
+        #[arg(value_name = "name")]
+        name: String,
     },
 }
 
@@ -276,12 +297,6 @@ enum TaskCommands {
         /// Place the task directly into this phase instead of the default starting phase
         #[arg(long, value_name = "phase")]
         phase: Option<String>,
-        /// Override the project state machine for this task: comma-separated name[:model] entries
-        #[arg(long, value_name = "phases")]
-        phases: Option<String>,
-        /// Set duties for new phases introduced by --phases: repeatable PHASE:DUTY entries
-        #[arg(long, value_name = "PHASE:DUTY")]
-        duties: Vec<String>,
         /// Use a named workflow from the project config for this task's state machine
         #[arg(long, value_name = "workflow")]
         workflow: Option<String>,
@@ -416,8 +431,6 @@ fn main() -> ExitCode {
                 description,
                 depends_on,
                 phase,
-                phases,
-                duties,
                 workflow,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_add(
@@ -426,12 +439,8 @@ fn main() -> ExitCode {
                     description.as_deref(),
                     &depends_on,
                     phase.as_deref(),
-                    phases.as_deref(),
-                    if duties.is_empty() {
-                        None
-                    } else {
-                        Some(&duties)
-                    },
+                    None,
+                    None,
                     workflow.as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
@@ -527,8 +536,8 @@ fn main() -> ExitCode {
             }
         },
         Commands::Phase { command } => match command {
-            PhaseCommands::Get { workflow } => match resolve_project() {
-                Ok(project) => match commands::run_phase_get(&project, workflow.as_deref()) {
+            PhaseCommands::List => match resolve_project() {
+                Ok(project) => match commands::run_phase_list(&project) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -540,29 +549,52 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            PhaseCommands::Update {
-                add,
-                after,
-                before,
-                remove,
-                set_model,
-                clear_model,
-                set_duty,
-                clear_duty,
-                workflow,
-            } => match resolve_project() {
-                Ok(project) => match commands::run_phase_update_with_clear_model(
+            PhaseCommands::Add { name, model, duty } => match resolve_project() {
+                Ok(project) => match commands::run_phase_add(
                     &project,
-                    add.as_deref(),
-                    after.as_deref(),
-                    before.as_deref(),
-                    remove.as_deref(),
-                    set_model.as_deref(),
-                    clear_model.as_deref(),
-                    set_duty.as_deref(),
-                    clear_duty.as_deref(),
-                    workflow.as_deref(),
+                    &name,
+                    model.as_deref(),
+                    duty.as_deref(),
                 ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_phase_update(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            PhaseCommands::Update {
+                name,
+                set_model,
+                set_duty,
+                clear_model,
+                clear_duty,
+            } => match resolve_project() {
+                Ok(project) => match commands::run_phase_update(
+                    &project,
+                    &name,
+                    set_model.as_deref(),
+                    set_duty.as_deref(),
+                    clear_model,
+                    clear_duty,
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_phase_update(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            PhaseCommands::Remove { name } => match resolve_project() {
+                Ok(project) => match commands::run_phase_remove(&project, &name) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -674,6 +706,69 @@ fn main() -> ExitCode {
         Commands::Workflow { command } => match command {
             WorkflowCommands::List { json } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_workflow_list(&project, json) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_workflow_list(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            WorkflowCommands::Add { name, phases } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_workflow_add(&project, &name, phases) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_workflow_list(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            WorkflowCommands::Update {
+                name,
+                add,
+                after,
+                remove,
+            } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_workflow_update(
+                    &project,
+                    &name,
+                    add.as_deref(),
+                    after.as_deref(),
+                    remove.as_deref(),
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_workflow_list(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            WorkflowCommands::Remove { name } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_workflow_remove(&project, &name) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_workflow_list(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            WorkflowCommands::SetDefault { name } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_workflow_set_default(&project, &name) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -943,9 +1038,6 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
     match error {
         commands::AddError::UnknownDependency { .. }
         | commands::AddError::UnknownPhase { .. }
-        | commands::AddError::InvalidPhases { .. }
-        | commands::AddError::InvalidDuties { .. }
-        | commands::AddError::WorkflowPhasesConflict
         | commands::AddError::UnknownWorkflow { .. }
         | commands::AddError::DuplicateTitle { .. }
         | commands::AddError::ConfigNotFound { .. }
@@ -965,9 +1057,7 @@ fn exit_code_for_phase_get(error: &commands::PhaseGetError) -> ExitCode {
     use commands::PhaseGetError::*;
 
     match error {
-        NotFound { .. } | Load { .. } | InvalidConfig { .. } | UnknownWorkflow { .. } => {
-            ExitCode::from(1)
-        }
+        NotFound { .. } | Load { .. } | InvalidConfig { .. } => ExitCode::from(1),
         Read { .. } => ExitCode::from(2),
     }
 }
@@ -977,28 +1067,14 @@ fn exit_code_for_phase_update(error: &commands::PhaseUpdateError) -> ExitCode {
 
     match error {
         NoOperation
-        | ConflictingPositionFlags
-        | InvalidAddFormat
-        | InvalidModelLabel { .. }
         | PhaseNotFound { .. }
         | DuplicatePhase { .. }
-        | MandatoryPhase { .. }
-        | MandatoryPhaseNoModel { .. }
-        | MandatoryPhaseDuty { .. }
-        | CannotInsertBeforeInitial { .. }
-        | CannotInsertAfterTerminal { .. }
-        | PhaseBusy { .. }
-        | UnknownWorkflow { .. }
+        | ReservedPhase { .. }
+        | PhaseReferenced { .. }
         | ConfigNotFound { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
-        ConfigRead { .. } | ConfigWrite { .. } => ExitCode::from(2),
-        StoreError(store_error) => match store_error {
-            crate::core::StoreError::Io { .. }
-            | crate::core::StoreError::Serialize(_)
-            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
-            _ => ExitCode::from(1),
-        },
+        ConfigRead { .. } => ExitCode::from(2),
     }
 }
 
