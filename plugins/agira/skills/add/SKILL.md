@@ -50,16 +50,12 @@ You are helping the user add a task to an Agira project safely and correctly.
 
    - If nothing fits clearly, omit `--workflow` entirely — the task will fall back to
      `config.default_workflow`.
-   - `--phases` (a fully custom phase sequence) is reserved for tasks that genuinely
-     cannot fit any named workflow. If you use `--phases`, you must include a brief
-     written reason for the deviation in the task description.
-   - `--workflow` and `--phases` are mutually exclusive — do not combine them.
 
 5. **Run `agira task add`** once the user approves — always use `run_in_background: true`:
    ```
    agira task add "<title>" --description "<details>"
    ```
-   Add `--depends-on`, `--phase`, `--workflow`, `--phases`, or `--duties` only when
+   Add `--depends-on`, `--phase`, or `--workflow` only when
    explicitly supplied or clearly implied by your investigation. After the background
    command completes, run `agira task list` to confirm the task was created.
 
@@ -70,4 +66,3 @@ You are helping the user add a task to an Agira project safely and correctly.
 - Do not add tasks to a project the user did not intend.
 - **NEVER modify source code or project files.** This skill only reads code to understand scope and draft a description. All edits, file changes, or implementation belong in the task, not here.
 - **No confirmation for workflow selection.** Selecting any predefined (named) workflow requires NO user confirmation — they are all human-reviewed, so a wrong pick is cheap to change.
-- **Use `--phases` sparingly.** It is reserved for tasks that cannot fit any named workflow. Always include a written reason for the deviation in the task description when using it.

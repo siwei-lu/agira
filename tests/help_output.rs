@@ -31,6 +31,19 @@ fn task_help_uses_lowercase_command_placeholder() {
 }
 
 #[test]
+fn task_add_help_describes_workflow_without_state_machine_wording() {
+    let out = help_stdout(&["task", "add"]);
+    assert!(
+        out.contains("Use a named workflow from the project config to execute this task"),
+        "expected 'agira task add --help' to describe --workflow execution, got:\n{out}"
+    );
+    assert!(
+        !out.contains("state machine"),
+        "found stale state machine wording in 'agira task add --help'"
+    );
+}
+
+#[test]
 fn phase_help_uses_lowercase_command_placeholder() {
     let out = help_stdout(&["phase"]);
     assert!(

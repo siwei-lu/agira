@@ -297,7 +297,7 @@ enum TaskCommands {
         /// Place the task directly into this phase instead of the default starting phase
         #[arg(long, value_name = "phase")]
         phase: Option<String>,
-        /// Use a named workflow from the project config for this task's state machine
+        /// Use a named workflow from the project config to execute this task
         #[arg(long, value_name = "workflow")]
         workflow: Option<String>,
     },
