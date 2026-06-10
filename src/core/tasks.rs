@@ -90,7 +90,40 @@ struct TaskWire {
     #[serde(default)]
     locked_at: Option<String>,
     #[serde(default, rename = "state_machine")]
-    _state_machine: serde_json::Value,
+    state_machine_snapshot: Option<serde_json::Value>,
+}
+
+struct LoadedTasksFile {
+    tasks_file: TasksFile,
+    migrated: bool,
+}
+
+impl TaskWire {
+    fn needs_migration(&self) -> bool {
+        self.workflow.as_deref().is_none_or(str::is_empty) || self.state_machine_snapshot.is_some()
+    }
+
+    fn into_task(self, config: &Config) -> Task {
+        Task {
+            id: self.id,
+            title: self.title,
+            description: self.description,
+            state: self.state,
+            blocked_at_phase: self.blocked_at_phase,
+            blocked_reason: self.blocked_reason,
+            dependencies: self.dependencies,
+            retry_count: self.retry_count,
+            max_retries: self.max_retries,
+            phases: self.phases,
+            history: self.history,
+            created_at: self.created_at,
+            workflow: self
+                .workflow
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| config.default_workflow.clone()),
+            locked_at: self.locked_at,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -155,24 +188,16 @@ pub struct TaskStore {
 impl TaskStore {
     pub fn new(state_dir: impl AsRef<Path>, config: &Config) -> Result<Self, StoreError> {
         let tasks_path = state_dir.as_ref().join("tasks.json");
-        let mut tasks_file = Self::load_from_file(&tasks_path, config)?;
-
-        let mut migrated = false;
-        for task in &mut tasks_file.tasks {
-            if task.workflow.is_empty() {
-                task.workflow = config.default_workflow.clone();
-                migrated = true;
-            }
-        }
+        let loaded = Self::load_from_file(&tasks_path, config)?;
 
         let mut store = Self {
             tasks_path,
-            tasks_file,
+            tasks_file: loaded.tasks_file,
             config: config.clone(),
             max_retries: config.max_retries,
         };
 
-        if migrated {
+        if loaded.migrated {
             let current = store.tasks_file.clone();
             store.save(current)?;
         }
@@ -180,40 +205,29 @@ impl TaskStore {
         Ok(store)
     }
 
-    fn load_from_file(path: &Path, config: &Config) -> Result<TasksFile, StoreError> {
+    fn load_from_file(path: &Path, config: &Config) -> Result<LoadedTasksFile, StoreError> {
         match fs::read_to_string(path) {
             Ok(contents) => {
                 let wire: TasksFileWire =
                     serde_json::from_str(&contents).map_err(StoreError::Deserialize)?;
-                Ok(TasksFile {
-                    tasks: wire
-                        .tasks
-                        .into_iter()
-                        .map(|task| Task {
-                            id: task.id,
-                            title: task.title,
-                            description: task.description,
-                            state: task.state,
-                            blocked_at_phase: task.blocked_at_phase,
-                            blocked_reason: task.blocked_reason,
-                            dependencies: task.dependencies,
-                            retry_count: task.retry_count,
-                            max_retries: task.max_retries,
-                            phases: task.phases,
-                            history: task.history,
-                            created_at: task.created_at,
-                            workflow: task
-                                .workflow
-                                .filter(|name| !name.is_empty())
-                                .unwrap_or_else(|| config.default_workflow.clone()),
-                            locked_at: task.locked_at,
-                        })
-                        .collect(),
+                let mut migrated = false;
+                let tasks = wire
+                    .tasks
+                    .into_iter()
+                    .map(|task| {
+                        migrated |= task.needs_migration();
+                        task.into_task(config)
+                    })
+                    .collect();
+                Ok(LoadedTasksFile {
+                    tasks_file: TasksFile { tasks },
+                    migrated,
                 })
             }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                Ok(TasksFile { tasks: vec![] })
-            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(LoadedTasksFile {
+                tasks_file: TasksFile { tasks: vec![] },
+                migrated: false,
+            }),
             Err(source) => Err(StoreError::Io {
                 path: path.to_path_buf(),
                 source,
