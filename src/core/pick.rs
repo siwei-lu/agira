@@ -182,6 +182,13 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
 
     if task.state != INITIAL_PHASE_NAME && task.state != TERMINAL_PHASE_NAME {
         let attachments_path = state_dir.join("attachments").join(&task.id);
+        if let Some(feedback) = previous_review_feedback(task) {
+            subagent.push_str(&format!(
+                "\n\n## Previous Review Feedback\n{feedback}\n\nRead any existing files under {}/ before implementing; prior reviewer findings or evidence may already be there.",
+                attachments_path.display()
+            ));
+        }
+
         subagent.push_str(&format!(
             "\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n{}/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.",
             attachments_path.display()
@@ -194,6 +201,22 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     ));
 
     subagent
+}
+
+fn previous_review_feedback(task: &Task) -> Option<&str> {
+    if task.retry_count == 0 {
+        return None;
+    }
+
+    task.history
+        .iter()
+        .rev()
+        .find_map(|entry| entry.reason.strip_prefix("retry "))
+        .map(|retry_reason| {
+            retry_reason
+                .split_once(": ")
+                .map_or(retry_reason, |(_, feedback)| feedback)
+        })
 }
 
 fn description_warning_applies(task: &Task, config: &Config) -> bool {
@@ -310,4 +333,91 @@ fn task_id_number(id: &str) -> u32 {
     id.rsplit_once('-')
         .and_then(|(_, suffix)| suffix.parse::<u32>().ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
+
+    use crate::core::{
+        config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
+        tasks::{HistoryEntry, Task},
+    };
+
+    use super::format_task_prompt_output;
+
+    fn test_config() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![(
+                "implementing".to_owned(),
+                PhaseDef {
+                    model: Some("dispatch exec -a codex".to_owned()),
+                    duty: Some("Implement the task.".to_owned()),
+                },
+            )],
+            3,
+        )
+    }
+
+    fn test_task() -> Task {
+        Task {
+            id: "task-109".to_owned(),
+            title: "inject previous review feedback".to_owned(),
+            description: "Implement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.".to_owned(),
+            state: "implementing".to_owned(),
+            blocked_at_phase: None,
+            blocked_reason: None,
+            dependencies: Vec::new(),
+            retry_count: 0,
+            max_retries: 3,
+            phases: BTreeMap::new(),
+            history: Vec::new(),
+            created_at: "2026-06-10T05:00:00Z".to_owned(),
+            workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            locked_at: None,
+        }
+    }
+
+    fn attachments_path(state_dir: &Path, task_id: &str) -> PathBuf {
+        state_dir.join("attachments").join(task_id)
+    }
+
+    #[test]
+    fn task_prompt_includes_previous_review_feedback_on_retry() {
+        let config = test_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let mut task = test_task();
+        task.retry_count = 1;
+        task.history.push(HistoryEntry {
+            from: Some("reviewing".to_owned()),
+            to: "implementing".to_owned(),
+            timestamp: "2026-06-10T05:30:00Z".to_owned(),
+            reason: "retry 1/3: handle the nil retry feedback case".to_owned(),
+        });
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(output.contains("## Previous Review Feedback"));
+        assert!(output.contains("handle the nil retry feedback case"));
+        assert!(output.contains("Read any existing files under"));
+        assert!(output.contains(&attachments_path(state_dir, &task.id).display().to_string()));
+    }
+
+    #[test]
+    fn task_prompt_omits_previous_review_feedback_on_first_attempt() {
+        let config = test_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let task = test_task();
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block task-109 --reason \"<explanation>\"`";
+
+        assert_eq!(output, expected);
+        assert!(!output.contains("## Previous Review Feedback"));
+        assert!(!output.contains("Read any existing files under"));
+    }
 }
