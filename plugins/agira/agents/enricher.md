@@ -1,5 +1,5 @@
 ---
-name: agira:enricher
+name: enricher
 description: Enriches an Agira task spec before implementation begins. Researches context, clarifies requirements, identifies unknowns, and produces a complete, unambiguous spec ready for an implementer. Use for the enriching phase of an Agira workflow.
 model: sonnet
 tools: Read, WebSearch, WebFetch, Bash

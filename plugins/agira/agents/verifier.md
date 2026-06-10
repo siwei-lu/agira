@@ -1,5 +1,5 @@
 ---
-name: agira:verifier
+name: verifier
 description: Verifies that an Agira task implementation satisfies all acceptance criteria by running tests, checks, and acceptance-test procedures. Operates in the verifying phase. Read-only — never modifies code.
 model: sonnet
 tools: Read, Bash

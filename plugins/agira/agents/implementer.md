@@ -1,5 +1,5 @@
 ---
-name: agira:implementer
+name: implementer
 description: Implements an Agira task by writing code, tests, and any required configuration changes. Operates in the in_progress phase. Follows TDD — tests first, then implementation — and advances with a commit hash as evidence.
 model: sonnet
 tools: Read, Write, Edit, Bash
