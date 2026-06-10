@@ -126,6 +126,84 @@ impl TaskWire {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::PhaseDef;
+
+    fn retry_test_store() -> (tempfile::TempDir, TaskStore) {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let state_dir = dir.path().join(".agira");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        );
+        let store = TaskStore::new(&state_dir, &config).expect("create store");
+        (dir, store)
+    }
+
+    #[test]
+    fn retry_from_reviewing_reenters_at_producing_phase() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "retry target",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+        store.lock_task(&task.id).expect("lock task");
+
+        assert_eq!(
+            store
+                .retry_task(&task.id, "needs changes")
+                .expect("retry task"),
+            (1, 3)
+        );
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "implementing");
+        assert_eq!(task.retry_count, 1);
+        assert_eq!(task.locked_at, None);
+        let history = task.history.last().expect("retry history");
+        assert_eq!(history.from.as_deref(), Some("reviewing"));
+        assert_eq!(history.to, "implementing");
+        assert_eq!(history.reason, "retry 1/3: needs changes");
+    }
+
+    #[test]
+    fn retry_from_first_real_phase_clamps_to_itself() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "first real phase",
+                "description",
+                Vec::new(),
+                Some("enriching"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        store.retry_task(&task.id, "try again").expect("retry task");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "enriching");
+        assert_eq!(task.retry_count, 1);
+        let history = task.history.last().expect("retry history");
+        assert_eq!(history.from.as_deref(), Some("enriching"));
+        assert_eq!(history.to, "enriching");
+        assert_eq!(history.reason, "retry 1/3: try again");
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("task not found")]
@@ -576,23 +654,32 @@ impl TaskStore {
                     from: previous_state.clone(),
                     to: String::new(),
                 })?;
-
-        if !sequence.contains(&previous_state) {
-            return Err(StoreError::InvalidTransition {
-                from: previous_state,
+        let previous_index = sequence
+            .iter()
+            .position(|phase| phase == &previous_state)
+            .ok_or(StoreError::InvalidTransition {
+                from: previous_state.clone(),
                 to: first_phase,
-            });
-        }
+            })?;
+        let target_index = previous_index.saturating_sub(1).max(1);
+        let target_phase =
+            sequence
+                .get(target_index)
+                .cloned()
+                .ok_or_else(|| StoreError::InvalidTransition {
+                    from: previous_state.clone(),
+                    to: String::new(),
+                })?;
 
         let task = &mut tasks_file.tasks[task_index];
         let new_retry_count = task.retry_count + 1;
         let max_retries = task.max_retries;
         task.retry_count = new_retry_count;
-        task.state = first_phase.clone();
+        task.state = target_phase.clone();
         task.locked_at = None;
         task.history.push(HistoryEntry {
             from: Some(previous_state),
-            to: first_phase,
+            to: target_phase,
             timestamp: Utc::now().to_rfc3339(),
             reason: format!("retry {new_retry_count}/{max_retries}: {reason}"),
         });
