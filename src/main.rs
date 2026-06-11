@@ -69,6 +69,12 @@ enum Commands {
         #[command(subcommand)]
         command: WorkflowCommands,
     },
+    /// Manage the tmux-backed project runner
+    #[command(subcommand_value_name = "command")]
+    Runner {
+        #[command(subcommand)]
+        command: RunnerCommands,
+    },
     /// Print prompts to install or uninstall an agira task-add personal skill
     #[command(subcommand_value_name = "command")]
     Skill {
@@ -167,6 +173,28 @@ enum WorkflowCommands {
     SetDefault {
         #[arg(value_name = "name")]
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunnerCommands {
+    /// Start the tmux-backed runner
+    Start {
+        /// Runner type recorded in the registry
+        #[arg(long = "type", value_name = "type", default_value = "claude-tmux")]
+        runner_type: String,
+    },
+    /// Stop the tmux-backed runner
+    Stop,
+    /// Show runner liveness and registry state
+    Status,
+    /// Attach to the tmux-backed runner
+    Attach,
+    /// Print the tmux pipe-pane log
+    Logs {
+        /// Follow the log file
+        #[arg(short = 'f', long)]
+        follow: bool,
     },
 }
 
@@ -811,6 +839,53 @@ fn main() -> ExitCode {
                 }
             },
         },
+        Commands::Runner { command } => match resolve_initialized_project() {
+            Ok(project) => match command {
+                RunnerCommands::Start { runner_type } => {
+                    match commands::run_runner_start(&project, Some(&runner_type)) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_runner(&error)
+                        }
+                    }
+                }
+                RunnerCommands::Stop => match commands::run_runner_stop(&project) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_runner(&error)
+                    }
+                },
+                RunnerCommands::Status => match commands::run_runner_status(&project) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_runner(&error)
+                    }
+                },
+                RunnerCommands::Attach => match commands::run_runner_attach(&project) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_runner(&error)
+                    }
+                },
+                RunnerCommands::Logs { follow } => {
+                    match commands::run_runner_logs(&project, follow) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_runner(&error)
+                        }
+                    }
+                }
+            },
+            Err(error) => {
+                eprintln!("error: {error}");
+                exit_code_for(&error)
+            }
+        },
         Commands::Skill { command } => {
             let result = match command {
                 SkillCommands::Install => commands::run_skill_install(),
@@ -1177,5 +1252,24 @@ fn exit_code_for_workflow_list(error: &commands::WorkflowListError) -> ExitCode 
     match error {
         NotFound { .. } | Load { .. } | InvalidConfig { .. } => ExitCode::from(1),
         Read { .. } | JsonOutput(_) => ExitCode::from(2),
+    }
+}
+
+fn exit_code_for_runner(error: &commands::RunnerCommandError) -> ExitCode {
+    use commands::RunnerCommandError::*;
+
+    match error {
+        UnregisteredLiveSession
+        | NoRunnerRegistered
+        | SessionNotAlive
+        | LogFileNotFound { .. }
+        | TmuxFailed { .. } => ExitCode::from(1),
+        TmuxIo { .. } | Read { .. } | Write { .. } => ExitCode::from(2),
+        RunnerStore(store_error) => match store_error {
+            crate::core::RunnerStoreError::Io { .. }
+            | crate::core::RunnerStoreError::Serialize(_)
+            | crate::core::RunnerStoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::RunnerStoreError::NotFound => ExitCode::from(1),
+        },
     }
 }

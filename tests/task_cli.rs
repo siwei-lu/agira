@@ -73,6 +73,36 @@ fn task_subcommands_require_initialized_project() {
 }
 
 #[test]
+fn runner_subcommands_require_initialized_project() {
+    let cases: &[&[&str]] = &[
+        &["runner", "start"],
+        &["runner", "stop"],
+        &["runner", "status"],
+        &["runner", "attach"],
+        &["runner", "logs"],
+    ];
+
+    for args in cases {
+        let (home, _workspace, repo) = setup_uninitialized_repo();
+
+        let output = run(agira(home.path(), &repo).args(*args));
+
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "",
+            "args: {args:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            NOT_INITIALIZED_ERROR,
+            "args: {args:?}"
+        );
+        assert!(!project_state_dir(home.path()).exists(), "args: {args:?}");
+    }
+}
+
+#[test]
 fn task_status_is_unrecognized_subcommand() {
     let (home, _workspace, repo) = setup_uninitialized_repo();
 

@@ -123,6 +123,28 @@ fn skill_help_uses_lowercase_command_placeholder() {
 }
 
 #[test]
+fn runner_help_uses_lowercase_command_placeholder() {
+    let out = help_stdout(&["runner"]);
+    assert!(
+        out.contains("<command>"),
+        "expected lowercase <command> in 'agira runner --help', got:\n{out}"
+    );
+    assert!(
+        !out.contains("<COMMAND>"),
+        "found uppercase <COMMAND> in 'agira runner --help'"
+    );
+}
+
+#[test]
+fn runner_start_help_lists_type_flag() {
+    let out = help_stdout(&["runner", "start"]);
+    assert!(
+        out.contains("--type <type>"),
+        "expected --type <type> in 'agira runner start --help', got:\n{out}"
+    );
+}
+
+#[test]
 fn config_help_lists_valid_keys() {
     let out = help_stdout(&["config"]);
     assert!(
