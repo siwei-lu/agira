@@ -262,6 +262,9 @@ enum TaskCommands {
         /// Evidence of completion for this phase; advances the current task when provided
         #[arg(long, value_name = "artifact")]
         artifact: Option<String>,
+        /// Runner identity used to claim the selected task lease
+        #[arg(long, value_name = "id")]
+        runner: Option<String>,
         /// Target a specific task by ID instead of the automatically selected next task
         #[arg(long = "task", value_name = "id")]
         task_id: Option<String>,
@@ -333,12 +336,14 @@ enum TaskCommands {
         id: String,
     },
     /// Mark a task as worker-locked (advisory; skipped by task todo until lock expires or is cleared)
+    #[command(hide = true)]
     Lock {
         /// Task ID to lock (e.g. task-001)
         #[arg(value_name = "id")]
         id: String,
     },
     /// Clear the worker lock on a task
+    #[command(hide = true)]
     Unlock {
         /// Task ID to unlock (e.g. task-001)
         #[arg(value_name = "id")]
@@ -386,6 +391,7 @@ fn main() -> ExitCode {
             },
             TaskCommands::Todo {
                 artifact,
+                runner,
                 task_id,
                 from,
             } => match resolve_initialized_project() {
@@ -394,6 +400,7 @@ fn main() -> ExitCode {
                     artifact.as_deref(),
                     task_id.as_deref(),
                     from.as_deref(),
+                    resolve_runner_id(runner.as_deref()).as_deref(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -831,6 +838,18 @@ fn main() -> ExitCode {
     }
 }
 
+fn resolve_runner_id(cli_runner: Option<&str>) -> Option<String> {
+    cli_runner
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| id.trim().to_owned())
+        .or_else(|| {
+            env::var("AGIRA_RUNNER_ID")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty())
+        })
+}
+
 fn split_hook_add_args(on: Option<String>, args: Vec<String>) -> (String, Vec<String>) {
     match on {
         Some(event) => (event, args),
@@ -905,6 +924,12 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
             | crate::core::StoreError::Serialize(_)
             | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
+        },
+        RunnerStoreError(runner_error) => match runner_error {
+            crate::core::RunnerStoreError::Io { .. }
+            | crate::core::RunnerStoreError::Serialize(_)
+            | crate::core::RunnerStoreError::Deserialize(_) => ExitCode::from(2),
+            crate::core::RunnerStoreError::NotFound => ExitCode::from(1),
         },
     }
 }

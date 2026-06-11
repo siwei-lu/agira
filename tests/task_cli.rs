@@ -210,6 +210,117 @@ fn task_todo_help_lists_task_and_from_flags() {
         stdout.contains("<phase>"),
         "expected <phase> placeholder in 'agira task todo --help', got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("--runner"),
+        "expected --runner in 'agira task todo --help', got:\n{stdout}"
+    );
+}
+
+#[test]
+fn task_todo_runner_flag_claims_selected_task() {
+    let (home, _workspace, repo) = setup_initialized_repo("Runner Flag Repo");
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "runner flag task",
+        "--description",
+        "A task claimed by the runner flag",
+        "--phase",
+        "implementing",
+    ]));
+    assert!(output.status.success(), "task add failed");
+
+    let output = run(agira(home.path(), &repo).args(["task", "todo", "--runner", "runner-cli"]));
+    assert!(
+        output.status.success(),
+        "todo failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let runners_json = fs::read_to_string(
+        project_state_dir_for(home.path(), "runner-flag-repo")
+            .join("runner")
+            .join("runners.json"),
+    )
+    .expect("read runners.json");
+    assert!(runners_json.contains("\"runner-cli\""));
+    assert!(runners_json.contains("\"current_task\": \"task-001\""));
+    assert!(runners_json.contains("\"lease_expires_at\""));
+    assert!(runners_json.contains("\"last_heartbeat\""));
+}
+
+#[test]
+fn task_todo_runner_env_claims_selected_task() {
+    let (home, _workspace, repo) = setup_initialized_repo("Runner Env Repo");
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "runner env task",
+        "--description",
+        "A task claimed by the runner env var",
+        "--phase",
+        "implementing",
+    ]));
+    assert!(output.status.success(), "task add failed");
+
+    let output = run(agira(home.path(), &repo)
+        .env("AGIRA_RUNNER_ID", "runner-env")
+        .args(["task", "todo"]));
+    assert!(
+        output.status.success(),
+        "todo failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let runners_json = fs::read_to_string(
+        project_state_dir_for(home.path(), "runner-env-repo")
+            .join("runner")
+            .join("runners.json"),
+    )
+    .expect("read runners.json");
+    assert!(runners_json.contains("\"runner-env\""));
+    assert!(runners_json.contains("\"current_task\": \"task-001\""));
+}
+
+#[test]
+fn hidden_task_lock_and_unlock_still_operate() {
+    let (home, _workspace, repo) = setup_initialized_repo("Hidden Lock Repo");
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "hidden lock task",
+        "--description",
+        "A task used to verify hidden lock commands still work",
+    ]));
+    assert!(output.status.success(), "task add failed");
+
+    let output = run(agira(home.path(), &repo).args(["task", "lock", "task-001"]));
+    assert!(
+        output.status.success(),
+        "task lock failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tasks_json = fs::read_to_string(
+        project_state_dir_for(home.path(), "hidden-lock-repo").join("tasks.json"),
+    )
+    .expect("read tasks.json after lock");
+    assert!(tasks_json.contains("\"locked_at\": \"20"));
+
+    let output = run(agira(home.path(), &repo).args(["task", "unlock", "task-001"]));
+    assert!(
+        output.status.success(),
+        "task unlock failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tasks_json = fs::read_to_string(
+        project_state_dir_for(home.path(), "hidden-lock-repo").join("tasks.json"),
+    )
+    .expect("read tasks.json after unlock");
+    assert!(!tasks_json.contains("\"locked_at\""));
 }
 
 /// Legacy path (--artifact without --task) emits deprecation warning on stderr.

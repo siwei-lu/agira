@@ -5,6 +5,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::core::{
     config::{Config, INITIAL_PHASE_NAME, TERMINAL_PHASE_NAME},
+    runner::{RunnerRegistry, is_lease_expired},
     tasks::{Task, TaskPhase},
 };
 
@@ -32,13 +33,56 @@ pub(crate) fn format_pick_output(config: &Config, tasks: &[Task], state_dir: &Pa
     format_non_actionable_summary(tasks)
 }
 
+pub(crate) fn format_pick_output_for_runner(
+    config: &Config,
+    tasks: &[Task],
+    state_dir: &Path,
+    runner_registry: &RunnerRegistry,
+    runner_id: &str,
+    now: DateTime<Utc>,
+) -> String {
+    if tasks.is_empty() {
+        return NO_TASKS_MESSAGE.to_owned();
+    }
+
+    if is_all_done(tasks, config) {
+        return format_completion_summary(tasks);
+    }
+
+    if let Some(task) = select_next_task_for_runner(tasks, config, runner_registry, runner_id, now)
+    {
+        return format_task_prompt_output(task, config, state_dir);
+    }
+
+    format_non_actionable_summary(tasks)
+}
+
 pub(crate) fn select_next_task<'a>(all_tasks: &'a [Task], config: &Config) -> Option<&'a Task> {
     select_next_task_at(all_tasks, config, Utc::now())
+}
+
+pub(crate) fn select_next_task_for_runner<'a>(
+    all_tasks: &'a [Task],
+    config: &Config,
+    runner_registry: &RunnerRegistry,
+    runner_id: &str,
+    now: DateTime<Utc>,
+) -> Option<&'a Task> {
+    select_next_task_with_leases_at(all_tasks, config, Some((runner_registry, runner_id)), now)
 }
 
 fn select_next_task_at<'a>(
     all_tasks: &'a [Task],
     config: &Config,
+    now: DateTime<Utc>,
+) -> Option<&'a Task> {
+    select_next_task_with_leases_at(all_tasks, config, None, now)
+}
+
+fn select_next_task_with_leases_at<'a>(
+    all_tasks: &'a [Task],
+    config: &Config,
+    runner: Option<(&RunnerRegistry, &str)>,
     now: DateTime<Utc>,
 ) -> Option<&'a Task> {
     let terminal_phase = config.terminal_phase()?;
@@ -48,6 +92,7 @@ fn select_next_task_at<'a>(
         .filter(|task| {
             is_actionable(task, config)
                 && !is_lock_live(task.locked_at.as_deref(), now)
+                && !is_live_lease_held_by_other_runner(task, runner, now)
                 && deps_satisfied(task, all_tasks, terminal_phase)
         })
         .max_by_key(|task| {
@@ -56,6 +101,22 @@ fn select_next_task_at<'a>(
                 Reverse(task_id_number(&task.id)),
             )
         })
+}
+
+fn is_live_lease_held_by_other_runner(
+    task: &Task,
+    runner: Option<(&RunnerRegistry, &str)>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some((registry, requesting_runner_id)) = runner else {
+        return false;
+    };
+
+    registry.runners.iter().any(|(runner_id, runner)| {
+        runner_id != requesting_runner_id
+            && runner.current_task.as_deref() == Some(task.id.as_str())
+            && !is_lease_expired(runner.lease_expires_at.as_deref(), now)
+    })
 }
 
 /// Returns true when the lock is present and NOT yet stale (i.e. the task should be skipped).
@@ -351,12 +412,15 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use chrono::{DateTime, Utc};
+
     use crate::core::{
         config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
+        runner::{Runner, RunnerRegistry},
         tasks::{HistoryEntry, Task},
     };
 
-    use super::format_task_prompt_output;
+    use super::{format_task_prompt_output, select_next_task_for_runner};
 
     fn test_config() -> Config {
         Config::new_single_workflow(
@@ -392,8 +456,106 @@ mod tests {
         }
     }
 
+    fn task_with_id(id: &str, state: &str) -> Task {
+        Task {
+            id: id.to_owned(),
+            title: format!("{id} title"),
+            description: "description".to_owned(),
+            state: state.to_owned(),
+            blocked_at_phase: None,
+            blocked_reason: None,
+            dependencies: Vec::new(),
+            retry_count: 0,
+            max_retries: 3,
+            phases: BTreeMap::new(),
+            history: Vec::new(),
+            created_at: "2026-06-10T00:00:00Z".to_owned(),
+            workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            locked_at: None,
+        }
+    }
+
+    fn runner_with_lease(id: &str, task_id: &str, lease_expires_at: &str) -> Runner {
+        Runner {
+            id: id.to_owned(),
+            runner_type: "local".to_owned(),
+            tmux_session: String::new(),
+            status: "running".to_owned(),
+            current_task: Some(task_id.to_owned()),
+            lease_expires_at: Some(lease_expires_at.to_owned()),
+            last_heartbeat: Some("2026-06-11T12:00:00Z".to_owned()),
+            registered_at: "2026-06-11T12:00:00Z".to_owned(),
+        }
+    }
+
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-06-11T12:00:00Z")
+            .expect("parse fixed time")
+            .with_timezone(&Utc)
+    }
+
     fn attachments_path(state_dir: &Path, task_id: &str) -> PathBuf {
         state_dir.join("attachments").join(task_id)
+    }
+
+    #[test]
+    fn runner_selection_skips_task_held_by_other_live_lease() {
+        let config = test_config();
+        let tasks = vec![
+            task_with_id("task-001", "implementing"),
+            task_with_id("task-002", "implementing"),
+        ];
+        let mut registry = RunnerRegistry::default();
+        registry.runners.insert(
+            "runner-other".to_owned(),
+            runner_with_lease("runner-other", "task-001", "2026-06-11T12:05:00Z"),
+        );
+
+        let selected =
+            select_next_task_for_runner(&tasks, &config, &registry, "runner-me", fixed_now())
+                .expect("select task");
+
+        assert_eq!(selected.id, "task-002");
+    }
+
+    #[test]
+    fn runner_selection_allows_task_held_by_other_expired_lease() {
+        let config = test_config();
+        let tasks = vec![
+            task_with_id("task-001", "implementing"),
+            task_with_id("task-002", "implementing"),
+        ];
+        let mut registry = RunnerRegistry::default();
+        registry.runners.insert(
+            "runner-other".to_owned(),
+            runner_with_lease("runner-other", "task-001", "2026-06-11T11:59:59Z"),
+        );
+
+        let selected =
+            select_next_task_for_runner(&tasks, &config, &registry, "runner-me", fixed_now())
+                .expect("select task");
+
+        assert_eq!(selected.id, "task-001");
+    }
+
+    #[test]
+    fn runner_selection_allows_task_held_by_requesting_runner() {
+        let config = test_config();
+        let tasks = vec![
+            task_with_id("task-001", "implementing"),
+            task_with_id("task-002", "implementing"),
+        ];
+        let mut registry = RunnerRegistry::default();
+        registry.runners.insert(
+            "runner-me".to_owned(),
+            runner_with_lease("runner-me", "task-001", "2026-06-11T12:05:00Z"),
+        );
+
+        let selected =
+            select_next_task_for_runner(&tasks, &config, &registry, "runner-me", fixed_now())
+                .expect("select task");
+
+        assert_eq!(selected.id, "task-001");
     }
 
     #[test]

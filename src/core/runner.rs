@@ -111,6 +111,16 @@ impl RunnerStore {
         runner_type: &str,
         tmux_session: &str,
     ) -> Result<Runner, RunnerStoreError> {
+        self.register_at(id, runner_type, tmux_session, Utc::now())
+    }
+
+    pub fn register_at(
+        &mut self,
+        id: &str,
+        runner_type: &str,
+        tmux_session: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Runner, RunnerStoreError> {
         let runner = Runner {
             id: id.to_owned(),
             runner_type: runner_type.to_owned(),
@@ -119,7 +129,7 @@ impl RunnerStore {
             current_task: None,
             lease_expires_at: None,
             last_heartbeat: None,
-            registered_at: Utc::now().to_rfc3339(),
+            registered_at: now.to_rfc3339(),
         };
 
         let mut registry = self.registry.clone();

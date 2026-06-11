@@ -4,15 +4,19 @@ use std::{
     process::{Command, Stdio},
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 use crate::core::{
     advance::{commit_prompt, read_recent_commits},
     config::{ConfigError, load_project_config},
     hooks::{ALL_TASKS_DONE_EVENT, HookContext, dispatch_hooks, hooks_for_event, hooks_for_phase},
-    pick::{format_pick_output, select_next_task},
+    pick::{
+        format_pick_output, format_pick_output_for_runner, select_next_task,
+        select_next_task_for_runner,
+    },
     project::Project,
+    runner::{RunnerStore, RunnerStoreError},
     tasks::{StoreError, Task, TaskStore, all_tasks_done},
 };
 
@@ -60,6 +64,9 @@ pub enum TodoError {
 
     #[error(transparent)]
     StoreError(#[from] StoreError),
+
+    #[error(transparent)]
+    RunnerStoreError(#[from] RunnerStoreError),
 }
 
 pub fn run_todo(
@@ -67,6 +74,25 @@ pub fn run_todo(
     artifact: Option<&str>,
     task_id: Option<&str>,
     from_phase: Option<&str>,
+    runner_id: Option<&str>,
+) -> Result<(), TodoError> {
+    run_todo_at(
+        project,
+        artifact,
+        task_id,
+        from_phase,
+        runner_id,
+        Utc::now(),
+    )
+}
+
+fn run_todo_at(
+    project: &Project,
+    artifact: Option<&str>,
+    task_id: Option<&str>,
+    from_phase: Option<&str>,
+    runner_id: Option<&str>,
+    now: DateTime<Utc>,
 ) -> Result<(), TodoError> {
     let config_path = project.state_dir.join("config.json");
     let config =
@@ -86,7 +112,47 @@ pub fn run_todo(
                 return Ok(());
             }
 
-            let output = format_pick_output(&config, store.all_tasks(), &project.state_dir);
+            let output = if let Some(runner_id) = non_empty_runner_id(runner_id) {
+                let mut runner_store = RunnerStore::new(&project.state_dir)?;
+                ensure_runner_registered(&mut runner_store, runner_id, now)?;
+                match select_next_task_for_runner(
+                    store.all_tasks(),
+                    &config,
+                    runner_store.registry(),
+                    runner_id,
+                    now,
+                ) {
+                    Some(task) => {
+                        let task_id = task.id.clone();
+                        let output = format_pick_output_for_runner(
+                            &config,
+                            store.all_tasks(),
+                            &project.state_dir,
+                            runner_store.registry(),
+                            runner_id,
+                            now,
+                        );
+                        let ttl = project.global_config.runner.lease_ttl_duration().map_err(
+                            |reason| TodoError::InvalidConfig {
+                                path: config_path.clone(),
+                                reason,
+                            },
+                        )?;
+                        runner_store.acquire_lease(runner_id, &task_id, ttl, now)?;
+                        output
+                    }
+                    None => format_pick_output_for_runner(
+                        &config,
+                        store.all_tasks(),
+                        &project.state_dir,
+                        runner_store.registry(),
+                        runner_id,
+                        now,
+                    ),
+                }
+            } else {
+                format_pick_output(&config, store.all_tasks(), &project.state_dir)
+            };
             print_todo_output(&output);
         }
         Some(artifact) => {
@@ -213,6 +279,29 @@ pub fn run_todo(
     Ok(())
 }
 
+fn non_empty_runner_id(runner_id: Option<&str>) -> Option<&str> {
+    runner_id.and_then(|id| {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn ensure_runner_registered(
+    runner_store: &mut RunnerStore,
+    runner_id: &str,
+    now: DateTime<Utc>,
+) -> Result<(), RunnerStoreError> {
+    if runner_store.get_runner(runner_id).is_none() {
+        runner_store.register_at(runner_id, "local", "", now)?;
+    }
+
+    Ok(())
+}
+
 fn run_gate(cmd: &str, git_root: &Path, phase_name: &str) -> Result<(), TodoError> {
     let output = Command::new("sh")
         .arg("-c")
@@ -323,15 +412,18 @@ thread_local! {
 mod tests {
     use std::{collections::BTreeMap, fs};
 
+    use chrono::{DateTime, Duration, Utc};
+
     use crate::core::{
         config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
         global_config::GlobalConfig,
         hooks::HookConfig,
         project::Project,
+        runner::RunnerStore,
         tasks::{HistoryEntry, Task, TaskStore},
     };
 
-    use super::{TodoError, dirty_commit_target, run_todo};
+    use super::{OUTPUT_CAPTURE, TodoError, dirty_commit_target, run_todo, run_todo_at};
 
     // ---------------------------------------------------------------------------
     // Helpers for run_todo unit tests
@@ -390,6 +482,23 @@ mod tests {
         task.id
     }
 
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-06-11T12:00:00Z")
+            .expect("parse fixed time")
+            .with_timezone(&Utc)
+    }
+
+    fn capture_todo_output<F>(run: F) -> String
+    where
+        F: FnOnce(),
+    {
+        OUTPUT_CAPTURE.with(|capture| {
+            *capture.borrow_mut() = Some(String::new());
+        });
+        run();
+        OUTPUT_CAPTURE.with(|capture| capture.borrow_mut().take().expect("captured output"))
+    }
+
     // ---------------------------------------------------------------------------
     // CAS mismatch: --artifact + --task + --from where task is in a different phase
     // ---------------------------------------------------------------------------
@@ -405,6 +514,7 @@ mod tests {
             Some("my artifact"),
             Some(&task_id),
             Some("enriching"), // task is actually in "implementing"
+            None,
         );
 
         match result {
@@ -445,7 +555,7 @@ mod tests {
             .expect("block task");
         drop(store);
 
-        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None, None);
 
         match result {
             Err(TodoError::NotAdvanceable { id, state }) => {
@@ -476,7 +586,7 @@ mod tests {
         store.fail_task(&task_id, "whoops").expect("fail task");
         drop(store);
 
-        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None, None);
 
         match result {
             Err(TodoError::NotAdvanceable { id, state }) => {
@@ -497,7 +607,7 @@ mod tests {
         let (_home, project) = setup_project_with_config(&config);
         let task_id = add_task_in_phase(&project, &config, "terminal task", "done");
 
-        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None, None);
 
         match result {
             Err(TodoError::NotAdvanceable { id, state }) => {
@@ -517,7 +627,7 @@ mod tests {
         let config = three_phase_config();
         let (_home, project) = setup_project_with_config(&config);
 
-        let result = run_todo(&project, Some("my artifact"), Some("task-999"), None);
+        let result = run_todo(&project, Some("my artifact"), Some("task-999"), None, None);
 
         match result {
             Err(TodoError::TaskNotFound { id }) => {
@@ -540,7 +650,7 @@ mod tests {
         // Capture stderr by redirecting within the test is not straightforward; instead we
         // validate that the function returns Ok and the task is advanced — the deprecation
         // warning is emitted to stderr as a side-effect verified by the integration test.
-        let result = run_todo(&project, Some("legacy artifact"), None, None);
+        let result = run_todo(&project, Some("legacy artifact"), None, None, None);
         assert!(
             result.is_ok(),
             "legacy path must return Ok; got: {result:?}"
@@ -552,6 +662,103 @@ mod tests {
             task.state, "implementing",
             "legacy path must advance the task"
         );
+    }
+
+    #[test]
+    fn read_only_todo_without_runner_does_not_write_runner_lease_and_output_is_unchanged() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "plain task", "implementing");
+
+        let baseline = capture_todo_output(|| {
+            run_todo_at(&project, None, None, None, None, fixed_now()).expect("run todo");
+        });
+        let runner_path = project.state_dir.join("runner").join("runners.json");
+        assert!(
+            !runner_path.exists(),
+            "no runner id must not create runners.json"
+        );
+
+        let output_with_public_entrypoint = capture_todo_output(|| {
+            run_todo(&project, None, None, None, None).expect("run todo");
+        });
+
+        assert_eq!(output_with_public_entrypoint, baseline);
+        assert!(baseline.contains(&format!("- ID: {task_id}")));
+    }
+
+    #[test]
+    fn read_only_todo_with_runner_claims_selected_task() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "leased task", "implementing");
+
+        run_todo_at(&project, None, None, None, Some("runner-flag"), fixed_now())
+            .expect("run todo");
+
+        let runner_store = RunnerStore::new(&project.state_dir).expect("open runner store");
+        let runner = runner_store
+            .get_runner("runner-flag")
+            .expect("runner is auto-registered");
+
+        assert_eq!(runner.current_task.as_deref(), Some(task_id.as_str()));
+        assert_eq!(
+            runner.lease_expires_at.as_deref(),
+            Some((fixed_now() + Duration::minutes(5)).to_rfc3339().as_str())
+        );
+        assert_eq!(
+            runner.last_heartbeat.as_deref(),
+            Some(fixed_now().to_rfc3339().as_str())
+        );
+    }
+
+    #[test]
+    fn read_only_todo_with_runner_uses_configured_lease_ttl() {
+        let config = three_phase_config();
+        let (_home, mut project) = setup_project_with_config(&config);
+        project.global_config.runner.lease_ttl = "10m".to_owned();
+        let _task_id = add_task_in_phase(&project, &config, "ttl task", "implementing");
+
+        run_todo_at(&project, None, None, None, Some("runner-ttl"), fixed_now()).expect("run todo");
+
+        let runner_store = RunnerStore::new(&project.state_dir).expect("open runner store");
+        let runner = runner_store
+            .get_runner("runner-ttl")
+            .expect("runner is auto-registered");
+
+        assert_eq!(
+            runner.lease_expires_at.as_deref(),
+            Some((fixed_now() + Duration::minutes(10)).to_rfc3339().as_str())
+        );
+    }
+
+    #[test]
+    fn read_only_todo_with_runner_does_not_print_or_claim_task_held_by_other_live_lease() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "leased elsewhere", "implementing");
+        let mut runner_store = RunnerStore::new(&project.state_dir).expect("open runner store");
+        runner_store
+            .register_at("runner-other", "local", "", fixed_now())
+            .expect("register other runner");
+        runner_store
+            .acquire_lease("runner-other", &task_id, Duration::minutes(5), fixed_now())
+            .expect("lease task");
+        drop(runner_store);
+
+        let output = capture_todo_output(|| {
+            run_todo_at(&project, None, None, None, Some("runner-me"), fixed_now())
+                .expect("run todo");
+        });
+
+        assert!(!output.contains("# Agira Task Prompt"));
+        assert!(output.contains("No actionable tasks found"));
+
+        let runner_store = RunnerStore::new(&project.state_dir).expect("open runner store");
+        let runner = runner_store
+            .get_runner("runner-me")
+            .expect("requesting runner is auto-registered");
+        assert_eq!(runner.current_task, None);
     }
 
     fn test_config() -> Config {
@@ -698,7 +905,7 @@ mod tests {
         let (_home, _repo, project) = setup_project_with_live_git_root(&config);
         let task_id = add_task_in_phase(&project, &config, "gate task", "implementing");
 
-        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None, None);
         assert!(result.is_ok(), "gate must pass with 'true': {result:?}");
 
         let store = TaskStore::new(&project.state_dir, &config).expect("open store");
@@ -719,7 +926,7 @@ mod tests {
         let (_home, _repo, project) = setup_project_with_live_git_root(&config);
         let task_id = add_task_in_phase(&project, &config, "gate fail task", "implementing");
 
-        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None, None);
 
         match result {
             Err(TodoError::GateFailed { phase }) => {
@@ -747,7 +954,7 @@ mod tests {
         let (_home, project) = setup_project_with_config(&config);
         let task_id = add_task_in_phase(&project, &config, "no gate task", "implementing");
 
-        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None, None);
         assert!(result.is_ok(), "no gate must advance normally: {result:?}");
 
         let store = TaskStore::new(&project.state_dir, &config).expect("open store");
@@ -764,7 +971,7 @@ mod tests {
         let _task_id = add_task_in_phase(&project, &config, "read only task", "implementing");
 
         // No --artifact provided — gate must NOT be invoked
-        let result = run_todo(&project, None, None, None);
+        let result = run_todo(&project, None, None, None, None);
         assert!(
             result.is_ok(),
             "read-only path must not run gate: {result:?}"

@@ -31,6 +31,20 @@ fn task_help_uses_lowercase_command_placeholder() {
 }
 
 #[test]
+fn task_help_hides_legacy_lock_commands() {
+    let out = help_stdout(&["task"]);
+
+    assert!(
+        !out.contains(" lock"),
+        "did not expect legacy lock command in 'agira task --help', got:\n{out}"
+    );
+    assert!(
+        !out.contains(" unlock"),
+        "did not expect legacy unlock command in 'agira task --help', got:\n{out}"
+    );
+}
+
+#[test]
 fn task_add_help_describes_workflow_without_state_machine_wording() {
     let out = help_stdout(&["task", "add"]);
     assert!(
