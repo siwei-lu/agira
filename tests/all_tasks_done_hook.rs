@@ -41,7 +41,9 @@ fn setup_repo_with_max_retries(name: &str, max_retries: u32) -> (TempDir, TempDi
     fs::create_dir(&agira_root).unwrap();
     fs::write(
         agira_root.join("config.toml"),
-        format!("default_max_retries = {max_retries}\nhook_debug = false\n"),
+        format!(
+            "default_max_retries = {max_retries}\nhook_debug = false\non_retry_exhausted = \"fail\"\n"
+        ),
     )
     .unwrap();
 

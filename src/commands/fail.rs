@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    global_config::OnRetryExhausted,
     hooks::{ALL_TASKS_DONE_EVENT, HookContext, dispatch_hooks, hooks_for_event, hooks_for_phase},
     project::Project,
     tasks::{StoreError, TaskStore, all_tasks_done},
@@ -84,6 +85,7 @@ fn fail_task_flow(
     let current_state = task.state.clone();
     let retry_count = task.retry_count;
     let max_retries = task.max_retries;
+    let retry_reasons = retry_history_reasons(task);
 
     if current_state == "failed" {
         return Err(FailError::AlreadyFailed { id: id.to_owned() });
@@ -109,33 +111,59 @@ fn fail_task_flow(
             "{id} retrying ({new_retry_count}/{max_retries}): {reason}"
         ));
     } else {
-        let failure_reason = format!("failed (max retries): {reason}");
-        if let Err(error) = store.fail_task(id, &failure_reason) {
-            return Err(map_store_error(error, store, id));
-        }
-        let task = store.get_task(id).unwrap();
-        let hook_ctx = dispatch_task_hooks(project, task, &current_state, "failed", "");
+        match project.global_config.on_retry_exhausted {
+            OnRetryExhausted::Block => {
+                let blocked_reason = blocked_retry_reason(retry_reasons, reason);
+                if let Err(error) = store.block_task(id, &blocked_reason) {
+                    return Err(map_store_error(error, store, id));
+                }
+                let task = store.get_task(id).unwrap();
+                dispatch_task_hooks(project, task, &current_state, "blocked", &blocked_reason);
+                print_fail_output(&format!("{id} blocked — max retries reached"));
+            }
+            OnRetryExhausted::Fail => {
+                let failure_reason = format!("failed (max retries): {reason}");
+                if let Err(error) = store.fail_task(id, &failure_reason) {
+                    return Err(map_store_error(error, store, id));
+                }
+                let task = store.get_task(id).unwrap();
+                let hook_ctx = dispatch_task_hooks(project, task, &current_state, "failed", "");
 
-        // Cascade-fail all pending dependents of this now-terminal failed task.
-        cascade_fail_dependents(store, id, terminal_phase)?;
+                // Cascade-fail all pending dependents of this now-terminal failed task.
+                cascade_fail_dependents(store, id, terminal_phase)?;
 
-        if all_tasks_done(store.all_tasks()) {
-            let all_done_hooks = hooks_for_event(
-                &project.global_hooks,
-                &project.project_hooks,
-                ALL_TASKS_DONE_EVENT,
-            );
-            dispatch_hooks(
-                &all_done_hooks,
-                ALL_TASKS_DONE_EVENT,
-                &hook_ctx,
-                project.global_config.hook_debug,
-            );
+                if all_tasks_done(store.all_tasks()) {
+                    let all_done_hooks = hooks_for_event(
+                        &project.global_hooks,
+                        &project.project_hooks,
+                        ALL_TASKS_DONE_EVENT,
+                    );
+                    dispatch_hooks(
+                        &all_done_hooks,
+                        ALL_TASKS_DONE_EVENT,
+                        &hook_ctx,
+                        project.global_config.hook_debug,
+                    );
+                }
+                print_fail_output(&format!("{id} failed — max retries reached"));
+            }
         }
-        print_fail_output(&format!("{id} failed — max retries reached"));
     }
 
     Ok(())
+}
+
+fn retry_history_reasons(task: &crate::core::tasks::Task) -> Vec<String> {
+    task.history
+        .iter()
+        .filter(|entry| entry.reason.starts_with("retry "))
+        .map(|entry| entry.reason.clone())
+        .collect()
+}
+
+fn blocked_retry_reason(mut retry_reasons: Vec<String>, current_reason: &str) -> String {
+    retry_reasons.push(current_reason.to_owned());
+    retry_reasons.join("; ")
 }
 
 /// Cascade-fail all pending tasks that transitively depend on `failed_id`.
@@ -281,6 +309,129 @@ fn print_fail_output(message: &str) {
 #[cfg(test)]
 thread_local! {
     static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod retry_exhaustion_policy_tests {
+    use std::fs;
+
+    use crate::core::{
+        config::{Config, PhaseDef},
+        global_config::{GlobalConfig, OnRetryExhausted},
+        hooks::HookConfig,
+        project::Project,
+        tasks::TaskStore,
+    };
+
+    use super::fail_task_flow;
+
+    fn make_project_store(
+        max_retries: u32,
+        on_retry_exhausted: OnRetryExhausted,
+    ) -> (tempfile::TempDir, Project, TaskStore) {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let state_dir = dir.path().join(".agira");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            max_retries,
+        );
+        let mut global_config = GlobalConfig::default();
+        global_config.on_retry_exhausted = on_retry_exhausted;
+        let project = Project {
+            git_root: dir.path().to_path_buf(),
+            slug: "test".to_owned(),
+            state_dir: state_dir.clone(),
+            global_config,
+            global_hooks: HookConfig::default(),
+            project_hooks: HookConfig::default(),
+        };
+        let store = TaskStore::new(&state_dir, &config).expect("create store");
+
+        (dir, project, store)
+    }
+
+    #[test]
+    fn exhausted_block_policy_moves_task_to_blocked() {
+        let (_dir, project, mut store) = make_project_store(1, OnRetryExhausted::Block);
+        let task = store
+            .add_task(
+                "blocked exhausted",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        fail_task_flow(&project, &mut store, "done", &task.id, "crashes on nil")
+            .expect("fail task flow");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "blocked");
+        assert_eq!(task.blocked_at_phase.as_deref(), Some("reviewing"));
+        assert!(
+            task.blocked_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty())
+        );
+    }
+
+    #[test]
+    fn exhausted_block_policy_blocked_reason_contains_retry_history() {
+        let (_dir, project, mut store) = make_project_store(3, OnRetryExhausted::Block);
+        let task = store
+            .add_task(
+                "blocked exhausted history",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        store
+            .retry_task(&task.id, "wrong output")
+            .expect("first retry");
+        store.next_phase(&task.id).expect("return to reviewing");
+        store
+            .retry_task(&task.id, "still wrong")
+            .expect("second retry");
+
+        fail_task_flow(&project, &mut store, "done", &task.id, "crashes on nil")
+            .expect("fail task flow");
+
+        let task = store.get_task(&task.id).expect("get task");
+        let blocked_reason = task.blocked_reason.as_deref().expect("blocked reason");
+        assert!(blocked_reason.contains("retry 1/3: wrong output"));
+        assert!(blocked_reason.contains("retry 2/3: still wrong"));
+        assert!(blocked_reason.contains("crashes on nil"));
+    }
+
+    #[test]
+    fn exhausted_fail_policy_moves_task_to_failed() {
+        let (_dir, project, mut store) = make_project_store(1, OnRetryExhausted::Fail);
+        let task = store
+            .add_task(
+                "failed exhausted",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        fail_task_flow(&project, &mut store, "done", &task.id, "crashes on nil")
+            .expect("fail task flow");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "failed");
+    }
 }
 
 #[cfg(test)]

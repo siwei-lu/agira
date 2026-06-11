@@ -7,7 +7,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const DEFAULT_CONFIG_TOML: &str = "default_max_retries = 3\nhook_debug = false\n";
+const DEFAULT_CONFIG_TOML: &str =
+    "default_max_retries = 3\nhook_debug = false\non_retry_exhausted = \"block\"\n";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct GlobalConfig {
@@ -15,6 +16,15 @@ pub struct GlobalConfig {
     pub default_max_retries: u32,
     #[serde(default)]
     pub hook_debug: bool,
+    #[serde(default = "default_on_retry_exhausted")]
+    pub on_retry_exhausted: OnRetryExhausted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnRetryExhausted {
+    Block,
+    Fail,
 }
 
 impl Default for GlobalConfig {
@@ -22,12 +32,26 @@ impl Default for GlobalConfig {
         Self {
             default_max_retries: default_max_retries(),
             hook_debug: false,
+            on_retry_exhausted: default_on_retry_exhausted(),
         }
     }
 }
 
 fn default_max_retries() -> u32 {
     3
+}
+
+fn default_on_retry_exhausted() -> OnRetryExhausted {
+    OnRetryExhausted::Block
+}
+
+impl OnRetryExhausted {
+    fn as_str(self) -> &'static str {
+        match self {
+            OnRetryExhausted::Block => "block",
+            OnRetryExhausted::Fail => "fail",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -87,6 +111,10 @@ pub fn save_global_config(agira_root: &Path, config: &GlobalConfig) -> anyhow::R
         "hook_debug".to_owned(),
         toml::Value::Boolean(config.hook_debug),
     );
+    document.insert(
+        "on_retry_exhausted".to_owned(),
+        toml::Value::String(config.on_retry_exhausted.as_str().to_owned()),
+    );
 
     let contents = toml::to_string_pretty(&document)
         .with_context(|| format!("failed to serialize global config for {}", path.display()))?;
@@ -112,4 +140,30 @@ fn write_config_file(path: &Path, contents: String) -> Result<(), io::Error> {
     let temporary_path = path.with_extension("toml.tmp");
 
     fs::write(&temporary_path, contents).and_then(|_| fs::rename(&temporary_path, path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_config_defaults_to_block_policy() {
+        let config: GlobalConfig = toml::from_str("").expect("deserialize empty config");
+
+        assert_eq!(config.on_retry_exhausted, OnRetryExhausted::Block);
+    }
+
+    #[test]
+    fn global_config_fail_policy_round_trips() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let config = GlobalConfig {
+            on_retry_exhausted: OnRetryExhausted::Fail,
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(loaded.on_retry_exhausted, OnRetryExhausted::Fail);
+    }
 }

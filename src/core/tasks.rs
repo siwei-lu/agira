@@ -180,6 +180,60 @@ mod tests {
     }
 
     #[test]
+    fn retry_first_attempt_uses_previous_phase() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "first retry target",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        store
+            .retry_task(&task.id, "wrong output")
+            .expect("retry task");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "implementing");
+        assert_eq!(task.retry_count, 1);
+        let history = task.history.last().expect("retry history");
+        assert_eq!(history.reason, "retry 1/3: wrong output");
+    }
+
+    #[test]
+    fn retry_second_attempt_escalates_to_first_real_phase() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "second retry target",
+                "description",
+                Vec::new(),
+                Some("reviewing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        store
+            .retry_task(&task.id, "first retry")
+            .expect("retry task");
+        store.next_phase(&task.id).expect("return to reviewing");
+        store
+            .retry_task(&task.id, "second retry")
+            .expect("retry task");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "enriching");
+        assert_eq!(task.retry_count, 2);
+        let history = task.history.last().expect("retry history");
+        assert_eq!(history.from.as_deref(), Some("reviewing"));
+        assert_eq!(history.to, "enriching");
+        assert_eq!(history.reason, "retry 2/3: second retry");
+    }
+
+    #[test]
     fn retry_from_first_real_phase_clamps_to_itself() {
         let (_dir, mut store) = retry_test_store();
         let task = store
@@ -913,7 +967,12 @@ impl TaskStore {
                 from: previous_state.clone(),
                 to: first_phase,
             })?;
-        let target_index = previous_index.saturating_sub(1).max(1);
+        let new_retry_count = tasks_file.tasks[task_index].retry_count + 1;
+        let target_index = if new_retry_count == 1 {
+            previous_index.saturating_sub(1).max(1)
+        } else {
+            1
+        };
         let target_phase =
             sequence
                 .get(target_index)
@@ -924,7 +983,6 @@ impl TaskStore {
                 })?;
 
         let task = &mut tasks_file.tasks[task_index];
-        let new_retry_count = task.retry_count + 1;
         let max_retries = task.max_retries;
         task.retry_count = new_retry_count;
         task.state = target_phase.clone();
