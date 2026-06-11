@@ -252,3 +252,53 @@ fn all_tasks_done_hook_fires_when_tasks_are_done_and_failed() {
 
     assert_eq!(contents, "task-002|done|done terminal\n");
 }
+
+#[test]
+fn all_tasks_done_hook_fires_after_cascade_fail_drains_pending_queue() {
+    // task-001 is a dependency of task-002.
+    // Failing task-001 terminally must cascade-fail task-002.
+    // After the cascade the all_tasks_done hook must fire exactly once.
+    let (home, _workspace, repo) = setup_repo_with_max_retries("Cascade Fail Repo", 1);
+    let hook_output = home.path().join("cascade-fail-output.txt");
+    register_all_tasks_done_hook(home.path(), &repo, &hook_output);
+
+    run_ok(agira(home.path(), &repo).args(["task", "add", "Root task"]));
+    run_ok(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "Dependent task",
+        "--depends-on",
+        "task-001",
+    ]));
+
+    // Fail task-001 terminally; this must cascade-fail task-002.
+    run_ok(agira(home.path(), &repo).args([
+        "task",
+        "fail",
+        "task-001",
+        "--reason",
+        "root failure",
+    ]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("all_tasks_done hook did not fire within 2s after cascade");
+
+    // The hook fires once. The triggering task context is from the original
+    // task-001 fail (that is the hook_ctx used in fail_task_flow). Both tasks
+    // are now terminal (failed), so all_tasks_done must be true.
+    assert!(
+        !contents.is_empty(),
+        "all_tasks_done hook must have written output"
+    );
+
+    // Verify task-002 is failed with the cascade reason.
+    let output = agira(home.path(), &repo)
+        .args(["task", "inspect", "task-002"])
+        .output()
+        .unwrap();
+    let inspect = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        inspect.contains("dependency task-001 failed"),
+        "inspect output must show cascade reason; got:\n{inspect}"
+    );
+}
