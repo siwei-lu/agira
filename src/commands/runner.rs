@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -20,6 +20,7 @@ use crate::core::{
 
 const DEFAULT_RUNNER_TYPE: &str = "claude-tmux";
 const LOG_FILE_NAME: &str = "runner.log";
+const HEARTBEAT_STALENESS_THRESHOLD: Duration = Duration::minutes(10);
 
 #[derive(Debug, Error)]
 pub enum RunnerCommandError {
@@ -291,7 +292,8 @@ fn start_runner<T: Tmux>(
             }
 
             if runner.current_task.is_some()
-                && is_lease_expired(runner.lease_expires_at.as_deref(), now)
+                && (is_lease_expired(runner.lease_expires_at.as_deref(), now)
+                    || is_heartbeat_stale(runner.last_heartbeat.as_deref(), now))
             {
                 store.release_lease(&runner.id)?;
             }
@@ -416,7 +418,8 @@ fn status_runner<T: Tmux>(
     } else if !tmux.pane_alive(&session_name)? {
         "zombie"
     } else if runner.current_task.is_some()
-        && is_lease_expired(runner.lease_expires_at.as_deref(), now)
+        && (is_lease_expired(runner.lease_expires_at.as_deref(), now)
+            || is_heartbeat_stale(runner.last_heartbeat.as_deref(), now))
     {
         "stale"
     } else {
@@ -520,6 +523,16 @@ fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
         shell_quote_string(runner_id),
         shell_quote_string(prompt)
     )
+}
+
+fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool {
+    let Some(hb) = last_heartbeat else {
+        return false; // fail-safe: missing heartbeat → treat as live
+    };
+    let Ok(parsed) = DateTime::parse_from_rfc3339(hb) else {
+        return false; // fail-safe: unparseable → treat as live
+    };
+    now - parsed.with_timezone(&Utc) > HEARTBEAT_STALENESS_THRESHOLD
 }
 
 fn format_heartbeat_age(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> String {
@@ -1077,6 +1090,48 @@ mod tests {
         let store = RunnerStore::new(&project.state_dir).expect("open store");
         let runner = store.get_runner("runner-stale").expect("runner exists");
         assert!(runner.current_task.is_none());
+        assert!(runner.lease_expires_at.is_none());
+        assert!(runner.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn start_releases_stale_heartbeat_with_fresh_lease() {
+        // Lease is still valid (expires in 4 minutes), but last_heartbeat is older
+        // than HEARTBEAT_STALENESS_THRESHOLD (10 minutes). Runner should be reclaimed.
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-stale-hb",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        store
+            .acquire_lease(
+                "runner-stale-hb",
+                "task-122",
+                Duration::minutes(15),
+                fixed_now(),
+            )
+            .expect("acquire lease");
+        // Manually set a stale last_heartbeat (11 minutes old relative to "now")
+        let mut registry = store.registry().clone();
+        let runner = registry.runners.get_mut("runner-stale-hb").unwrap();
+        let stale_hb = (fixed_now() - Duration::minutes(11)).to_rfc3339();
+        runner.last_heartbeat = Some(stale_hb);
+        store.save(registry).expect("save registry");
+        drop(store);
+
+        let mut tmux = RecordingTmux::live();
+        let output = start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-stale-hb");
+        assert!(output.already_running);
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        let runner = store.get_runner("runner-stale-hb").expect("runner exists");
+        assert!(runner.current_task.is_none(), "lease should be released");
         assert!(runner.lease_expires_at.is_none());
         assert!(runner.last_heartbeat.is_none());
     }
