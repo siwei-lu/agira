@@ -125,10 +125,27 @@ impl Tmux for ProcessTmux {
     }
 
     fn attach(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
-        ensure_tmux_success(
-            tmux_command(["attach", "-t", session_name], "attach")?,
-            "attach",
-        )
+        let status = Command::new("tmux")
+            .arg("attach")
+            .arg("-t")
+            .arg(session_name)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|source| RunnerCommandError::TmuxIo {
+                action: "attach",
+                source,
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(RunnerCommandError::TmuxFailed {
+                action: "attach",
+                message: "tmux attach exited non-zero".to_owned(),
+            })
+        }
     }
 }
 
@@ -260,17 +277,21 @@ fn status_runner<T: Tmux>(
 ) -> Result<RunnerStatusOutput, RunnerCommandError> {
     let session_name = session_name(project);
     let store = RunnerStore::new(&project.state_dir)?;
+    let live = tmux.has_session(&session_name)?;
     let Some(runner) = matching_runner(&store, &session_name) else {
         return Ok(RunnerStatusOutput {
             runner_id: None,
             runner_type: None,
             current_task: None,
-            liveness: "no runner registered".to_owned(),
+            liveness: if live {
+                "session running but no runner registered".to_owned()
+            } else {
+                "no runner registered".to_owned()
+            },
             heartbeat_age: None,
         });
     };
 
-    let live = tmux.has_session(&session_name)?;
     Ok(RunnerStatusOutput {
         runner_id: Some(runner.id.clone()),
         runner_type: Some(runner.runner_type.clone()),
@@ -767,7 +788,33 @@ mod tests {
         let status = status_runner(&project, &mut tmux, fixed_now()).expect("status runner");
 
         assert_eq!(format_status_output(&status), "no runner registered");
-        assert!(tmux.calls.is_empty());
+        assert_eq!(
+            tmux.calls,
+            vec![vec!["has-session", "-t", "agira-runner-repo"]]
+                .into_iter()
+                .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn status_reports_orphaned_live_session_without_registry_entry() {
+        let (_dir, project) = project();
+        let mut tmux = RecordingTmux::live();
+
+        let status = status_runner(&project, &mut tmux, fixed_now()).expect("status runner");
+
+        assert_eq!(
+            format_status_output(&status),
+            "session running but no runner registered"
+        );
+        assert_eq!(
+            tmux.calls,
+            vec![vec!["has-session", "-t", "agira-runner-repo"]]
+                .into_iter()
+                .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
