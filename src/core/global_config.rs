@@ -28,6 +28,10 @@ pub struct RunnerConfig {
     pub lease_ttl: String,
     #[serde(default)]
     pub orchestrator_template_path: Option<PathBuf>,
+    #[serde(rename = "type", default = "default_runner_type")]
+    pub runner_type: String,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +60,10 @@ fn default_runner_lease_ttl() -> String {
     "5m".to_owned()
 }
 
+fn default_runner_type() -> String {
+    "claude-tmux".to_owned()
+}
+
 fn default_on_retry_exhausted() -> OnRetryExhausted {
     OnRetryExhausted::Block
 }
@@ -65,6 +73,8 @@ impl Default for RunnerConfig {
         Self {
             lease_ttl: default_runner_lease_ttl(),
             orchestrator_template_path: None,
+            runner_type: default_runner_type(),
+            auto_start: false,
         }
     }
 }
@@ -175,6 +185,14 @@ pub fn save_global_config(agira_root: &Path, config: &GlobalConfig) -> anyhow::R
                 table.remove("orchestrator_template_path");
             }
         }
+        table.insert(
+            "type".to_owned(),
+            toml::Value::String(config.runner.runner_type.clone()),
+        );
+        table.insert(
+            "auto_start".to_owned(),
+            toml::Value::Boolean(config.runner.auto_start),
+        );
     }
 
     let contents = toml::to_string_pretty(&document)
@@ -321,5 +339,86 @@ mod tests {
             loaded.runner.orchestrator_template_path,
             Some(template_path)
         );
+    }
+
+    #[test]
+    fn runner_config_defaults_runner_type_to_claude_tmux() {
+        let config: GlobalConfig = toml::from_str("").expect("deserialize empty config");
+
+        assert_eq!(config.runner.runner_type, "claude-tmux");
+    }
+
+    #[test]
+    fn runner_config_defaults_auto_start_to_false() {
+        let config: GlobalConfig = toml::from_str("").expect("deserialize empty config");
+
+        assert!(!config.runner.auto_start);
+    }
+
+    #[test]
+    fn runner_type_round_trips_through_save_and_load() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let config = GlobalConfig {
+            runner: RunnerConfig {
+                runner_type: "custom-backend".to_owned(),
+                ..RunnerConfig::default()
+            },
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(loaded.runner.runner_type, "custom-backend");
+    }
+
+    #[test]
+    fn auto_start_round_trips_through_save_and_load() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let config = GlobalConfig {
+            runner: RunnerConfig {
+                auto_start: true,
+                ..RunnerConfig::default()
+            },
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert!(loaded.runner.auto_start);
+    }
+
+    #[test]
+    fn save_preserves_existing_runner_keys_alongside_new_fields() {
+        // Simulate a config.toml already having lease_ttl, then save new fields
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        // Write a config with existing keys
+        fs::write(
+            dir.path().join("config.toml"),
+            "[runner]\nlease_ttl = \"10m\"\norchestrator_template_path = \"/tmp/tmpl.md\"\n",
+        )
+        .expect("write existing config");
+
+        let config = GlobalConfig {
+            runner: RunnerConfig {
+                lease_ttl: "10m".to_owned(),
+                orchestrator_template_path: Some(PathBuf::from("/tmp/tmpl.md")),
+                runner_type: "claude-tmux".to_owned(),
+                auto_start: true,
+            },
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(loaded.runner.lease_ttl, "10m");
+        assert_eq!(
+            loaded.runner.orchestrator_template_path,
+            Some(PathBuf::from("/tmp/tmpl.md"))
+        );
+        assert_eq!(loaded.runner.runner_type, "claude-tmux");
+        assert!(loaded.runner.auto_start);
     }
 }

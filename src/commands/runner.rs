@@ -272,6 +272,17 @@ pub fn run_runner_logs(project: &Project, follow: bool) -> Result<(), RunnerComm
     write_runner_output(&contents, &log_path)
 }
 
+/// Idempotent ensure-runner: starts a runner if none is live, otherwise returns the
+/// existing healthy runner.  Callers that need to handle failure non-fatally should
+/// call this and `eprintln!` any returned error; task creation continues regardless.
+pub(crate) fn ensure_runner_with_tmux<T: Tmux>(
+    project: &Project,
+    runner_type: &str,
+    tmux: &mut T,
+) -> Result<RunnerStartOutput, RunnerCommandError> {
+    start_runner(project, Some(runner_type), tmux, Utc::now())
+}
+
 fn start_runner<T: Tmux>(
     project: &Project,
     runner_type: Option<&str>,

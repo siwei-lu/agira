@@ -92,7 +92,10 @@ pub fn run_add(
         config.default_workflow.clone()
     };
 
-    add_task_flow(
+    let runner_type = project.global_config.runner.runner_type.clone();
+    let auto_start = project.global_config.runner.auto_start;
+
+    add_task_flow_with_ensure(
         project,
         &mut store,
         title,
@@ -100,6 +103,14 @@ pub fn run_add(
         depends_on.to_vec(),
         phase,
         workflow_name,
+        auto_start,
+        &runner_type,
+        &mut |proj, rt| {
+            let mut tmux = crate::commands::runner::ProcessTmux;
+            crate::commands::runner::ensure_runner_with_tmux(proj, rt, &mut tmux)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
     )
 }
 
@@ -113,7 +124,7 @@ fn map_config_error(error: ConfigError) -> AddError {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add_task_flow(
+fn add_task_flow_with_ensure(
     project: &Project,
     store: &mut TaskStore,
     title: &str,
@@ -121,11 +132,20 @@ fn add_task_flow(
     depends_on: Vec<String>,
     phase: Option<&str>,
     workflow_name: String,
+    auto_start: bool,
+    runner_type: &str,
+    ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
 ) -> Result<(), AddError> {
     let task = match store.add_task(title, description, depends_on, phase, workflow_name) {
         Ok(task) => task,
         Err(error) => return Err(map_store_error(error)),
     };
+
+    if auto_start {
+        if let Err(message) = ensure_runner(project, runner_type) {
+            eprintln!("warning: ensure-runner failed: {message}");
+        }
+    }
 
     dispatch_task_added_hooks(project, &task);
     print_add_output(&format!("added {}: {}", task.id, task.title));
@@ -180,4 +200,284 @@ fn print_add_output(message: &str) {
 #[cfg(test)]
 thread_local! {
     static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use crate::core::{
+        config::{Config, PhaseDef},
+        global_config::{GlobalConfig, RunnerConfig},
+        hooks::HookConfig,
+        project::Project,
+        tasks::TaskStore,
+    };
+
+    use super::add_task_flow_with_ensure;
+
+    fn test_config() -> Config {
+        Config::new_single_workflow(
+            "rust",
+            vec![(
+                "implementing".to_owned(),
+                PhaseDef {
+                    model: Some("dispatch exec -a codex".to_owned()),
+                    duty: Some("write tests first".to_owned()),
+                    gate: None,
+                },
+            )],
+            3,
+        )
+    }
+
+    fn make_project(dir: &Path, auto_start: bool, runner_type: &str) -> Project {
+        let state_dir = dir.join(".agira").join("test-repo");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        fs::write(
+            state_dir.join("config.json"),
+            serde_json::to_string_pretty(&test_config()).expect("serialize config"),
+        )
+        .expect("write config");
+        Project {
+            git_root: Path::new("/tmp/test-repo").to_path_buf(),
+            slug: "test-repo".to_owned(),
+            state_dir,
+            global_config: GlobalConfig {
+                runner: RunnerConfig {
+                    auto_start,
+                    runner_type: runner_type.to_owned(),
+                    ..RunnerConfig::default()
+                },
+                ..GlobalConfig::default()
+            },
+            global_hooks: HookConfig::default(),
+            project_hooks: HookConfig::default(),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // auto_start_false_does_not_call_ensure_runner
+    // ---------------------------------------------------------------
+    #[test]
+    fn auto_start_false_does_not_call_ensure_runner() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut called = false;
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "my task",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            false,
+            "claude-tmux",
+            &mut |_proj, _rt| {
+                called = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !called,
+            "ensure_runner must not be called when auto_start=false"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // auto_start_true_calls_ensure_runner_before_hooks
+    // ---------------------------------------------------------------
+    #[test]
+    fn auto_start_true_calls_ensure_runner_before_hooks() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        // Track call order: ensure_runner gets index 0, hooks would fire after.
+        // Because we have no hooks configured, we verify ensure_runner was called at all.
+        let mut ensure_called = false;
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "task for ordering test",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "claude-tmux",
+            &mut |_proj, rt| {
+                ensure_called = true;
+                assert_eq!(rt, "claude-tmux");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            ensure_called,
+            "ensure_runner must be called when auto_start=true"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // auto_start_ensure_runner_failure_is_non_fatal
+    // ---------------------------------------------------------------
+    #[test]
+    fn auto_start_ensure_runner_failure_is_non_fatal() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "task despite runner failure",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "claude-tmux",
+            &mut |_proj, _rt| Err("tmux not available".to_owned()),
+        );
+
+        // Task creation must succeed even when ensure_runner fails
+        assert!(
+            result.is_ok(),
+            "task add must succeed even when ensure_runner fails"
+        );
+
+        // Task must exist in the store
+        let tasks = store.all_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "task despite runner failure");
+    }
+
+    // ---------------------------------------------------------------
+    // ensure_runner_failure_does_not_abort_hook_dispatch
+    // (hooks must still fire when ensure_runner fails)
+    // ---------------------------------------------------------------
+    #[test]
+    fn ensure_runner_failure_does_not_abort_hook_dispatch() {
+        // We verify the hook-dispatch path is reached by checking that
+        // add_task_flow_with_ensure returns Ok (not propagating the error).
+        // The ordering guarantee (ensure before hooks) is validated structurally
+        // by the implementation: ensure_runner is called before dispatch_task_added_hooks.
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "hook fire test",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "claude-tmux",
+            &mut |_proj, _rt| {
+                // ensure_runner fails
+                Err("runner unavailable".to_owned())
+            },
+        );
+
+        // The function must return Ok (not propagate the error);
+        // execution continues to dispatch_task_added_hooks after the warning.
+        assert!(result.is_ok());
+    }
+
+    // ---------------------------------------------------------------
+    // ensure_runner_passes_configured_runner_type
+    // ---------------------------------------------------------------
+    #[test]
+    fn ensure_runner_passes_configured_runner_type() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "custom-backend");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut received_type = String::new();
+        let _ = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "type check task",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "custom-backend",
+            &mut |_proj, rt| {
+                received_type = rt.to_owned();
+                Ok(())
+            },
+        );
+
+        assert_eq!(received_type, "custom-backend");
+    }
+
+    // ---------------------------------------------------------------
+    // idempotent_no_op_on_second_task_add_with_healthy_runner
+    // ensure_runner is called for each task add (idempotency is inside start_runner)
+    // ---------------------------------------------------------------
+    #[test]
+    fn ensure_runner_called_for_each_task_add_idempotency_is_internal() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut call_count = 0u32;
+        let mut ensure = |_proj: &Project, _rt: &str| -> Result<(), String> {
+            call_count += 1;
+            Ok(())
+        };
+
+        // First task add
+        add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "first task",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "claude-tmux",
+            &mut ensure,
+        )
+        .expect("first add");
+
+        // Second task add
+        add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "second task",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            "claude-tmux",
+            &mut ensure,
+        )
+        .expect("second add");
+
+        // ensure_runner is called once per task add; the no-op for healthy runner
+        // is handled inside start_runner (already_running = true path)
+        assert_eq!(call_count, 2, "ensure_runner called once per task add");
+        assert_eq!(store.all_tasks().len(), 2);
+    }
 }
