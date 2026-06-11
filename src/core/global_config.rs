@@ -256,6 +256,13 @@ mod tests {
     }
 
     #[test]
+    fn global_config_defaults_orchestrator_template_path_to_none() {
+        let config: GlobalConfig = toml::from_str("").expect("deserialize empty config");
+
+        assert_eq!(config.runner.orchestrator_template_path, None);
+    }
+
+    #[test]
     fn global_config_parses_runner_lease_ttl_duration() {
         let config: GlobalConfig =
             toml::from_str("[runner]\nlease_ttl = \"15m\"\n").expect("deserialize config");
@@ -293,5 +300,26 @@ mod tests {
         let loaded = load_or_create(dir.path()).expect("load config");
 
         assert_eq!(loaded.on_retry_exhausted, OnRetryExhausted::Fail);
+    }
+
+    #[test]
+    fn global_config_orchestrator_template_path_round_trips() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let template_path = PathBuf::from("/tmp/agira/orchestrator-template.md");
+        let config = GlobalConfig {
+            runner: RunnerConfig {
+                orchestrator_template_path: Some(template_path.clone()),
+                ..RunnerConfig::default()
+            },
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(
+            loaded.runner.orchestrator_template_path,
+            Some(template_path)
+        );
     }
 }

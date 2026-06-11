@@ -14,7 +14,7 @@ Idle-wait protocol:
 
 Agira CLI protocol:
 - Call `agira task todo --runner "$AGIRA_RUNNER_ID"` to claim and print the next task prompt.
-- Advance completed delegated work with `agira task todo --runner "$AGIRA_RUNNER_ID" --artifact "<evidence>"`.
+- Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact "<evidence>"`.
 - Include the runner identity through `AGIRA_RUNNER_ID` for all runner-owned task claims.
 
 Backend routing:
@@ -113,6 +113,9 @@ mod tests {
         assert!(prompt.contains("agira-orchestrator-template-v1"));
         assert!(prompt.contains("Thin-orchestrator rule"));
         assert!(prompt.contains("`agira task todo --runner \"$AGIRA_RUNNER_ID\"`"));
+        assert!(prompt.contains(
+            "Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact \"<evidence>\"`"
+        ));
         assert!(prompt.contains("| implementing | dispatch exec -a codex |"));
     }
 }

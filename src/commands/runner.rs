@@ -255,10 +255,18 @@ fn start_runner<T: Tmux>(
         &project.global_config,
     )?;
     let template = match &project.global_config.runner.orchestrator_template_path {
-        Some(path) => load_template_override(path).map_err(|source| RunnerCommandError::Read {
-            path: path.clone(),
-            source,
-        })?,
+        Some(path) => match load_template_override(path) {
+            Ok(template) => template,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                DEFAULT_ORCHESTRATOR_TEMPLATE.to_owned()
+            }
+            Err(source) => {
+                return Err(RunnerCommandError::Read {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        },
         None => DEFAULT_ORCHESTRATOR_TEMPLATE.to_owned(),
     };
     let prompt = assemble_orchestrator_prompt(&template, &config);
@@ -780,6 +788,20 @@ mod tests {
         let launch_command = &tmux.calls[1][4];
         assert!(launch_command.contains("custom static marker"));
         assert!(!launch_command.contains("agira-orchestrator-template-v1"));
+        assert!(launch_command.contains("| verifying | sonnet | run cargo test |"));
+    }
+
+    #[test]
+    fn start_uses_embedded_template_when_override_template_is_missing() {
+        let (dir, mut project) = project();
+        project.global_config.runner.orchestrator_template_path =
+            Some(dir.path().join("missing-template.md"));
+        let mut tmux = RecordingTmux::default();
+
+        start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
+
+        let launch_command = &tmux.calls[1][4];
+        assert!(launch_command.contains("agira-orchestrator-template-v1"));
         assert!(launch_command.contains("| verifying | sonnet | run cargo test |"));
     }
 
