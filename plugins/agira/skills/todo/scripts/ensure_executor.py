@@ -294,7 +294,8 @@ def wait_for_claude_pane(tmux_bin: str, name: str, project: Path, lines: int) ->
 
 
 def remote_control_active(pane: str) -> bool:
-    return "remote control active" in "\n".join(pane.splitlines()[-80:]).lower()
+    recent_lines = "\n".join(pane.splitlines()[-80:]).lower()
+    return "remote control active" in recent_lines or "/rc active" in recent_lines
 
 
 def wait_for_remote_control_ready(tmux_bin: str, name: str, project: Path, lines: int) -> None:
