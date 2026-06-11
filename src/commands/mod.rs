@@ -1,5 +1,6 @@
 mod add;
 mod block;
+mod close;
 mod config;
 mod fail;
 mod hook;
@@ -20,6 +21,7 @@ mod workflow;
 
 pub use add::{AddError, run_add};
 pub use block::{BlockError, run_block};
+pub use close::{CloseError, run_close};
 pub use config::{ConfigCommandError, run_config_get, run_config_set};
 pub use fail::{FailError, run_fail};
 pub use hook::{HookError, run_hook_add, run_hook_list, run_hook_remove, run_hook_update};

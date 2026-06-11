@@ -300,6 +300,15 @@ enum TaskCommands {
         #[arg(long, value_name = "phase")]
         from: Option<String>,
     },
+    /// Administratively close a failed task as done
+    Close {
+        /// Task ID to close (e.g. task-001)
+        #[arg(value_name = "id")]
+        id: String,
+        /// Reason the task is being closed
+        #[arg(long, value_name = "reason")]
+        reason: Option<String>,
+    },
     /// Record a task failure and retry or terminate based on retry count
     Fail {
         /// Task ID to fail (e.g. task-001)
@@ -434,6 +443,19 @@ fn main() -> ExitCode {
                     Err(error) => {
                         eprintln!("error: {error}");
                         exit_code_for_todo(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Close { id, reason } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_close(&project, &id, reason.as_deref()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_close(&error)
                     }
                 },
                 Err(error) => {
@@ -1005,6 +1027,27 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
             | crate::core::RunnerStoreError::Serialize(_)
             | crate::core::RunnerStoreError::Deserialize(_) => ExitCode::from(2),
             crate::core::RunnerStoreError::NotFound => ExitCode::from(1),
+        },
+    }
+}
+
+fn exit_code_for_close(error: &commands::CloseError) -> ExitCode {
+    use commands::CloseError::*;
+
+    match error {
+        MissingReason
+        | EmptyReason
+        | TaskNotFound { .. }
+        | NotFailed { .. }
+        | ConfigNotFound { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
+        ConfigRead { .. } => ExitCode::from(2),
+        StoreError(store_error) => match store_error {
+            crate::core::StoreError::Io { .. }
+            | crate::core::StoreError::Serialize(_)
+            | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
+            _ => ExitCode::from(1),
         },
     }
 }

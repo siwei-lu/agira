@@ -454,6 +454,9 @@ pub enum StoreError {
     #[error("task is not blocked")]
     NotBlocked,
 
+    #[error("task {id} is not in a failed state")]
+    NotFailed { id: String },
+
     #[error("task {id} is {state} and cannot be updated")]
     CannotUpdateTerminal { id: String, state: String },
 
@@ -803,6 +806,33 @@ impl TaskStore {
 
     pub fn fail_task(&mut self, id: &str, reason: &str) -> Result<(), StoreError> {
         self.transition_to_terminal_like(id, "failed", reason)
+    }
+
+    pub fn close_task(
+        &mut self,
+        id: &str,
+        reason: &str,
+        terminal_phase: &str,
+    ) -> Result<(), StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task_index = self.task_index(&tasks_file, id)?;
+        let previous_state = tasks_file.tasks[task_index].state.clone();
+
+        if previous_state != "failed" {
+            return Err(StoreError::NotFailed { id: id.to_owned() });
+        }
+
+        let task = &mut tasks_file.tasks[task_index];
+        task.state = terminal_phase.to_owned();
+        task.locked_at = None;
+        task.history.push(HistoryEntry {
+            from: Some("failed".to_owned()),
+            to: terminal_phase.to_owned(),
+            timestamp: Utc::now().to_rfc3339(),
+            reason: format!("closed: {reason}"),
+        });
+
+        self.save(tasks_file)
     }
 
     pub fn block_task(&mut self, id: &str, reason: &str) -> Result<(), StoreError> {
