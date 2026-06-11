@@ -202,6 +202,179 @@ mod tests {
         assert_eq!(history.to, "enriching");
         assert_eq!(history.reason, "retry 1/3: try again");
     }
+
+    // ---------------------------------------------------------------------------
+    // advance_with_artifact: single-write atomic advance
+    // ---------------------------------------------------------------------------
+
+    fn advance_test_store() -> (tempfile::TempDir, TaskStore) {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let state_dir = dir.path().join(".agira");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        );
+        let store = TaskStore::new(&state_dir, &config).expect("create store");
+        (dir, store)
+    }
+
+    #[test]
+    fn advance_with_artifact_writes_once() {
+        let (dir, mut store) = advance_test_store();
+        let tasks_path = dir.path().join(".agira").join("tasks.json");
+
+        let task = store
+            .add_task(
+                "atomic advance",
+                "description",
+                Vec::new(),
+                Some("enriching"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        // Lock the task to verify locked_at is cleared
+        store.lock_task(&task.id).expect("lock task");
+        assert!(
+            store.get_task(&task.id).unwrap().locked_at.is_some(),
+            "locked_at must be set before advance"
+        );
+
+        let completed_at = "2026-06-11T10:00:00Z".to_owned();
+        let from_phase = store
+            .advance_with_artifact(&task.id, "my artifact", completed_at.clone())
+            .expect("advance_with_artifact");
+
+        // (a) from-phase returned correctly
+        assert_eq!(from_phase, "enriching");
+
+        // (b) artifact is stored under from-phase
+        let updated = store.get_task(&task.id).expect("task exists");
+        let phase_entry = updated
+            .phases
+            .get("enriching")
+            .expect("artifact recorded under enriching");
+        assert_eq!(phase_entry.artifact, "my artifact");
+        assert_eq!(phase_entry.completed_at, "2026-06-11T10:00:00Z");
+
+        // (c) state is advanced to next phase
+        assert_eq!(updated.state, "implementing");
+
+        // (d) locked_at is cleared
+        assert_eq!(updated.locked_at, None, "locked_at must be cleared");
+
+        // (e) last history entry has correct from/to/reason
+        let last_history = updated.history.last().expect("history entry");
+        assert_eq!(last_history.from.as_deref(), Some("enriching"));
+        assert_eq!(last_history.to, "implementing");
+        assert_eq!(last_history.reason, "advanced to next phase");
+
+        // (f) single write: reload from disk and verify consistent state
+        // (artifact + advanced state both present — no partial write possible)
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        );
+        let fresh_store = TaskStore::new(dir.path().join(".agira"), &config).expect("reload store");
+        let disk_task = fresh_store.get_task(&task.id).expect("task on disk");
+        assert_eq!(
+            disk_task.state, "implementing",
+            "disk state must be advanced"
+        );
+        assert!(
+            disk_task.phases.contains_key("enriching"),
+            "disk artifact must be present"
+        );
+        assert_eq!(disk_task.locked_at, None, "disk locked_at must be None");
+
+        // Confirm tasks.json file exists (sanity)
+        assert!(tasks_path.exists(), "tasks.json must exist after advance");
+    }
+
+    #[test]
+    fn advance_with_artifact_not_found() {
+        let (_dir, mut store) = advance_test_store();
+        let result =
+            store.advance_with_artifact("task-999", "artifact", "2026-06-11T10:00:00Z".to_owned());
+        assert!(
+            matches!(result, Err(StoreError::NotFound)),
+            "expected NotFound, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn advance_with_artifact_already_terminal() {
+        let (_dir, mut store) = advance_test_store();
+        let task = store
+            .add_task(
+                "terminal",
+                "desc",
+                Vec::new(),
+                Some("done"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+        let result =
+            store.advance_with_artifact(&task.id, "artifact", "2026-06-11T10:00:00Z".to_owned());
+        assert!(
+            matches!(result, Err(StoreError::AlreadyTerminal)),
+            "expected AlreadyTerminal, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn advance_with_artifact_dependency_blocked() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let state_dir = dir.path().join(".agira");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        );
+        let mut store = TaskStore::new(&state_dir, &config).expect("create store");
+
+        // dep is not terminal (still in enriching)
+        let dep = store
+            .add_task(
+                "dep",
+                "desc",
+                Vec::new(),
+                Some("enriching"),
+                "default".to_owned(),
+            )
+            .expect("add dep");
+        let task = store
+            .add_task(
+                "dependent",
+                "desc",
+                vec![dep.id.clone()],
+                Some("enriching"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        let result =
+            store.advance_with_artifact(&task.id, "artifact", "2026-06-11T10:00:00Z".to_owned());
+        assert!(
+            matches!(result, Err(StoreError::DependencyBlocked { .. })),
+            "expected DependencyBlocked, got: {result:?}"
+        );
+    }
 }
 
 #[derive(Debug, Error)]
@@ -411,6 +584,7 @@ impl TaskStore {
         self.tasks_file.tasks.iter().find(|task| task.id == id)
     }
 
+    #[allow(dead_code)]
     pub fn record_phase_artifact(
         &mut self,
         id: &str,
@@ -439,6 +613,7 @@ impl TaskStore {
         &self.tasks_file.tasks
     }
 
+    #[allow(dead_code)]
     pub fn next_phase(&mut self, id: &str) -> Result<(), StoreError> {
         let mut tasks_file = self.tasks_file.clone();
         let task_index = self.task_index(&tasks_file, id)?;
@@ -493,6 +668,83 @@ impl TaskStore {
         });
 
         self.save(tasks_file)
+    }
+
+    /// Record the current phase's artifact, advance the task to the next phase,
+    /// clear `locked_at`, and append a history entry — all in a single `save()`.
+    ///
+    /// Returns the name of the phase that was completed (the from-phase).
+    pub fn advance_with_artifact(
+        &mut self,
+        id: &str,
+        artifact: &str,
+        completed_at: String,
+    ) -> Result<String, StoreError> {
+        let mut tasks_file = self.tasks_file.clone();
+        let task_index = self.task_index(&tasks_file, id)?;
+        let from_phase = tasks_file.tasks[task_index].state.clone();
+        let terminal_phase = self.terminal_for(&tasks_file.tasks[task_index])?;
+
+        if from_phase == "failed" || from_phase == terminal_phase {
+            return Err(StoreError::AlreadyTerminal);
+        }
+
+        let sequence = self.sequence_for(&tasks_file.tasks[task_index])?;
+        let current_index = sequence
+            .iter()
+            .position(|s| s == &from_phase)
+            .ok_or_else(|| StoreError::InvalidTransition {
+                from: from_phase.clone(),
+                to: String::new(),
+            })?;
+        let target_index = current_index + 1;
+
+        if target_index >= sequence.len() {
+            return Err(StoreError::AlreadyTerminal);
+        }
+
+        // Validate dependencies (same logic as next_phase)
+        if target_index > 0 {
+            for dependency_id in &tasks_file.tasks[task_index].dependencies {
+                match tasks_file
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == *dependency_id)
+                {
+                    Some(dependency) if dependency.state == self.terminal_for(dependency)? => {}
+                    _ => {
+                        return Err(StoreError::DependencyBlocked {
+                            task_id: id.to_owned(),
+                            blocking_id: dependency_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let target_phase = sequence[target_index].clone();
+
+        // Apply all mutations to the single cloned tasks_file
+        let task = &mut tasks_file.tasks[task_index];
+        task.phases.insert(
+            from_phase.clone(),
+            TaskPhase {
+                artifact: artifact.to_owned(),
+                completed_at,
+            },
+        );
+        task.state = target_phase.clone();
+        task.locked_at = None;
+        task.history.push(HistoryEntry {
+            from: Some(from_phase.clone()),
+            to: target_phase,
+            timestamp: Utc::now().to_rfc3339(),
+            reason: "advanced to next phase".to_owned(),
+        });
+
+        // Single save — no intermediate writes
+        self.save(tasks_file)?;
+        Ok(from_phase)
     }
 
     pub fn fail_task(&mut self, id: &str, reason: &str) -> Result<(), StoreError> {

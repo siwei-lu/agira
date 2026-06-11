@@ -137,8 +137,7 @@ pub fn run_todo(
 
             let completed_at = Utc::now().to_rfc3339();
             let recorded_from_phase =
-                store.record_phase_artifact(&resolved_task_id, artifact, completed_at)?;
-            store.next_phase(&resolved_task_id)?;
+                store.advance_with_artifact(&resolved_task_id, artifact, completed_at)?;
 
             // shadow task_id with the resolved one for remainder of block
             let task_id = resolved_task_id;
