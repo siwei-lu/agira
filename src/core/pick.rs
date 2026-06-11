@@ -480,6 +480,7 @@ mod tests {
             id: id.to_owned(),
             runner_type: "local".to_owned(),
             tmux_session: String::new(),
+            pgid: None,
             status: "running".to_owned(),
             current_task: Some(task_id.to_owned()),
             lease_expires_at: Some(lease_expires_at.to_owned()),

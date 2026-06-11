@@ -15,7 +15,7 @@ use crate::core::{
         DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt, load_template_override,
     },
     project::Project,
-    runner::{Runner, RunnerStore, RunnerStoreError},
+    runner::{Runner, RunnerStore, RunnerStoreError, is_lease_expired},
 };
 
 const DEFAULT_RUNNER_TYPE: &str = "claude-tmux";
@@ -87,6 +87,9 @@ pub struct RunnerStatusOutput {
 
 pub trait Tmux {
     fn has_session(&mut self, session_name: &str) -> Result<bool, RunnerCommandError>;
+    fn pane_alive(&mut self, session_name: &str) -> Result<bool, RunnerCommandError>;
+    fn pane_process_group(&mut self, session_name: &str)
+    -> Result<Option<i32>, RunnerCommandError>;
     fn new_session(
         &mut self,
         session_name: &str,
@@ -94,6 +97,7 @@ pub trait Tmux {
     ) -> Result<(), RunnerCommandError>;
     fn pipe_pane(&mut self, session_name: &str, log_path: &Path) -> Result<(), RunnerCommandError>;
     fn kill_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
+    fn kill_process_group(&mut self, pgid: i32) -> Result<(), RunnerCommandError>;
     fn attach(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
 }
 
@@ -103,6 +107,23 @@ impl Tmux for ProcessTmux {
     fn has_session(&mut self, session_name: &str) -> Result<bool, RunnerCommandError> {
         let output = tmux_command(["has-session", "-t", session_name], "has-session")?;
         Ok(output.status.success())
+    }
+
+    fn pane_alive(&mut self, session_name: &str) -> Result<bool, RunnerCommandError> {
+        let Some(pane_pid) = self.pane_pid(session_name)? else {
+            return Ok(true);
+        };
+        Ok(process_alive(pane_pid))
+    }
+
+    fn pane_process_group(
+        &mut self,
+        session_name: &str,
+    ) -> Result<Option<i32>, RunnerCommandError> {
+        let Some(pane_pid) = self.pane_pid(session_name)? else {
+            return Ok(None);
+        };
+        Ok(process_group_for(pane_pid))
     }
 
     fn new_session(
@@ -142,6 +163,17 @@ impl Tmux for ProcessTmux {
         )
     }
 
+    fn kill_process_group(&mut self, pgid: i32) -> Result<(), RunnerCommandError> {
+        if kill_process_group(pgid) {
+            Ok(())
+        } else {
+            Err(RunnerCommandError::TmuxFailed {
+                action: "killpg",
+                message: "failed to kill process group".to_owned(),
+            })
+        }
+    }
+
     fn attach(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
         let status = Command::new("tmux")
             .arg("attach")
@@ -164,6 +196,23 @@ impl Tmux for ProcessTmux {
                 message: "tmux attach exited non-zero".to_owned(),
             })
         }
+    }
+}
+
+impl ProcessTmux {
+    fn pane_pid(&mut self, session_name: &str) -> Result<Option<i32>, RunnerCommandError> {
+        let output = tmux_command(
+            ["list-panes", "-t", session_name, "-F", "#{pane_pid}"],
+            "list-panes",
+        )?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let pid = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.trim().parse::<i32>().ok());
+        Ok(pid)
     }
 }
 
@@ -233,7 +282,20 @@ fn start_runner<T: Tmux>(
     let live = tmux.has_session(&session_name)?;
 
     if live {
-        if let Some(runner) = matching_runner(&store, &session_name) {
+        if let Some(runner) = matching_runner(&store, &session_name).cloned() {
+            if !tmux.pane_alive(&session_name)? {
+                tmux.kill_session(&session_name)?;
+                reap_recorded_process_group(tmux, &runner)?;
+                store.deregister(&runner.id)?;
+                return cold_start_runner(project, runner_type, tmux, &mut store, now);
+            }
+
+            if runner.current_task.is_some()
+                && is_lease_expired(runner.lease_expires_at.as_deref(), now)
+            {
+                store.release_lease(&runner.id)?;
+            }
+
             return Ok(RunnerStartOutput {
                 runner_id: runner.id.clone(),
                 session_name,
@@ -243,6 +305,22 @@ fn start_runner<T: Tmux>(
         return Err(RunnerCommandError::UnregisteredLiveSession);
     }
 
+    if let Some(runner) = matching_runner(&store, &session_name).cloned() {
+        reap_recorded_process_group(tmux, &runner)?;
+        store.deregister(&runner.id)?;
+    }
+
+    cold_start_runner(project, runner_type, tmux, &mut store, now)
+}
+
+fn cold_start_runner<T: Tmux>(
+    project: &Project,
+    runner_type: Option<&str>,
+    tmux: &mut T,
+    store: &mut RunnerStore,
+    now: DateTime<Utc>,
+) -> Result<RunnerStartOutput, RunnerCommandError> {
+    let session_name = session_name(project);
     let runner_dir = runner_dir(project);
     fs::create_dir_all(&runner_dir).map_err(|source| RunnerCommandError::Write {
         path: runner_dir.clone(),
@@ -275,7 +353,7 @@ fn start_runner<T: Tmux>(
     tmux.new_session(&session_name, &launch_command)?;
     tmux.pipe_pane(&session_name, &log_path)?;
 
-    store.register_at(
+    let runner = store.register_at(
         &runner_id,
         runner_type
             .map(str::trim)
@@ -284,6 +362,8 @@ fn start_runner<T: Tmux>(
         &session_name,
         now,
     )?;
+    let pgid = tmux.pane_process_group(&session_name).ok().flatten();
+    store.record_process_group(&runner.id, pgid)?;
 
     Ok(RunnerStartOutput {
         runner_id,
@@ -331,15 +411,23 @@ fn status_runner<T: Tmux>(
         });
     };
 
+    let liveness = if !live {
+        "stale"
+    } else if !tmux.pane_alive(&session_name)? {
+        "zombie"
+    } else if runner.current_task.is_some()
+        && is_lease_expired(runner.lease_expires_at.as_deref(), now)
+    {
+        "stale"
+    } else {
+        "live"
+    };
+
     Ok(RunnerStatusOutput {
         runner_id: Some(runner.id.clone()),
         runner_type: Some(runner.runner_type.clone()),
         current_task: runner.current_task.clone(),
-        liveness: if live {
-            "running".to_owned()
-        } else {
-            "registered but session not alive".to_owned()
-        },
+        liveness: liveness.to_owned(),
         heartbeat_age: Some(format_heartbeat_age(runner.last_heartbeat.as_deref(), now)),
     })
 }
@@ -359,6 +447,49 @@ fn matching_runner<'a>(store: &'a RunnerStore, session_name: &str) -> Option<&'a
         .runners
         .values()
         .find(|runner| runner.tmux_session == session_name)
+}
+
+fn reap_recorded_process_group<T: Tmux>(
+    tmux: &mut T,
+    runner: &Runner,
+) -> Result<(), RunnerCommandError> {
+    if let Some(pgid) = runner.pgid {
+        tmux.kill_process_group(pgid)?;
+    }
+    Ok(())
+}
+
+fn process_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+
+    io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn process_group_for(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+
+    let pgid = unsafe { libc::getpgid(pid) };
+    if pgid > 0 { Some(pgid) } else { None }
+}
+
+fn kill_process_group(pgid: i32) -> bool {
+    if pgid <= 0 {
+        return true;
+    }
+
+    if unsafe { libc::killpg(pgid, libc::SIGTERM) } == 0 {
+        return true;
+    }
+
+    io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 fn session_name(project: &Project) -> String {
@@ -571,6 +702,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingTmux {
         live: bool,
+        pane_alive: bool,
+        pane_pgid: Option<i32>,
         calls: Vec<Vec<String>>,
     }
 
@@ -578,6 +711,17 @@ mod tests {
         fn live() -> Self {
             Self {
                 live: true,
+                pane_alive: true,
+                pane_pgid: Some(4242),
+                calls: Vec::new(),
+            }
+        }
+
+        fn zombie() -> Self {
+            Self {
+                live: true,
+                pane_alive: false,
+                pane_pgid: Some(4242),
                 calls: Vec::new(),
             }
         }
@@ -588,6 +732,21 @@ mod tests {
             self.calls
                 .push(vec!["has-session".into(), "-t".into(), session_name.into()]);
             Ok(self.live)
+        }
+
+        fn pane_alive(&mut self, session_name: &str) -> Result<bool, RunnerCommandError> {
+            self.calls
+                .push(vec!["pane-alive".into(), "-t".into(), session_name.into()]);
+            Ok(self.live && self.pane_alive)
+        }
+
+        fn pane_process_group(
+            &mut self,
+            session_name: &str,
+        ) -> Result<Option<i32>, RunnerCommandError> {
+            self.calls
+                .push(vec!["pane-pgid".into(), "-t".into(), session_name.into()]);
+            Ok(self.pane_pgid)
         }
 
         fn new_session(
@@ -628,6 +787,11 @@ mod tests {
                 session_name.into(),
             ]);
             self.live = false;
+            Ok(())
+        }
+
+        fn kill_process_group(&mut self, pgid: i32) -> Result<(), RunnerCommandError> {
+            self.calls.push(vec!["killpg".into(), pgid.to_string()]);
             Ok(())
         }
 
@@ -826,6 +990,206 @@ mod tests {
     }
 
     #[test]
+    fn start_rebuilds_zombie_session_and_removes_stale_registry_entry() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-zombie",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        drop(store);
+        let mut tmux = RecordingTmux::zombie();
+
+        let output = start_runner(
+            &project,
+            None,
+            &mut tmux,
+            fixed_now() + Duration::minutes(1),
+        )
+        .expect("start runner");
+
+        assert_ne!(output.runner_id, "runner-zombie");
+        assert!(!output.already_running);
+        assert_eq!(
+            &tmux.calls[..5],
+            [
+                vec!["has-session", "-t", "agira-runner-repo"],
+                vec!["pane-alive", "-t", "agira-runner-repo"],
+                vec!["kill-session", "-t", "agira-runner-repo"],
+                vec![
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "agira-runner-repo",
+                    &tmux.calls[3][4]
+                ],
+                vec![
+                    "pipe-pane",
+                    "-t",
+                    "agira-runner-repo",
+                    "-o",
+                    &tmux.calls[4][4]
+                ],
+            ]
+        );
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert!(store.get_runner("runner-zombie").is_none());
+        assert!(store.get_runner(&output.runner_id).is_some());
+    }
+
+    #[test]
+    fn start_releases_stale_lease_and_takes_over_live_session() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-stale",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        store
+            .acquire_lease(
+                "runner-stale",
+                "task-122",
+                Duration::minutes(5),
+                fixed_now(),
+            )
+            .expect("acquire lease");
+        drop(store);
+        let mut tmux = RecordingTmux::live();
+
+        let output = start_runner(
+            &project,
+            None,
+            &mut tmux,
+            fixed_now() + Duration::minutes(6),
+        )
+        .expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-stale");
+        assert!(output.already_running);
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        let runner = store.get_runner("runner-stale").expect("runner exists");
+        assert!(runner.current_task.is_none());
+        assert!(runner.lease_expires_at.is_none());
+        assert!(runner.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn start_keeps_fresh_live_session_idempotent() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-fresh",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        store
+            .acquire_lease(
+                "runner-fresh",
+                "task-122",
+                Duration::minutes(5),
+                fixed_now(),
+            )
+            .expect("acquire lease");
+        let before = store.registry().clone();
+        drop(store);
+        let mut tmux = RecordingTmux::live();
+
+        let output = start_runner(
+            &project,
+            None,
+            &mut tmux,
+            fixed_now() + Duration::minutes(1),
+        )
+        .expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-fresh");
+        assert!(output.already_running);
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert_eq!(store.registry(), &before);
+        let runner = store.get_runner("runner-fresh").expect("runner exists");
+        assert_eq!(runner.current_task.as_deref(), Some("task-122"));
+    }
+
+    #[test]
+    fn start_treats_unparseable_lease_as_live_fail_safe() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-ambiguous",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        let mut registry = store.registry().clone();
+        let runner = registry
+            .runners
+            .get_mut("runner-ambiguous")
+            .expect("runner exists");
+        runner.current_task = Some("task-122".to_owned());
+        runner.lease_expires_at = Some("not-a-timestamp".to_owned());
+        runner.last_heartbeat = Some("not-a-timestamp".to_owned());
+        store.save(registry).expect("save registry");
+        drop(store);
+        let mut tmux = RecordingTmux::live();
+
+        let output = start_runner(&project, None, &mut tmux, fixed_now() + Duration::days(1))
+            .expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-ambiguous");
+        assert!(output.already_running);
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        let runner = store.get_runner("runner-ambiguous").expect("runner exists");
+        assert_eq!(runner.current_task.as_deref(), Some("task-122"));
+        assert_eq!(runner.lease_expires_at.as_deref(), Some("not-a-timestamp"));
+    }
+
+    #[test]
+    fn start_reaps_recorded_process_group_when_session_is_gone() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-gone",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        let mut registry = store.registry().clone();
+        registry
+            .runners
+            .get_mut("runner-gone")
+            .expect("runner exists")
+            .pgid = Some(4242);
+        store.save(registry).expect("save registry");
+        drop(store);
+        let mut tmux = RecordingTmux::default();
+
+        start_runner(
+            &project,
+            None,
+            &mut tmux,
+            fixed_now() + Duration::minutes(1),
+        )
+        .expect("start runner");
+
+        assert!(tmux.calls.contains(&vec!["killpg".into(), "4242".into()]));
+    }
+
+    #[test]
     fn start_is_idempotent_when_live_session_and_registry_entry_exist() {
         let (_dir, project) = project();
         let mut store = RunnerStore::new(&project.state_dir).expect("open store");
@@ -846,10 +1210,13 @@ mod tests {
         assert!(output.already_running);
         assert_eq!(
             tmux.calls,
-            vec![vec!["has-session", "-t", "agira-runner-repo"]]
-                .into_iter()
-                .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
+            vec![
+                vec!["has-session", "-t", "agira-runner-repo"],
+                vec!["pane-alive", "-t", "agira-runner-repo"],
+            ]
+            .into_iter()
+            .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
         );
     }
 
@@ -924,7 +1291,7 @@ mod tests {
 
         assert!(output.contains("type: custom"));
         assert!(output.contains("current task: task-120"));
-        assert!(output.contains("liveness: running"));
+        assert!(output.contains("liveness: live"));
         assert!(output.contains("heartbeat: 12s ago"));
     }
 
@@ -945,7 +1312,64 @@ mod tests {
 
         let status = status_runner(&project, &mut tmux, fixed_now()).expect("status runner");
 
-        assert_eq!(status.liveness, "registered but session not alive");
+        assert_eq!(status.liveness, "stale");
+    }
+
+    #[test]
+    fn status_reports_zombie_without_mutating_registry_or_session() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-zombie-status",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        let before = store.registry().clone();
+        drop(store);
+        let mut tmux = RecordingTmux::zombie();
+
+        let status = status_runner(&project, &mut tmux, fixed_now()).expect("status runner");
+
+        assert_eq!(status.liveness, "zombie");
+        assert!(!tmux.calls.iter().any(|call| call[0] == "kill-session"));
+        assert!(!tmux.calls.iter().any(|call| call[0] == "killpg"));
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert_eq!(store.registry(), &before);
+    }
+
+    #[test]
+    fn status_reports_stale_lease_without_releasing_it() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-stale-status",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        store
+            .acquire_lease(
+                "runner-stale-status",
+                "task-122",
+                Duration::minutes(5),
+                fixed_now(),
+            )
+            .expect("acquire lease");
+        let before = store.registry().clone();
+        drop(store);
+        let mut tmux = RecordingTmux::live();
+
+        let status = status_runner(&project, &mut tmux, fixed_now() + Duration::minutes(6))
+            .expect("status runner");
+
+        assert_eq!(status.liveness, "stale");
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert_eq!(store.registry(), &before);
     }
 
     #[test]

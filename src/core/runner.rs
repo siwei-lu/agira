@@ -14,6 +14,8 @@ pub struct Runner {
     #[serde(rename = "type")]
     pub runner_type: String,
     pub tmux_session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pgid: Option<i32>,
     pub status: String,
     pub current_task: Option<String>,
     pub lease_expires_at: Option<String>,
@@ -125,6 +127,7 @@ impl RunnerStore {
             id: id.to_owned(),
             runner_type: runner_type.to_owned(),
             tmux_session: tmux_session.to_owned(),
+            pgid: None,
             status: "running".to_owned(),
             current_task: None,
             lease_expires_at: None,
@@ -200,6 +203,24 @@ impl RunnerStore {
         runner.current_task = None;
         runner.lease_expires_at = None;
         runner.last_heartbeat = None;
+
+        let runner = runner.clone();
+        self.save(registry)?;
+        Ok(runner)
+    }
+
+    pub fn record_process_group(
+        &mut self,
+        runner_id: &str,
+        pgid: Option<i32>,
+    ) -> Result<Runner, RunnerStoreError> {
+        let mut registry = self.registry.clone();
+        let runner = registry
+            .runners
+            .get_mut(runner_id)
+            .ok_or(RunnerStoreError::NotFound)?;
+
+        runner.pgid = pgid;
 
         let runner = runner.clone();
         self.save(registry)?;
