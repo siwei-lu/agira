@@ -10,6 +10,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::core::{
+    config::{ConfigError, load_project_config},
+    orchestrator::{
+        DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt, load_template_override,
+    },
     project::Project,
     runner::{Runner, RunnerStore, RunnerStoreError},
 };
@@ -59,6 +63,9 @@ pub enum RunnerCommandError {
     },
 
     #[error(transparent)]
+    Config(#[from] ConfigError),
+
+    #[error(transparent)]
     RunnerStore(#[from] RunnerStoreError),
 }
 
@@ -80,7 +87,11 @@ pub struct RunnerStatusOutput {
 
 pub trait Tmux {
     fn has_session(&mut self, session_name: &str) -> Result<bool, RunnerCommandError>;
-    fn new_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
+    fn new_session(
+        &mut self,
+        session_name: &str,
+        launch_command: &str,
+    ) -> Result<(), RunnerCommandError>;
     fn pipe_pane(&mut self, session_name: &str, log_path: &Path) -> Result<(), RunnerCommandError>;
     fn kill_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
     fn attach(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
@@ -94,9 +105,16 @@ impl Tmux for ProcessTmux {
         Ok(output.status.success())
     }
 
-    fn new_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
+    fn new_session(
+        &mut self,
+        session_name: &str,
+        launch_command: &str,
+    ) -> Result<(), RunnerCommandError> {
         ensure_tmux_success(
-            tmux_command(["new-session", "-d", "-s", session_name], "new-session")?,
+            tmux_command_with_args(
+                ["new-session", "-d", "-s", session_name, launch_command],
+                "new-session",
+            )?,
             "new-session",
         )
     }
@@ -231,11 +249,24 @@ fn start_runner<T: Tmux>(
         source,
     })?;
     let log_path = runner_log_path(project);
+    let runner_id = generate_runner_id(project, &session_name, now);
+    let config = load_project_config(
+        &project.state_dir.join("config.json"),
+        &project.global_config,
+    )?;
+    let template = match &project.global_config.runner.orchestrator_template_path {
+        Some(path) => load_template_override(path).map_err(|source| RunnerCommandError::Read {
+            path: path.clone(),
+            source,
+        })?,
+        None => DEFAULT_ORCHESTRATOR_TEMPLATE.to_owned(),
+    };
+    let prompt = assemble_orchestrator_prompt(&template, &config);
+    let launch_command = claude_launch_command(&runner_id, &prompt);
 
-    tmux.new_session(&session_name)?;
+    tmux.new_session(&session_name, &launch_command)?;
     tmux.pipe_pane(&session_name, &log_path)?;
 
-    let runner_id = generate_runner_id(project, &session_name, now);
     store.register_at(
         &runner_id,
         runner_type
@@ -344,6 +375,14 @@ fn generate_runner_id(project: &Project, session_name: &str, now: DateTime<Utc>)
     format!("runner-{}", &digest[..12])
 }
 
+fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
+    format!(
+        "AGIRA_RUNNER_ID={} claude --append-system-prompt {}",
+        shell_quote_string(runner_id),
+        shell_quote_string(prompt)
+    )
+}
+
 fn format_heartbeat_age(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> String {
     let Some(last_heartbeat) = last_heartbeat else {
         return "none".to_owned();
@@ -406,6 +445,13 @@ fn tmux_command<const N: usize>(
     args: [&str; N],
     action: &'static str,
 ) -> Result<std::process::Output, RunnerCommandError> {
+    tmux_command_with_args(args, action)
+}
+
+fn tmux_command_with_args<const N: usize>(
+    args: [&str; N],
+    action: &'static str,
+) -> Result<std::process::Output, RunnerCommandError> {
     Command::new("tmux")
         .args(args)
         .output()
@@ -437,6 +483,10 @@ fn stderr_message(stderr: &[u8]) -> String {
 
 fn shell_quote_path(path: &Path) -> String {
     let text = path.to_string_lossy();
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+fn shell_quote_string(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
@@ -498,7 +548,11 @@ mod tests {
     use chrono::{DateTime, Duration, Utc};
 
     use crate::core::{
-        global_config::GlobalConfig, hooks::HookConfig, project::Project, runner::RunnerStore,
+        config::{Config, ConfigError, PhaseDef},
+        global_config::GlobalConfig,
+        hooks::HookConfig,
+        project::Project,
+        runner::RunnerStore,
     };
 
     use super::{
@@ -528,12 +582,17 @@ mod tests {
             Ok(self.live)
         }
 
-        fn new_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
+        fn new_session(
+            &mut self,
+            session_name: &str,
+            launch_command: &str,
+        ) -> Result<(), RunnerCommandError> {
             self.calls.push(vec![
                 "new-session".into(),
                 "-d".into(),
                 "-s".into(),
                 session_name.into(),
+                launch_command.into(),
             ]);
             self.live = true;
             Ok(())
@@ -577,7 +636,40 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-    fn project() -> (tempfile::TempDir, Project) {
+    fn test_config() -> Config {
+        Config::new_single_workflow(
+            "rust",
+            vec![
+                (
+                    "implementing".to_owned(),
+                    PhaseDef {
+                        model: Some("dispatch exec -a codex".to_owned()),
+                        duty: Some("write tests first".to_owned()),
+                        gate: None,
+                    },
+                ),
+                (
+                    "verifying".to_owned(),
+                    PhaseDef {
+                        model: Some("sonnet".to_owned()),
+                        duty: Some("run cargo test".to_owned()),
+                        gate: None,
+                    },
+                ),
+            ],
+            3,
+        )
+    }
+
+    fn write_project_config(project: &Project) {
+        fs::write(
+            project.state_dir.join("config.json"),
+            serde_json::to_string_pretty(&test_config()).expect("serialize config"),
+        )
+        .expect("write config");
+    }
+
+    fn project_without_config() -> (tempfile::TempDir, Project) {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let state_dir = dir.path().join(".agira").join("runner-repo");
         fs::create_dir_all(&state_dir).expect("state dir");
@@ -593,6 +685,12 @@ mod tests {
                 project_hooks: HookConfig::default(),
             },
         )
+    }
+
+    fn project() -> (tempfile::TempDir, Project) {
+        let (dir, project) = project_without_config();
+        write_project_config(&project);
+        (dir, project)
     }
 
     fn capture_runner_output<F>(run: F) -> String
@@ -616,14 +714,22 @@ mod tests {
         assert_eq!(output.session_name, "agira-runner-repo");
         assert!(!output.already_running);
         assert_eq!(
-            &tmux.calls[..2],
-            vec![
-                vec!["has-session", "-t", "agira-runner-repo"],
-                vec!["new-session", "-d", "-s", "agira-runner-repo"],
-            ]
-            .into_iter()
-            .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
-            .collect::<Vec<_>>()
+            tmux.calls[0],
+            vec!["has-session", "-t", "agira-runner-repo"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            &tmux.calls[1][..4],
+            ["new-session", "-d", "-s", "agira-runner-repo"]
+        );
+        assert!(tmux.calls[1][4].starts_with("AGIRA_RUNNER_ID='runner-"));
+        assert!(tmux.calls[1][4].contains("' claude --append-system-prompt '"));
+        assert!(tmux.calls[1][4].contains("agira-orchestrator-template-v1"));
+        assert!(
+            tmux.calls[1][4]
+                .contains("| implementing | dispatch exec -a codex | write tests first |")
         );
 
         assert_eq!(
@@ -655,6 +761,46 @@ mod tests {
             .get_runner(&output.runner_id)
             .expect("runner registered");
         assert_eq!(runner.runner_type, "custom");
+    }
+
+    #[test]
+    fn start_injects_override_template_on_cold_start() {
+        let (dir, mut project) = project();
+        let template_path = dir.path().join("override-template.md");
+        fs::write(
+            &template_path,
+            "custom static marker\n\nThin-orchestrator rule: delegate only",
+        )
+        .expect("write override");
+        project.global_config.runner.orchestrator_template_path = Some(template_path);
+        let mut tmux = RecordingTmux::default();
+
+        start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
+
+        let launch_command = &tmux.calls[1][4];
+        assert!(launch_command.contains("custom static marker"));
+        assert!(!launch_command.contains("agira-orchestrator-template-v1"));
+        assert!(launch_command.contains("| verifying | sonnet | run cargo test |"));
+    }
+
+    #[test]
+    fn start_errors_before_creating_session_when_config_is_missing() {
+        let (_dir, project) = project_without_config();
+        let mut tmux = RecordingTmux::default();
+
+        let result = start_runner(&project, None, &mut tmux, fixed_now());
+
+        assert!(matches!(
+            result,
+            Err(RunnerCommandError::Config(ConfigError::NotFound { .. }))
+        ));
+        assert_eq!(
+            tmux.calls,
+            vec![vec!["has-session", "-t", "agira-runner-repo"]]
+                .into_iter()
+                .map(|call| call.into_iter().map(str::to_owned).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

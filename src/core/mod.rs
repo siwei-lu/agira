@@ -2,6 +2,7 @@ pub(crate) mod advance;
 pub(crate) mod config;
 pub(crate) mod global_config;
 pub(crate) mod hooks;
+pub(crate) mod orchestrator;
 pub(crate) mod pick;
 pub(crate) mod project;
 #[allow(dead_code)]

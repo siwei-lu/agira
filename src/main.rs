@@ -1263,8 +1263,16 @@ fn exit_code_for_runner(error: &commands::RunnerCommandError) -> ExitCode {
         | NoRunnerRegistered
         | SessionNotAlive
         | LogFileNotFound { .. }
-        | TmuxFailed { .. } => ExitCode::from(1),
-        TmuxIo { .. } | Read { .. } | Write { .. } => ExitCode::from(2),
+        | TmuxFailed { .. }
+        | Config(
+            crate::core::config::ConfigError::NotFound { .. }
+            | crate::core::config::ConfigError::Parse { .. }
+            | crate::core::config::ConfigError::Invalid { .. },
+        ) => ExitCode::from(1),
+        TmuxIo { .. }
+        | Read { .. }
+        | Write { .. }
+        | Config(crate::core::config::ConfigError::Read { .. }) => ExitCode::from(2),
         RunnerStore(store_error) => match store_error {
             crate::core::RunnerStoreError::Io { .. }
             | crate::core::RunnerStoreError::Serialize(_)

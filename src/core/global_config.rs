@@ -26,6 +26,8 @@ pub struct GlobalConfig {
 pub struct RunnerConfig {
     #[serde(default = "default_runner_lease_ttl")]
     pub lease_ttl: String,
+    #[serde(default)]
+    pub orchestrator_template_path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,7 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             lease_ttl: default_runner_lease_ttl(),
+            orchestrator_template_path: None,
         }
     }
 }
@@ -161,6 +164,17 @@ pub fn save_global_config(agira_root: &Path, config: &GlobalConfig) -> anyhow::R
             "lease_ttl".to_owned(),
             toml::Value::String(config.runner.lease_ttl.clone()),
         );
+        match &config.runner.orchestrator_template_path {
+            Some(path) => {
+                table.insert(
+                    "orchestrator_template_path".to_owned(),
+                    toml::Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+            None => {
+                table.remove("orchestrator_template_path");
+            }
+        }
     }
 
     let contents = toml::to_string_pretty(&document)
