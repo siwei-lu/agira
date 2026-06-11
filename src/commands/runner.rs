@@ -402,7 +402,7 @@ fn stop_runner<T: Tmux>(project: &Project, tmux: &mut T) -> Result<(), RunnerCom
     Ok(())
 }
 
-fn status_runner<T: Tmux>(
+pub(crate) fn status_runner<T: Tmux>(
     project: &Project,
     tmux: &mut T,
     now: DateTime<Utc>,
@@ -536,7 +536,7 @@ fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
     )
 }
 
-fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool {
+pub(crate) fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool {
     let Some(hb) = last_heartbeat else {
         return false; // fail-safe: missing heartbeat → treat as live
     };
@@ -546,7 +546,7 @@ fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool 
     now - parsed.with_timezone(&Utc) > HEARTBEAT_STALENESS_THRESHOLD
 }
 
-fn format_heartbeat_age(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> String {
+pub(crate) fn format_heartbeat_age(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> String {
     let Some(last_heartbeat) = last_heartbeat else {
         return "none".to_owned();
     };

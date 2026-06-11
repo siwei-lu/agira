@@ -546,3 +546,118 @@ fn task_list_does_not_warn_when_hook_failure_log_is_absent() {
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     assert!(String::from_utf8_lossy(&output.stdout).contains("task-001"));
 }
+
+/// `agira task list` (plain text) always shows a runner header line above the
+/// task table.  When no runner is registered and no tmux session is live, the
+/// header must read "no runner".
+#[test]
+fn task_list_plain_shows_runner_header_above_table() {
+    let (home, _workspace, repo) = setup_initialized_repo("Runner Header Plain Repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "runner header task"]));
+
+    let output = run(agira(home.path(), &repo).args(["task", "list"]));
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Without a tmux session, the header must say "no runner"
+    assert!(
+        stdout.contains("no runner"),
+        "expected 'no runner' header in plain task list\nstdout:\n{stdout}"
+    );
+
+    // Header must appear before the table-header line ("ID")
+    let header_pos = stdout.find("no runner").expect("header not found");
+    let table_pos = stdout.find("ID").expect("table header not found");
+    assert!(
+        header_pos < table_pos,
+        "runner header must appear before table header\nstdout:\n{stdout}"
+    );
+
+    // There must be a blank line separating header from table
+    assert!(
+        stdout.contains("\n\n"),
+        "expected blank line between runner header and table\nstdout:\n{stdout}"
+    );
+}
+
+/// `agira task list --json` (no filter) must include a top-level `runner`
+/// object alongside `tasks`, with the documented fields.
+#[test]
+fn task_list_json_includes_runner_object_with_required_fields() {
+    let (home, _workspace, repo) = setup_initialized_repo("Runner Header Json Repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "runner json task"]));
+
+    let output = run(agira(home.path(), &repo).args(["task", "list", "--json"]));
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("task list --json must be valid JSON");
+
+    // Existing tasks array must be present and unchanged
+    assert!(
+        value.get("tasks").is_some(),
+        "JSON must contain 'tasks' array\nstdout:\n{stdout}"
+    );
+    assert!(
+        value["tasks"].is_array(),
+        "tasks must be an array\nstdout:\n{stdout}"
+    );
+
+    // New runner object must be present with all documented keys
+    let runner = value
+        .get("runner")
+        .expect("JSON must contain top-level 'runner' key");
+    assert!(
+        runner.get("runner_id").is_some(),
+        "runner must have 'runner_id'\nstdout:\n{stdout}"
+    );
+    assert!(
+        runner.get("runner_type").is_some(),
+        "runner must have 'runner_type'\nstdout:\n{stdout}"
+    );
+    assert!(
+        runner.get("current_task").is_some(),
+        "runner must have 'current_task'\nstdout:\n{stdout}"
+    );
+    assert!(
+        runner.get("liveness").is_some(),
+        "runner must have 'liveness'\nstdout:\n{stdout}"
+    );
+    assert!(
+        runner.get("heartbeat_age").is_some(),
+        "runner must have 'heartbeat_age'\nstdout:\n{stdout}"
+    );
+
+    // With no runner registered, liveness must be "none"
+    assert_eq!(
+        runner["liveness"], "none",
+        "expected liveness 'none' with no registered runner\nstdout:\n{stdout}"
+    );
+}
+
+/// `agira task list --json <id>` (single-task filter) must NOT include a
+/// `runner` key, since this path returns a single-task object.
+#[test]
+fn task_list_json_with_single_task_filter_has_no_runner_key() {
+    let (home, _workspace, repo) = setup_initialized_repo("Runner Header Json Filter Repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "runner json filter task"]));
+
+    let output = run(agira(home.path(), &repo).args(["task", "list", "--json", "task-001"]));
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("task list --json <id> must be valid JSON");
+
+    assert!(
+        value.get("runner").is_none(),
+        "single-task --json must NOT include 'runner' key\nstdout:\n{stdout}"
+    );
+}
