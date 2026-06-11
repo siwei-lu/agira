@@ -2,10 +2,12 @@ use std::{
     cmp::Ordering,
     fmt::Write as FmtWrite,
     fs, io,
+    io::BufRead,
     io::Write,
     path::{Path, PathBuf},
 };
 
+use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 
 use crate::core::{
@@ -63,6 +65,10 @@ pub fn run_status(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<(), StatusError> {
+    // Warn for hook failures from the last 24 hours so stale hook problems are
+    // visible without maintaining a separate last-read sentinel file.
+    warn_recent_hook_failures(&project.state_dir.join("hooks.log"));
+
     if json {
         if let Some(id) = filter {
             return output_task_json(project, id);
@@ -446,6 +452,44 @@ fn write_status_output(contents: &str, path: &Path) -> Result<(), StatusError> {
             path: path.to_path_buf(),
             source,
         })
+}
+
+fn warn_recent_hook_failures(path: &Path) {
+    if !hook_log_has_recent_failure(path, Utc::now()) {
+        return;
+    }
+
+    let display_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    eprintln!(
+        "warning: recent hook failures in {}",
+        display_path.display()
+    );
+}
+
+fn hook_log_has_recent_failure(path: &Path, now: DateTime<Utc>) -> bool {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let cutoff = now - Duration::hours(24);
+
+    for line in io::BufReader::new(file).lines() {
+        let Ok(line) = line else {
+            return false;
+        };
+        let Some((timestamp, _)) = line.split_once('\t') else {
+            continue;
+        };
+        let Ok(timestamp) = DateTime::parse_from_rfc3339(timestamp) else {
+            continue;
+        };
+
+        if timestamp.with_timezone(&Utc) >= cutoff {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

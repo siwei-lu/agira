@@ -4,6 +4,7 @@ use std::{
     process::{Command, Output},
 };
 
+use chrono::{Duration, Utc};
 use tempfile::TempDir;
 
 const NOT_INITIALIZED_ERROR: &str =
@@ -32,6 +33,10 @@ fn setup_uninitialized_repo() -> (TempDir, TempDir, PathBuf) {
 
 fn project_state_dir(home: &Path) -> PathBuf {
     home.join(".agira").join("task-cli-repo")
+}
+
+fn project_state_dir_for(home: &Path, slug: &str) -> PathBuf {
+    home.join(".agira").join(slug)
 }
 
 #[test]
@@ -301,4 +306,102 @@ fn cli_cas_mismatch_exits_1_without_mutating_state() {
         json_str.contains("\"implementing\""),
         "task state must not change on CAS mismatch; json:\n{json_str}"
     );
+}
+
+#[test]
+fn task_list_warns_about_recent_hook_failures_for_table_output() {
+    let repo_name = "Recent Hook Failure Repo";
+    let (home, _workspace, repo) = setup_initialized_repo(repo_name);
+    let state_dir = project_state_dir_for(home.path(), "recent-hook-failure-repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "recent hook failure task"]));
+    let hooks_log = state_dir.join("hooks.log");
+    fs::write(
+        &hooks_log,
+        format!(
+            "{}\ttask_added\ttask-001\tbad-command\tspawn_error: command not found\n",
+            Utc::now().to_rfc3339()
+        ),
+    )
+    .unwrap();
+
+    let output = run(agira(home.path(), &repo).args(["task", "list"]));
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "warning: recent hook failures in {}\n",
+            hooks_log.canonicalize().unwrap().display()
+        )
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("task-001"));
+}
+
+#[test]
+fn task_list_json_warns_about_recent_hook_failures_only_on_stderr() {
+    let repo_name = "Recent Hook Failure Json Repo";
+    let (home, _workspace, repo) = setup_initialized_repo(repo_name);
+    let state_dir = project_state_dir_for(home.path(), "recent-hook-failure-json-repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "recent json hook failure task"]));
+    let hooks_log = state_dir.join("hooks.log");
+    fs::write(
+        &hooks_log,
+        format!(
+            "{}\ttask_added\ttask-001\tbad-command\tspawn_error: command not found\n",
+            Utc::now().to_rfc3339()
+        ),
+    )
+    .unwrap();
+
+    let output = run(agira(home.path(), &repo).args(["task", "list", "--json"]));
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "warning: recent hook failures in {}\n",
+            hooks_log.canonicalize().unwrap().display()
+        )
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("warning:"));
+    serde_json::from_str::<serde_json::Value>(&stdout).unwrap();
+}
+
+#[test]
+fn task_list_does_not_warn_when_hook_failures_are_old() {
+    let repo_name = "Old Hook Failure Repo";
+    let (home, _workspace, repo) = setup_initialized_repo(repo_name);
+    let state_dir = project_state_dir_for(home.path(), "old-hook-failure-repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "old hook failure task"]));
+    fs::write(
+        state_dir.join("hooks.log"),
+        format!(
+            "{}\ttask_added\ttask-001\tbad-command\tspawn_error: command not found\n",
+            (Utc::now() - Duration::hours(25)).to_rfc3339()
+        ),
+    )
+    .unwrap();
+
+    let output = run(agira(home.path(), &repo).args(["task", "list"]));
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("task-001"));
+}
+
+#[test]
+fn task_list_does_not_warn_when_hook_failure_log_is_absent() {
+    let (home, _workspace, repo) = setup_initialized_repo("Absent Hook Failure Repo");
+
+    run(agira(home.path(), &repo).args(["task", "add", "absent hook failure task"]));
+
+    let output = run(agira(home.path(), &repo).args(["task", "list"]));
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("task-001"));
 }
