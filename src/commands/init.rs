@@ -195,6 +195,7 @@ fn default_phases() -> Vec<(String, PhaseDef)> {
             PhaseDef {
                 model: Some("opus".to_owned()),
                 duty: None,
+                gate: None,
             },
         ),
         (
@@ -202,6 +203,7 @@ fn default_phases() -> Vec<(String, PhaseDef)> {
             PhaseDef {
                 model: Some("sonnet".to_owned()),
                 duty: None,
+                gate: None,
             },
         ),
         (
@@ -209,6 +211,7 @@ fn default_phases() -> Vec<(String, PhaseDef)> {
             PhaseDef {
                 model: Some("sonnet".to_owned()),
                 duty: None,
+                gate: None,
             },
         ),
         (
@@ -216,6 +219,7 @@ fn default_phases() -> Vec<(String, PhaseDef)> {
             PhaseDef {
                 model: Some("haiku".to_owned()),
                 duty: None,
+                gate: None,
             },
         ),
     ]
@@ -242,6 +246,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<(String, PhaseDef)>, InitError> 
                             PhaseDef {
                                 model: Some(model.to_owned()),
                                 duty: None,
+                                gate: None,
                             },
                         ))
                     }
@@ -251,6 +256,7 @@ fn parse_phases_flag(input: &str) -> Result<Vec<(String, PhaseDef)>, InitError> 
                     PhaseDef {
                         model: None,
                         duty: None,
+                        gate: None,
                     },
                 )),
             }
@@ -583,6 +589,15 @@ Use this canonical verifying-duty example when it fits: "#
     prompt.push_str(CANONICAL_VERIFYING_DUTY_EXAMPLE);
     prompt.push_str(
         r#"
+
+After setting the verifying-phase duty, also set a gate on it so that agira enforces the
+verification commands before recording any artifact. Run:
+
+```sh
+agira phase update verifying --set-gate "<verification commands joined by &&>"
+```
+
+Use the same commands that appear in the verifying-phase duty (e.g. `cargo fmt -- --check && cargo test && cargo clippy -- -D warnings`).
 
 ## Step 7 — Write CLAUDE.md
 

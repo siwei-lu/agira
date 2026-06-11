@@ -20,6 +20,8 @@ pub struct PhaseDef {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duty: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -232,8 +234,82 @@ fn normalize_mandatory_phase_def(name: &str, phases: &mut BTreeMap<String, Phase
         PhaseDef {
             model: None,
             duty: None,
+            gate: None,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // PhaseDef gate serialization round-trips
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn phase_def_with_gate_serializes_and_round_trips() {
+        let def = PhaseDef {
+            model: None,
+            duty: None,
+            gate: Some("cargo test".to_owned()),
+        };
+        let json = serde_json::to_string(&def).expect("serialize");
+        assert!(
+            json.contains("\"gate\": \"cargo test\"") || json.contains("\"gate\":\"cargo test\"")
+        );
+        let round_tripped: PhaseDef = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped, def);
+    }
+
+    #[test]
+    fn phase_def_without_gate_serializes_without_gate_key() {
+        let def = PhaseDef {
+            model: None,
+            duty: None,
+            gate: None,
+        };
+        let json = serde_json::to_string(&def).expect("serialize");
+        assert!(!json.contains("gate"), "gate key must not appear when None");
+        let round_tripped: PhaseDef = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_tripped.gate, None);
+    }
+
+    #[test]
+    fn phase_def_missing_gate_in_json_deserializes_to_none() {
+        // Simulates an existing config file that has no gate field
+        let json = r#"{"model": "gpt-4", "duty": "do stuff"}"#;
+        let def: PhaseDef = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(def.gate, None);
+    }
+
+    #[test]
+    fn normalize_mandatory_phase_def_sets_gate_to_none_on_pending_and_done() {
+        let mut phases = BTreeMap::new();
+        // Insert pending and done with a gate set (should be overwritten by normalize)
+        phases.insert(
+            INITIAL_PHASE_NAME.to_owned(),
+            PhaseDef {
+                model: Some("some-model".to_owned()),
+                duty: None,
+                gate: Some("should be cleared".to_owned()),
+            },
+        );
+        phases.insert(
+            TERMINAL_PHASE_NAME.to_owned(),
+            PhaseDef {
+                model: Some("some-model".to_owned()),
+                duty: None,
+                gate: Some("should be cleared".to_owned()),
+            },
+        );
+
+        normalize_mandatory_phase_def(INITIAL_PHASE_NAME, &mut phases);
+        normalize_mandatory_phase_def(TERMINAL_PHASE_NAME, &mut phases);
+
+        assert_eq!(phases[INITIAL_PHASE_NAME].gate, None);
+        assert_eq!(phases[TERMINAL_PHASE_NAME].gate, None);
+    }
 }
 
 pub fn write_project_config(path: &Path, config: &Config) -> Result<(), ConfigError> {

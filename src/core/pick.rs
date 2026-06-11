@@ -366,6 +366,7 @@ mod tests {
                 PhaseDef {
                     model: Some("dispatch exec -a codex".to_owned()),
                     duty: Some("Implement the task.".to_owned()),
+                    gate: None,
                 },
             )],
             3,

@@ -1,7 +1,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use chrono::Utc;
@@ -37,6 +37,9 @@ pub enum TodoError {
 
     #[error("task {id} is {state} and cannot be advanced")]
     NotAdvanceable { id: String, state: String },
+
+    #[error("gate failed for phase {phase}")]
+    GateFailed { phase: String },
 
     #[error("failed to read {path}")]
     Io {
@@ -135,6 +138,17 @@ pub fn run_todo(
                 current_task.id.clone()
             };
 
+            // Gate check: run the gate command for the from-phase before mutating state
+            let from_phase_name = store
+                .get_task(&resolved_task_id)
+                .map(|t| t.state.clone())
+                .unwrap_or_default();
+            if let Some(phase_def) = config.phase_def(&from_phase_name) {
+                if let Some(gate_cmd) = &phase_def.gate {
+                    run_gate(gate_cmd, &project.git_root, &from_phase_name)?;
+                }
+            }
+
             let completed_at = Utc::now().to_rfc3339();
             let recorded_from_phase =
                 store.advance_with_artifact(&resolved_task_id, artifact, completed_at)?;
@@ -197,6 +211,51 @@ pub fn run_todo(
     }
 
     Ok(())
+}
+
+fn run_gate(cmd: &str, git_root: &Path, phase_name: &str) -> Result<(), TodoError> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(git_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    match output {
+        Err(io_err) => {
+            eprintln!(
+                "error: gate failed for phase {phase_name}: failed to run gate command: {io_err}"
+            );
+            Err(TodoError::GateFailed {
+                phase: phase_name.to_owned(),
+            })
+        }
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            // Concatenate stdout then stderr and emit the last 20 lines
+            let mut combined = String::new();
+            if !output.stdout.is_empty() {
+                combined.push_str(&String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                combined.push_str(&String::from_utf8_lossy(&output.stderr));
+            }
+            let lines: Vec<&str> = combined.lines().collect();
+            let tail = if lines.len() > 20 {
+                &lines[lines.len() - 20..]
+            } else {
+                &lines
+            };
+            for line in tail {
+                eprintln!("{line}");
+            }
+            eprintln!("error: gate failed for phase {phase_name}");
+            Err(TodoError::GateFailed {
+                phase: phase_name.to_owned(),
+            })
+        }
+    }
 }
 
 fn is_working_tree_dirty(git_root: &Path) -> bool {
@@ -573,5 +632,142 @@ mod tests {
         let config = test_config();
 
         assert_eq!(config.initial_phase(), Some("pending"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gate enforcement tests
+    // -----------------------------------------------------------------------
+
+    fn config_with_gate(gate_cmd: &str) -> Config {
+        let mut def = PhaseDef::default();
+        def.gate = Some(gate_cmd.to_owned());
+        Config::new_single_workflow(
+            "test",
+            vec![
+                ("implementing".to_owned(), def),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        )
+    }
+
+    fn config_without_gate() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        )
+    }
+
+    /// Like setup_project_with_config but keeps the repo TempDir alive so that
+    /// `project.git_root` remains a valid directory (needed when gate runs `sh -c`
+    /// with `current_dir = git_root`).
+    fn setup_project_with_live_git_root(
+        config: &Config,
+    ) -> (tempfile::TempDir, tempfile::TempDir, Project) {
+        let home_dir = tempfile::TempDir::new().expect("create home temp dir");
+        let repo_dir = tempfile::TempDir::new().expect("create repo temp dir");
+
+        let git_root = repo_dir.path().to_path_buf();
+        fs::create_dir_all(git_root.join(".git")).expect("create .git dir");
+
+        let state_dir = home_dir.path().join(".agira").join("test-repo");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+
+        let config_json = serde_json::to_string_pretty(config).expect("serialize config");
+        fs::write(state_dir.join("config.json"), &config_json).expect("write config.json");
+
+        let project = Project {
+            git_root,
+            slug: "test-repo".to_owned(),
+            state_dir,
+            global_config: GlobalConfig::default(),
+            global_hooks: HookConfig::default(),
+            project_hooks: HookConfig::default(),
+        };
+
+        (home_dir, repo_dir, project)
+    }
+
+    #[test]
+    fn gate_passes_with_true_command_and_task_advances() {
+        let config = config_with_gate("true");
+        let (_home, _repo, project) = setup_project_with_live_git_root(&config);
+        let task_id = add_task_in_phase(&project, &config, "gate task", "implementing");
+
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+        assert!(result.is_ok(), "gate must pass with 'true': {result:?}");
+
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(
+            task.state, "reviewing",
+            "task must advance when gate passes"
+        );
+        assert!(
+            task.phases.contains_key("implementing"),
+            "artifact must be recorded"
+        );
+    }
+
+    #[test]
+    fn gate_fails_with_false_command_and_task_state_unchanged() {
+        let config = config_with_gate("false");
+        let (_home, _repo, project) = setup_project_with_live_git_root(&config);
+        let task_id = add_task_in_phase(&project, &config, "gate fail task", "implementing");
+
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+
+        match result {
+            Err(TodoError::GateFailed { phase }) => {
+                assert_eq!(phase, "implementing");
+            }
+            other => panic!("expected GateFailed, got: {other:?}"),
+        }
+
+        // State must not have changed; no artifact must be recorded
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(
+            task.state, "implementing",
+            "state must not change on gate failure"
+        );
+        assert!(
+            task.phases.is_empty(),
+            "no artifact must be recorded on gate failure"
+        );
+    }
+
+    #[test]
+    fn gate_absent_advance_proceeds_identically() {
+        let config = config_without_gate();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "no gate task", "implementing");
+
+        let result = run_todo(&project, Some("artifact"), Some(&task_id), None);
+        assert!(result.is_ok(), "no gate must advance normally: {result:?}");
+
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(task.state, "reviewing");
+    }
+
+    #[test]
+    fn gate_not_run_in_no_artifact_read_only_path() {
+        // A gate command that would fail if run — but it should not be run
+        // in the read-only (no artifact) path
+        let config = config_with_gate("false");
+        let (_home, project) = setup_project_with_config(&config);
+        let _task_id = add_task_in_phase(&project, &config, "read only task", "implementing");
+
+        // No --artifact provided — gate must NOT be invoked
+        let result = run_todo(&project, None, None, None);
+        assert!(
+            result.is_ok(),
+            "read-only path must not run gate: {result:?}"
+        );
     }
 }

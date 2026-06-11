@@ -106,6 +106,10 @@ enum PhaseCommands {
         clear_model: bool,
         #[arg(long = "clear-duty")]
         clear_duty: bool,
+        #[arg(long = "set-gate", value_name = "cmd")]
+        set_gate: Option<String>,
+        #[arg(long = "unset-gate")]
+        unset_gate: bool,
     },
     /// Remove a global phase definition
     Remove {
@@ -588,6 +592,8 @@ fn main() -> ExitCode {
                 set_duty,
                 clear_model,
                 clear_duty,
+                set_gate,
+                unset_gate,
             } => match resolve_project() {
                 Ok(project) => match commands::run_phase_update(
                     &project,
@@ -596,6 +602,8 @@ fn main() -> ExitCode {
                     set_duty.as_deref(),
                     clear_model,
                     clear_duty,
+                    set_gate.as_deref(),
+                    unset_gate,
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
@@ -888,6 +896,7 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
         | TaskNotFound { .. }
         | AlreadyAdvancedPast { .. }
         | NotAdvanceable { .. }
+        | GateFailed { .. }
         | ConfigLoad { .. }
         | InvalidConfig { .. } => ExitCode::from(1),
         Io { .. } => ExitCode::from(2),
