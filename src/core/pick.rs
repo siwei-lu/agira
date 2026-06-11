@@ -200,6 +200,15 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
         task.id
     ));
 
+    // Append the Completion section for all non-initial, non-terminal phases.
+    // (format_task_prompt_output is not called for terminal tasks in the current code path.)
+    if task.state != INITIAL_PHASE_NAME {
+        subagent.push_str(&format!(
+            "\n\n## Completion\n`agira task todo --task {} --from {} --artifact \"<evidence>\"`",
+            task.id, task.state
+        ));
+    }
+
     subagent
 }
 
@@ -414,7 +423,7 @@ mod tests {
         let task = test_task();
 
         let output = format_task_prompt_output(&task, &config, state_dir);
-        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block task-109 --reason \"<explanation>\"`";
+        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block task-109 --reason \"<explanation>\"`\n\n## Completion\n`agira task todo --task task-109 --from implementing --artifact \"<evidence>\"`";
 
         assert_eq!(output, expected);
         assert!(!output.contains("## Previous Review Feedback"));

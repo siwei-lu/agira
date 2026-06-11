@@ -258,6 +258,12 @@ enum TaskCommands {
         /// Evidence of completion for this phase; advances the current task when provided
         #[arg(long, value_name = "artifact")]
         artifact: Option<String>,
+        /// Target a specific task by ID instead of the automatically selected next task
+        #[arg(long = "task", value_name = "id")]
+        task_id: Option<String>,
+        /// Expected current phase of the task; used for compare-and-swap safety when combined with --artifact
+        #[arg(long, value_name = "phase")]
+        from: Option<String>,
     },
     /// Record a task failure and retry or terminate based on retry count
     Fail {
@@ -374,8 +380,17 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Todo { artifact } => match resolve_initialized_project() {
-                Ok(project) => match commands::run_todo(&project, artifact.as_deref()) {
+            TaskCommands::Todo {
+                artifact,
+                task_id,
+                from,
+            } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_todo(
+                    &project,
+                    artifact.as_deref(),
+                    task_id.as_deref(),
+                    from.as_deref(),
+                ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");
@@ -868,9 +883,13 @@ fn exit_code_for_todo(error: &commands::TodoError) -> ExitCode {
     use commands::TodoError::*;
 
     match error {
-        NoActionableTask | EmptyArtifact | ConfigLoad { .. } | InvalidConfig { .. } => {
-            ExitCode::from(1)
-        }
+        NoActionableTask
+        | EmptyArtifact
+        | TaskNotFound { .. }
+        | AlreadyAdvancedPast { .. }
+        | NotAdvanceable { .. }
+        | ConfigLoad { .. }
+        | InvalidConfig { .. } => ExitCode::from(1),
         Io { .. } => ExitCode::from(2),
         StoreError(store_error) => match store_error {
             crate::core::StoreError::Io { .. }

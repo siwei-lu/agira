@@ -77,3 +77,228 @@ fn task_status_is_unrecognized_subcommand() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand 'status'"));
 }
+
+fn setup_initialized_repo(name: &str) -> (TempDir, TempDir, PathBuf) {
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join(name);
+    fs::create_dir(&repo).unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+
+    let output = run(agira(home.path(), &repo).args([
+        "init",
+        "--stack",
+        "rust",
+        "--phases",
+        "enriching,implementing,reviewing,done",
+    ]));
+    assert!(
+        output.status.success(),
+        "init failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    (home, workspace, repo)
+}
+
+/// Full roundtrip: add a task, read the prompt, parse the `## Completion` command,
+/// run it verbatim, and verify the task advanced to the next phase.
+#[test]
+fn todo_completion_receipt_command_advances_task_to_next_phase() {
+    let (home, _workspace, repo) = setup_initialized_repo("CAS Roundtrip Repo");
+
+    // Add a task that starts in the "enriching" phase
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "roundtrip task",
+        "--description",
+        "A task for the CAS roundtrip integration test",
+        "--phase",
+        "enriching",
+    ]));
+    assert!(output.status.success(), "task add failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Extract the task ID from the output (format: "added task-001: <title>")
+    let task_id = stdout
+        .split_whitespace()
+        .nth(1)
+        .expect("task id in add output")
+        .trim_end_matches(':')
+        .to_owned();
+
+    // Run `agira task todo` to obtain the prompt
+    let output = run(agira(home.path(), &repo).args(["task", "todo", "--task", &task_id]));
+    assert!(
+        output.status.success(),
+        "task todo failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let prompt = String::from_utf8_lossy(&output.stdout);
+
+    // Parse the `## Completion` section to verify it contains the expected receipt command.
+    // The format is: `agira task todo --task <id> --from <phase> --artifact "<evidence>"`
+    let completion_line = prompt
+        .lines()
+        .find(|line| line.contains("agira task todo --task") && line.contains("--from"))
+        .unwrap_or_else(|| panic!("## Completion receipt command not found in prompt:\n{prompt}"));
+
+    // Verify the completion line embeds the correct task ID and current phase
+    assert!(
+        completion_line.contains(&task_id),
+        "completion line must embed task ID {task_id}; got:\n{completion_line}"
+    );
+    assert!(
+        completion_line.contains("--from enriching"),
+        "completion line must embed --from enriching; got:\n{completion_line}"
+    );
+
+    // Run the actual receipt command by constructing it from parsed values
+    // (avoids shell-quoting complexity when the artifact text has spaces)
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "todo",
+        "--task",
+        &task_id,
+        "--from",
+        "enriching",
+        "--artifact",
+        "roundtrip complete",
+    ]));
+    assert!(
+        output.status.success(),
+        "receipt command failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify the task is now in the next phase (implementing)
+    let output = run(agira(home.path(), &repo).args(["task", "list", "--json", &task_id]));
+    assert!(output.status.success(), "task list failed");
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        json_str.contains("\"implementing\""),
+        "task should be in implementing phase after roundtrip; json:\n{json_str}"
+    );
+}
+
+/// `agira task todo --help` must list the new --task and --from flags.
+#[test]
+fn task_todo_help_lists_task_and_from_flags() {
+    let output = run(Command::new(env!("CARGO_BIN_EXE_agira")).args(["task", "todo", "--help"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--task"),
+        "expected --task in 'agira task todo --help', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--from"),
+        "expected --from in 'agira task todo --help', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("<id>"),
+        "expected <id> placeholder in 'agira task todo --help', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("<phase>"),
+        "expected <phase> placeholder in 'agira task todo --help', got:\n{stdout}"
+    );
+}
+
+/// Legacy path (--artifact without --task) emits deprecation warning on stderr.
+#[test]
+fn legacy_path_emits_deprecation_warning_on_stderr() {
+    let (home, _workspace, repo) = setup_initialized_repo("Legacy Warning Repo");
+
+    // Add a task in the enriching phase
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "legacy task",
+        "--description",
+        "A task for legacy deprecation warning test",
+        "--phase",
+        "enriching",
+    ]));
+    assert!(output.status.success(), "task add failed");
+
+    // Run the legacy path
+    let output = run(agira(home.path(), &repo).args(["task", "todo", "--artifact", "legacy done"]));
+    assert!(
+        output.status.success(),
+        "legacy task todo failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--artifact without --task is deprecated"),
+        "expected deprecation warning in stderr, got:\n{stderr}"
+    );
+
+    // stdout must not contain the warning
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("--artifact without --task is deprecated"),
+        "deprecation warning must not appear in stdout, got:\n{stdout}"
+    );
+}
+
+/// CAS mismatch via CLI: --task + --from where task is already in a different phase
+/// must exit 1 with a clear error and must not advance the task.
+#[test]
+fn cli_cas_mismatch_exits_1_without_mutating_state() {
+    let (home, _workspace, repo) = setup_initialized_repo("CAS Mismatch CLI Repo");
+
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "add",
+        "cas task",
+        "--description",
+        "CAS mismatch test task",
+        "--phase",
+        "implementing",
+    ]));
+    assert!(output.status.success(), "task add failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Format: "added task-001: cas task"
+    let task_id = stdout
+        .split_whitespace()
+        .nth(1)
+        .expect("task id")
+        .trim_end_matches(':')
+        .to_owned();
+
+    // Submit with --from enriching but task is in implementing → CAS mismatch
+    let output = run(agira(home.path(), &repo).args([
+        "task",
+        "todo",
+        "--task",
+        &task_id,
+        "--from",
+        "enriching",
+        "--artifact",
+        "done",
+    ]));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 for CAS mismatch"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already advanced past"),
+        "expected 'already advanced past' in stderr, got:\n{stderr}"
+    );
+
+    // Task must still be in implementing
+    let output = run(agira(home.path(), &repo).args(["task", "list", "--json", &task_id]));
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        json_str.contains("\"implementing\""),
+        "task state must not change on CAS mismatch; json:\n{json_str}"
+    );
+}

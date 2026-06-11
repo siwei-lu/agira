@@ -19,6 +19,8 @@ use crate::core::{
 const DIRTY_WORKING_TREE_MESSAGE: &str =
     "Working tree is dirty — commit your changes, then run `agira task todo` again.";
 
+const DEPRECATION_WARNING: &str = "warning: --artifact without --task is deprecated; use --task <id> --from <phase> to target explicitly";
+
 #[derive(Debug, Error)]
 pub enum TodoError {
     #[error("no actionable task — all remaining tasks are blocked, failed, or complete")]
@@ -26,6 +28,15 @@ pub enum TodoError {
 
     #[error("artifact must not be empty")]
     EmptyArtifact,
+
+    #[error("task {id} not found")]
+    TaskNotFound { id: String },
+
+    #[error("task {id} already advanced past {phase}")]
+    AlreadyAdvancedPast { id: String, phase: String },
+
+    #[error("task {id} is {state} and cannot be advanced")]
+    NotAdvanceable { id: String, state: String },
 
     #[error("failed to read {path}")]
     Io {
@@ -48,7 +59,12 @@ pub enum TodoError {
     StoreError(#[from] StoreError),
 }
 
-pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoError> {
+pub fn run_todo(
+    project: &Project,
+    artifact: Option<&str>,
+    task_id: Option<&str>,
+    from_phase: Option<&str>,
+) -> Result<(), TodoError> {
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
@@ -85,15 +101,47 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
 
             let mut store = TaskStore::new(&project.state_dir, &config)?;
 
-            let task_id = {
+            let resolved_task_id = if let Some(id) = task_id {
+                // CAS path: locate task by explicit ID
+                let task = store
+                    .get_task(id)
+                    .ok_or_else(|| TodoError::TaskNotFound { id: id.to_owned() })?;
+
+                // Check the task is not blocked, failed, or terminal
+                if task.state == "blocked" || task.state == "failed" || task.state == terminal_phase
+                {
+                    return Err(TodoError::NotAdvanceable {
+                        id: id.to_owned(),
+                        state: task.state.clone(),
+                    });
+                }
+
+                // CAS check: if --from was also provided, verify the task is still in that phase
+                if let Some(expected_phase) = from_phase {
+                    if task.state != expected_phase {
+                        return Err(TodoError::AlreadyAdvancedPast {
+                            id: id.to_owned(),
+                            phase: expected_phase.to_owned(),
+                        });
+                    }
+                }
+
+                id.to_owned()
+            } else {
+                // Legacy path: emit deprecation warning, use select_next_task
+                eprintln!("{DEPRECATION_WARNING}");
                 let current_task = select_next_task(store.all_tasks(), &config)
                     .ok_or(TodoError::NoActionableTask)?;
                 current_task.id.clone()
             };
 
             let completed_at = Utc::now().to_rfc3339();
-            let from_phase = store.record_phase_artifact(&task_id, artifact, completed_at)?;
-            store.next_phase(&task_id)?;
+            let recorded_from_phase =
+                store.record_phase_artifact(&resolved_task_id, artifact, completed_at)?;
+            store.next_phase(&resolved_task_id)?;
+
+            // shadow task_id with the resolved one for remainder of block
+            let task_id = resolved_task_id;
 
             let resulting_task = store.get_task(&task_id).unwrap().clone();
             let resulting_state = resulting_task.state.clone();
@@ -107,7 +155,7 @@ pub fn run_todo(project: &Project, artifact: Option<&str>) -> Result<(), TodoErr
                 &project.slug,
                 &project.git_root,
                 &project.state_dir,
-                &from_phase,
+                &recorded_from_phase,
                 &resulting_state,
                 artifact,
             );
@@ -215,14 +263,238 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs};
 
     use crate::core::{
         config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
-        tasks::{HistoryEntry, Task},
+        global_config::GlobalConfig,
+        hooks::HookConfig,
+        project::Project,
+        tasks::{HistoryEntry, Task, TaskStore},
     };
 
-    use super::dirty_commit_target;
+    use super::{TodoError, dirty_commit_target, run_todo};
+
+    // ---------------------------------------------------------------------------
+    // Helpers for run_todo unit tests
+    // ---------------------------------------------------------------------------
+
+    fn three_phase_config() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![
+                ("enriching".to_owned(), PhaseDef::default()),
+                ("implementing".to_owned(), PhaseDef::default()),
+                ("reviewing".to_owned(), PhaseDef::default()),
+            ],
+            3,
+        )
+    }
+
+    fn setup_project_with_config(config: &Config) -> (tempfile::TempDir, Project) {
+        let home_dir = tempfile::TempDir::new().expect("create home temp dir");
+        let repo_dir = tempfile::TempDir::new().expect("create repo temp dir");
+
+        // Create a fake git root with .git directory
+        let git_root = repo_dir.path().to_path_buf();
+        fs::create_dir_all(git_root.join(".git")).expect("create .git dir");
+
+        // Create the state dir and write the config
+        let state_dir = home_dir.path().join(".agira").join("test-repo");
+        fs::create_dir_all(&state_dir).expect("create state dir");
+
+        let config_json = serde_json::to_string_pretty(config).expect("serialize config");
+        fs::write(state_dir.join("config.json"), &config_json).expect("write config.json");
+
+        let project = Project {
+            git_root,
+            slug: "test-repo".to_owned(),
+            state_dir,
+            global_config: GlobalConfig::default(),
+            global_hooks: HookConfig::default(),
+            project_hooks: HookConfig::default(),
+        };
+
+        (home_dir, project)
+    }
+
+    fn add_task_in_phase(project: &Project, config: &Config, title: &str, phase: &str) -> String {
+        let mut store = TaskStore::new(&project.state_dir, config).expect("open store");
+        let task = store
+            .add_task(
+                title,
+                "desc",
+                Vec::new(),
+                Some(phase),
+                DEFAULT_WORKFLOW_NAME.to_owned(),
+            )
+            .expect("add task");
+        task.id
+    }
+
+    // ---------------------------------------------------------------------------
+    // CAS mismatch: --artifact + --task + --from where task is in a different phase
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn cas_mismatch_returns_already_advanced_past_error() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "cas task", "implementing");
+
+        let result = run_todo(
+            &project,
+            Some("my artifact"),
+            Some(&task_id),
+            Some("enriching"), // task is actually in "implementing"
+        );
+
+        match result {
+            Err(TodoError::AlreadyAdvancedPast { id, phase }) => {
+                assert_eq!(id, task_id);
+                assert_eq!(phase, "enriching");
+            }
+            other => panic!("expected AlreadyAdvancedPast, got: {other:?}"),
+        }
+
+        // State must not have been mutated
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(
+            task.state, "implementing",
+            "state must not change on CAS mismatch"
+        );
+        assert!(
+            task.phases.is_empty(),
+            "no phase artifact must be recorded on CAS mismatch"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Targeting a blocked task returns NotAdvanceable without mutating state
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn targeting_blocked_task_returns_not_advanceable_error() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "blocked task", "implementing");
+
+        // Block the task
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        store
+            .block_task(&task_id, "needs input")
+            .expect("block task");
+        drop(store);
+
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+
+        match result {
+            Err(TodoError::NotAdvanceable { id, state }) => {
+                assert_eq!(id, task_id);
+                assert_eq!(state, "blocked");
+            }
+            other => panic!("expected NotAdvanceable, got: {other:?}"),
+        }
+
+        // State must not have changed
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(task.state, "blocked");
+        assert!(task.phases.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Targeting a failed task returns NotAdvanceable without mutating state
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn targeting_failed_task_returns_not_advanceable_error() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "failed task", "implementing");
+
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        store.fail_task(&task_id, "whoops").expect("fail task");
+        drop(store);
+
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+
+        match result {
+            Err(TodoError::NotAdvanceable { id, state }) => {
+                assert_eq!(id, task_id);
+                assert_eq!(state, "failed");
+            }
+            other => panic!("expected NotAdvanceable, got: {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Targeting a terminal-phase task returns NotAdvanceable
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn targeting_terminal_task_returns_not_advanceable_error() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "terminal task", "done");
+
+        let result = run_todo(&project, Some("my artifact"), Some(&task_id), None);
+
+        match result {
+            Err(TodoError::NotAdvanceable { id, state }) => {
+                assert_eq!(id, task_id);
+                assert_eq!(state, "done");
+            }
+            other => panic!("expected NotAdvanceable, got: {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Unknown task ID returns TaskNotFound
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn unknown_task_id_returns_task_not_found_error() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+
+        let result = run_todo(&project, Some("my artifact"), Some("task-999"), None);
+
+        match result {
+            Err(TodoError::TaskNotFound { id }) => {
+                assert_eq!(id, "task-999");
+            }
+            other => panic!("expected TaskNotFound, got: {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Legacy path: --artifact without --task emits deprecation warning and advances
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn legacy_path_without_task_id_advances_and_returns_ok() {
+        let config = three_phase_config();
+        let (_home, project) = setup_project_with_config(&config);
+        let task_id = add_task_in_phase(&project, &config, "legacy task", "enriching");
+
+        // Capture stderr by redirecting within the test is not straightforward; instead we
+        // validate that the function returns Ok and the task is advanced — the deprecation
+        // warning is emitted to stderr as a side-effect verified by the integration test.
+        let result = run_todo(&project, Some("legacy artifact"), None, None);
+        assert!(
+            result.is_ok(),
+            "legacy path must return Ok; got: {result:?}"
+        );
+
+        let store = TaskStore::new(&project.state_dir, &config).expect("open store");
+        let task = store.get_task(&task_id).expect("task exists");
+        assert_eq!(
+            task.state, "implementing",
+            "legacy path must advance the task"
+        );
+    }
 
     fn test_config() -> Config {
         Config::new_single_workflow(
