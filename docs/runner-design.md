@@ -7,7 +7,7 @@
 
 当前 executor 靠「外部 skill + `task_added` hook 粘合」运行,问题集中在:
 
-- 幂等去重逻辑散落在 skill 的 prompt 里,不可靠(见 `docs/executor-prompt-audit.md` 的 `outstanding` 计数问题)。
+- 幂等去重逻辑散落在 skill 的 prompt 里,不可靠(`outstanding` 任务计数依赖 prompt 工程,容易偏差)。
 - 执行者没有状态可见性:`agira task list` 看不到"谁在跑哪个任务、是否还活着"。
 - 用户装好 agira 还要再装 skill 才能跑起来。
 

@@ -1,7 +1,7 @@
 {
   "name": "agira",
   "version": "0.1.0",
-  "description": "Skills for Agira task management: add tasks via the CLI and launch autonomous tmux executors",
+  "description": "Skills for Agira task management: add tasks via the CLI using the agira:add skill; orchestration is handled by the built-in agira runner and bundled sub-agent role definitions",
   "author": {
     "name": "Siwei LU"
   },
@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "Agira",
     "shortDescription": "AI-assisted task management for software projects",
-    "longDescription": "Add tasks to an Agira project and launch autonomous tmux executors that dispatch work until your task queue is empty.",
+    "longDescription": "Add tasks to an Agira project using the agira:add skill. Orchestration and execution are handled by the built-in agira runner, which auto-starts on task_added and dispatches work through bundled sub-agent role definitions (enricher, implementer, verifier).",
     "developerName": "Siwei LU",
     "category": "Development",
     "capabilities": [],

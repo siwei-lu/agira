@@ -1,6 +1,6 @@
 {
   "name": "agira",
-  "description": "Skills for Agira task management: add tasks via the CLI and launch autonomous tmux executors",
+  "description": "Skills for Agira task management: add tasks via the CLI using the agira:add skill; orchestration is handled by the built-in agira runner and bundled sub-agent role definitions",
   "author": {
     "name": "Siwei LU"
   }
