@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -8,7 +9,32 @@ use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const DEFAULT_CONFIG_TOML: &str = "default_max_retries = 3\nhook_debug = false\non_retry_exhausted = \"block\"\n\n[runner]\nlease_ttl = \"5m\"\n";
+const DEFAULT_CONFIG_TOML: &str = r#"default_max_retries = 3
+hook_debug = false
+on_retry_exhausted = "block"
+
+[runner]
+lease_ttl = "5m"
+
+# [runner.claude]
+# command = "claude"
+# model = "sonnet"
+# permission_mode = "auto"
+# valid permission_mode choices: auto, acceptEdits, bypassPermissions, dontAsk, default, plan
+# settings_path = ""
+# extra_args = []
+#
+# [runner.claude.env]
+"#;
+
+const VALID_CLAUDE_PERMISSION_MODES: &[&str] = &[
+    "auto",
+    "acceptEdits",
+    "bypassPermissions",
+    "dontAsk",
+    "default",
+    "plan",
+];
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct GlobalConfig {
@@ -32,6 +58,24 @@ pub struct RunnerConfig {
     pub runner_type: String,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default)]
+    pub claude: ClaudeRunnerConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeRunnerConfig {
+    #[serde(default = "default_claude_runner_command")]
+    pub command: String,
+    #[serde(default = "default_claude_runner_model")]
+    pub model: String,
+    #[serde(default = "default_claude_runner_permission_mode")]
+    pub permission_mode: String,
+    #[serde(default)]
+    pub settings_path: Option<PathBuf>,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +108,18 @@ fn default_runner_type() -> String {
     "claude-tmux".to_owned()
 }
 
+fn default_claude_runner_command() -> String {
+    "claude".to_owned()
+}
+
+fn default_claude_runner_model() -> String {
+    "sonnet".to_owned()
+}
+
+fn default_claude_runner_permission_mode() -> String {
+    "auto".to_owned()
+}
+
 fn default_on_retry_exhausted() -> OnRetryExhausted {
     OnRetryExhausted::Block
 }
@@ -75,6 +131,7 @@ impl Default for RunnerConfig {
             orchestrator_template_path: None,
             runner_type: default_runner_type(),
             auto_start: false,
+            claude: ClaudeRunnerConfig::default(),
         }
     }
 }
@@ -83,6 +140,33 @@ impl RunnerConfig {
     pub fn lease_ttl_duration(&self) -> Result<Duration, String> {
         parse_duration(&self.lease_ttl)
             .map_err(|reason| format!("invalid runner.lease_ttl '{}': {reason}", self.lease_ttl))
+    }
+}
+
+impl Default for ClaudeRunnerConfig {
+    fn default() -> Self {
+        Self {
+            command: default_claude_runner_command(),
+            model: default_claude_runner_model(),
+            permission_mode: default_claude_runner_permission_mode(),
+            settings_path: None,
+            extra_args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+}
+
+impl ClaudeRunnerConfig {
+    pub fn validate_permission_mode(&self) -> Result<(), String> {
+        if VALID_CLAUDE_PERMISSION_MODES.contains(&self.permission_mode.as_str()) {
+            return Ok(());
+        }
+
+        Err(format!(
+            "invalid runner.claude.permission_mode '{}': expected one of {}",
+            self.permission_mode,
+            VALID_CLAUDE_PERMISSION_MODES.join(", ")
+        ))
     }
 }
 
@@ -129,6 +213,14 @@ pub fn load_or_create(agira_root: &Path) -> Result<GlobalConfig, GlobalConfigErr
             config
                 .runner
                 .lease_ttl_duration()
+                .map_err(|message| GlobalConfigError::Parse {
+                    path: path.clone(),
+                    message,
+                })?;
+            config
+                .runner
+                .claude
+                .validate_permission_mode()
                 .map_err(|message| GlobalConfigError::Parse { path, message })?;
             Ok(config)
         }
@@ -193,6 +285,62 @@ pub fn save_global_config(agira_root: &Path, config: &GlobalConfig) -> anyhow::R
             "auto_start".to_owned(),
             toml::Value::Boolean(config.runner.auto_start),
         );
+        let claude = table
+            .entry("claude".to_owned())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !claude.is_table() {
+            *claude = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(claude_table) = claude.as_table_mut() {
+            claude_table.insert(
+                "command".to_owned(),
+                toml::Value::String(config.runner.claude.command.clone()),
+            );
+            claude_table.insert(
+                "model".to_owned(),
+                toml::Value::String(config.runner.claude.model.clone()),
+            );
+            claude_table.insert(
+                "permission_mode".to_owned(),
+                toml::Value::String(config.runner.claude.permission_mode.clone()),
+            );
+            match &config.runner.claude.settings_path {
+                Some(path) => {
+                    claude_table.insert(
+                        "settings_path".to_owned(),
+                        toml::Value::String(path.to_string_lossy().into_owned()),
+                    );
+                }
+                None => {
+                    claude_table.remove("settings_path");
+                }
+            }
+            claude_table.insert(
+                "extra_args".to_owned(),
+                toml::Value::Array(
+                    config
+                        .runner
+                        .claude
+                        .extra_args
+                        .iter()
+                        .cloned()
+                        .map(toml::Value::String)
+                        .collect(),
+                ),
+            );
+            claude_table.insert(
+                "env".to_owned(),
+                toml::Value::Table(
+                    config
+                        .runner
+                        .claude
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), toml::Value::String(value.clone())))
+                        .collect(),
+                ),
+            );
+        }
     }
 
     let contents = toml::to_string_pretty(&document)
@@ -356,6 +504,121 @@ mod tests {
     }
 
     #[test]
+    fn claude_runner_config_defaults_when_section_absent() {
+        let config: GlobalConfig = toml::from_str("").expect("deserialize empty config");
+
+        assert_eq!(config.runner.claude.command, "claude");
+        assert_eq!(config.runner.claude.model, "sonnet");
+        assert_eq!(config.runner.claude.permission_mode, "auto");
+        assert_eq!(config.runner.claude.settings_path, None);
+        assert!(config.runner.claude.extra_args.is_empty());
+        assert!(config.runner.claude.env.is_empty());
+    }
+
+    #[test]
+    fn claude_runner_config_full_round_trips_through_save_and_load() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let mut env = BTreeMap::new();
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_owned(),
+            "https://example.test".to_owned(),
+        );
+        env.insert("HTTPS_PROXY".to_owned(), "http://127.0.0.1:8080".to_owned());
+        let claude = ClaudeRunnerConfig {
+            command: "/opt/bin/claude-wrapper".to_owned(),
+            model: "opus".to_owned(),
+            permission_mode: "dontAsk".to_owned(),
+            settings_path: Some(PathBuf::from("/tmp/claude-settings.json")),
+            extra_args: vec![
+                "--add-dir".to_owned(),
+                "/tmp/work".to_owned(),
+                "--mcp-config".to_owned(),
+            ],
+            env,
+        };
+        let config = GlobalConfig {
+            runner: RunnerConfig {
+                claude: claude.clone(),
+                ..RunnerConfig::default()
+            },
+            ..GlobalConfig::default()
+        };
+
+        save_global_config(dir.path(), &config).expect("save config");
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(loaded.runner.claude, claude);
+    }
+
+    #[test]
+    fn claude_runner_config_rejects_invalid_permission_mode_at_load() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        fs::write(
+            dir.path().join("config.toml"),
+            "[runner.claude]\npermission_mode = \"yolo\"\n",
+        )
+        .expect("write config");
+
+        let error = load_or_create(dir.path()).expect_err("invalid permission mode");
+        let message = error.to_string();
+
+        assert!(message.contains("invalid global config"));
+        assert!(message.contains("runner.claude.permission_mode"));
+        assert!(message.contains("yolo"));
+        assert!(message.contains(
+            "expected one of auto, acceptEdits, bypassPermissions, dontAsk, default, plan"
+        ));
+        assert!(!message.ends_with('.'));
+    }
+
+    #[test]
+    fn claude_runner_config_parses_env_table() {
+        let config: GlobalConfig = toml::from_str(
+            "[runner.claude.env]\nANTHROPIC_BASE_URL = \"https://example.test\"\nHTTPS_PROXY = \"http://127.0.0.1:8080\"\n",
+        )
+        .expect("deserialize config");
+
+        assert_eq!(
+            config.runner.claude.env.get("ANTHROPIC_BASE_URL"),
+            Some(&"https://example.test".to_owned())
+        );
+        assert_eq!(
+            config.runner.claude.env.get("HTTPS_PROXY"),
+            Some(&"http://127.0.0.1:8080".to_owned())
+        );
+    }
+
+    #[test]
+    fn runner_config_without_claude_section_loads_default_claude_config() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        fs::write(
+            dir.path().join("config.toml"),
+            "[runner]\nlease_ttl = \"10m\"\ntype = \"claude-tmux\"\nauto_start = true\n",
+        )
+        .expect("write config");
+
+        let loaded = load_or_create(dir.path()).expect("load config");
+
+        assert_eq!(loaded.runner.claude, ClaudeRunnerConfig::default());
+    }
+
+    #[test]
+    fn every_claude_runner_permission_mode_is_accepted_at_load() {
+        for permission_mode in VALID_CLAUDE_PERMISSION_MODES {
+            let dir = tempfile::TempDir::new().expect("create temp dir");
+            fs::write(
+                dir.path().join("config.toml"),
+                format!("[runner.claude]\npermission_mode = \"{permission_mode}\"\n"),
+            )
+            .expect("write config");
+
+            let loaded = load_or_create(dir.path()).expect("load config");
+
+            assert_eq!(loaded.runner.claude.permission_mode, *permission_mode);
+        }
+    }
+
+    #[test]
     fn runner_type_round_trips_through_save_and_load() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let config = GlobalConfig {
@@ -406,6 +669,7 @@ mod tests {
                 orchestrator_template_path: Some(PathBuf::from("/tmp/tmpl.md")),
                 runner_type: "claude-tmux".to_owned(),
                 auto_start: true,
+                ..RunnerConfig::default()
             },
             ..GlobalConfig::default()
         };
