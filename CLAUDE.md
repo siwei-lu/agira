@@ -18,35 +18,11 @@
 
 ## Project structure
 
-```
-agira/
-├── src/
-│   ├── main.rs          — CLI entry point, subcommand routing, exit codes
-│   ├── core/
-│   │   ├── advance.rs       — shared phase-advance output helpers
-│   │   ├── config.rs        — config.json schema + reader/migration
-│   │   ├── global_config.rs — ~/.agira/config.toml reader
-│   │   ├── hooks.rs         — lifecycle hook resolution + execution
-│   │   ├── pick.rs          — next actionable task selection and prompt formatting
-│   │   ├── project.rs       — git root resolution, slug derivation, state dir creation
-│   │   └── tasks.rs         — tasks.json schema, atomic read/write, state machine transitions
-│   └── commands/
-│       ├── init.rs        — `agira init` (bare agent-prompt path + flag-driven write path)
-│       ├── add.rs         — `agira task add`
-│       ├── block.rs       — `agira task block`
-│       ├── unblock.rs     — `agira task unblock`
-│       ├── fail.rs        — `agira task fail`
-│       ├── hook.rs        — `agira hook` (manage lifecycle hooks)
-│       ├── phase.rs       — `agira phase get` / `agira phase update`
-│       ├── self_update.rs — `agira update`
-│       ├── status.rs      — `agira task list` / `agira task inspect` (table + detail)
-│       ├── update.rs      — `agira task update`
-│       └── todo.rs        — `agira task todo` (print prompt / advance with --artifact)
-├── tests/               — integration tests against real temp dirs
-├── docs/
-│   └── conventions.md   — project taste decisions (error style, output format, etc.)
-└── build.rs             — injects BUILD_TARGET env var into binary version string
-```
+Do NOT rely on any cached or remembered file tree — it goes stale fast. Read the source
+directly: `src/main.rs` routes every subcommand, `src/core/` holds shared domain logic,
+`src/commands/` holds one module per subcommand. List those directories and read the
+relevant modules before making changes. `docs/conventions.md` records project taste
+decisions (error style, output format, etc.).
 
 All runtime state is written to `~/.agira/<slug>/` — **never** inside the repo.
 
