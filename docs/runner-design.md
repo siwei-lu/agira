@@ -117,14 +117,40 @@ agira runner logs [-f]                            # tail pipe-pane 落盘的日�
 agira runner heartbeat                            # (内部)编排者更新心跳用
 ```
 
-可选配置(`config.json` 内新增段或同级 `runner.toml`):
+可选配置(全局 `~/.agira/config.toml`):
 
 ```toml
 [runner]
 type = "claude-tmux"
 auto_start = true     # task_added 时先内部 ensure-runner(幂等),再派发用户通知类 hooks
 lease_ttl = "5m"
+orchestrator_template_path = ""   # 可选:覆盖内置编排 prompt 模板
 ```
+
+### claude 模式配置 `[runner.claude]`(2026-06-13 收敛)
+
+claude-tmux 模式的启动方式不再写死,新增专属配置段:
+
+```toml
+[runner.claude]
+command = "claude"           # 二进制路径或 wrapper(tmux 非登录 shell 的 PATH 常与终端不一致)
+model = "sonnet"             # 编排会话自己的模型;干活模型由 phase 的 model 字段路由,二者解耦
+permission_mode = "auto"     # auto | acceptEdits | dontAsk | bypassPermissions | default
+settings_path = ""           # 可选:专用 --settings 文件(为无人值守调好的 allowlist),留空继承
+extra_args = []              # 逃生舱:透传任意 CLI flag(--add-dir、--mcp-config 等),agira 不校验
+
+[runner.claude.env]          # 注入启动环境(代理、ANTHROPIC_BASE_URL 中转等)
+```
+
+各旋钮解决的真实痛点:
+
+- **`permission_mode`** — runner 无人值守,claude 一弹权限确认整个会话就静默卡死。默认 **`auto`**(已拍板):后台分类器对未列入 allowlist 的操作自动裁决,安全放行、危险静默拒绝。已知退化路径:**连续 3 次或累计 20 次拒绝后退回人工确认提示** → runner 卡住。该路径有兜底:runner 是 tmux 交互会话(非 headless `-p`,后者反复拒绝会直接终止),卡住后心跳过期 → lease 释放 → 任务回到可认领(§9 第三层防线),用户随时 `runner attach` 解开。严格替代:`dontAsk`(纯 allowlist、绝不弹提示,代价是自己养 allowlist)、`bypassPermissions`(仅限隔离环境)。注意 `acceptEdits` 并不适合无人值守——它只放行文件编辑和常见文件系统命令,未列出的 shell 命令仍会弹提示。
+- **`command`** — tmux 起的是非登录 shell,`claude` 找不到是这类工具最常见的开箱即坏;顺带支持版本锁定与 wrapper。
+- **`model`** — 编排者是 thin 的(§6),长驻会话烧 opus 不划算,sonnet 足够。
+- **`settings_path`** — 与 `permission_mode` 互补:allowlist 配得越全,分类器要裁决的越少,触发"反复拒绝退回提示"的概率越低。也把 runner 设置与用户交互会话的设置隔离。
+- **`env` / `extra_args`** — 长尾需求的逃生舱,避免每个 flag 都结构化成旋钮。
+
+连带想法(记录,不阻塞实现):`runner status` 可复用 pane 内容检测基建(`pane_is_claude` / TUI 就绪检查)识别权限确认提示,输出 `blocked on permission prompt, attach to resolve`,把"静默卡住"变成可观测状态。
 
 `auto_start = true` 时,`task_added` 事件在派发用户 hooks **之前**先内部 ensure-runner(幂等:检查 tmux session 名 / lease / 心跳)。这取代旧的外部 executor skill 职责,并把"避免重复启动"从 prompt 工程下沉为 Rust 锁逻辑。
 
@@ -167,6 +193,10 @@ lease_ttl = "5m"
 - **独立 codex-only command-mode runner**:仅纯 codex、不开 Claude 会话的项目才需要;当前混合 workflow 下 codex 由 Claude 编排者驱动,故砍掉或留 v2。
 - **自定义 runner 协议**(声明式 TOML:`mode` / `start` / `check` / `stop` / `run` + `AGIRA_*` env 契约;可执行文件契约 `agira-runner-<name>`)→ 留 v2;v1 只内置 `claude-tmux`。
 - **迁移/向后兼容**:单用户,无需考虑。旧的松散 `orchestrator-prompt.md` 直接删除。
+- **时序/健康度旋钮**(`ready_timeout`、`heartbeat_staleness`、僵会话重建时 `resume = fresh|continue`)→ **hold**:常量先留在代码里(TUI 就绪 60×500ms、心跳过期 10m),有人撞到再暴露。
+- **单一 `launch_command` 模板字符串**(占位符替换)→ 砍掉:灵活性最高,但 agira 从此无法对启动方式做推理(`pane_is_claude` 检测、system prompt 注入方式),结构化旋钮 + `extra_args` 逃生舱是更好的平衡。
+- **会话回收策略**(`recycle_after` 防长驻上下文腐烂)→ 砍掉:过早优化,claude 自带 auto-compact,观察到编排质量随会话寿命衰减再说。
+- **`[runner.claude]` 每项目覆盖** → 暂缓:v1 保持全局 config.toml;真出现"不同项目要不同 permission_mode"再加 override 层。段名选 `[runner.claude]` 而非 `[runner.types.claude-tmux]`(v1 单 type,前者更顺手)。
 
 ## 12. 实现顺序建议
 
