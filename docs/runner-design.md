@@ -1,6 +1,6 @@
 # Runner 设计
 
-> 状态:设计已收敛,**尚未实现**。本文是实现蓝本。
+> 状态:runner 已通过 task-133 落地实现;本文现在同时作为已落地部分的设计记录,以及未实现项的实现蓝本。
 > 来源:多轮 brainstorm(paseo 会话 `1d2bf1e` 起)。单用户场景,不考虑向后兼容/迁移。
 
 ## 1. 背景与目标
@@ -122,7 +122,7 @@ agira runner heartbeat                            # (内部)编排者更新心�
 ```toml
 [runner]
 type = "claude-tmux"
-auto_start = true     # task_added 时先内部 ensure-runner(幂等),再派发用户通知类 hooks
+auto_start = false    # 默认不自启;开启后 task_added 会先内部 ensure-runner(幂等),再派发用户通知类 hooks
 lease_ttl = "5m"
 orchestrator_template_path = ""   # 可选:覆盖内置编排 prompt 模板
 ```
@@ -152,7 +152,11 @@ extra_args = []              # 逃生舱:透传任意 CLI flag(--add-dir、--mcp
 
 连带想法(记录,不阻塞实现):`runner status` 可复用 pane 内容检测基建(`pane_is_claude` / TUI 就绪检查)识别权限确认提示,输出 `blocked on permission prompt, attach to resolve`,把"静默卡住"变成可观测状态。
 
-`auto_start = true` 时,`task_added` 事件在派发用户 hooks **之前**先内部 ensure-runner(幂等:检查 tmux session 名 / lease / 心跳)。这取代旧的外部 executor skill 职责,并把"避免重复启动"从 prompt 工程下沉为 Rust 锁逻辑。
+`auto_start` 默认保持 `false`(2026-06-13 收敛,task-135):可发现性由 `task add` 在没有存活 runner 时向 stderr 打印提示承担,而不是默认自启。`auto_start = true` 是显式开启后的行为:此时 `task_added` 事件在派发用户 hooks **之前**先内部 ensure-runner。这取代旧的外部 executor skill 职责,并把"避免重复启动"从 prompt 工程下沉为 Rust 锁逻辑。
+
+ensure-runner 的语义比"未注册才启动"更宽(2026-06-13 收敛,task-133 / task-135):它是幂等的"确保有一个活跃且被唤醒的 runner"入口。若 runner 不存在或 pane 已僵死,ensure 会重建;若 runner 空闲但仍存活,ensure 仍会重新 kick 一个 kickoff,让新任务能唤醒编排者。
+
+递归防护(2026-06-13 收敛,task-134):当环境变量 `AGIRA_RUNNER_ID` 已设置时跳过 ensure。这样编排者自己在 pane 内 `task add` 时,不会向自己的 pane 注入 kickoff。
 
 > runner 是独立的一等机制,**不是** `task_added` hook 的语法糖——`task_added` hook 保留给通知类集成(如 Telegram),避免用户删 hook 时连带删掉 runner。
 
@@ -197,6 +201,7 @@ extra_args = []              # 逃生舱:透传任意 CLI flag(--add-dir、--mcp
 - **单一 `launch_command` 模板字符串**(占位符替换)→ 砍掉:灵活性最高,但 agira 从此无法对启动方式做推理(`pane_is_claude` 检测、system prompt 注入方式),结构化旋钮 + `extra_args` 逃生舱是更好的平衡。
 - **会话回收策略**(`recycle_after` 防长驻上下文腐烂)→ 砍掉:过早优化,claude 自带 auto-compact,观察到编排质量随会话寿命衰减再说。
 - **`[runner.claude]` 每项目覆盖** → 暂缓:v1 保持全局 config.toml;真出现"不同项目要不同 permission_mode"再加 override 层。段名选 `[runner.claude]` 而非 `[runner.types.claude-tmux]`(v1 单 type,前者更顺手)。
+- **`task unblock` / `retry` re-open 触发 ensure** → 未实现(2026-06-13 收敛,task-135):未来这些重新打开任务的路径应复用 §8 的同一个幂等 ensure-runner 入口。
 
 ## 12. 实现顺序建议
 
