@@ -1129,3 +1129,11 @@ impl TaskStore {
         }
     }
 }
+
+pub(crate) fn load_tasks_file_read_only(
+    path: &Path,
+    config: &Config,
+) -> Result<TasksFile, StoreError> {
+    let loaded = TaskStore::load_from_file(path, config)?;
+    Ok(loaded.tasks_file)
+}

@@ -126,8 +126,15 @@ enum PhaseCommands {
 
 #[derive(Subcommand)]
 enum ProjectCommands {
-    /// List initialized projects and their state directories
-    List,
+    /// List initialized projects and their task progress
+    List {
+        /// Output aggregated JSON instead of the formatted table
+        #[arg(long)]
+        json: bool,
+        /// Include projects whose source path no longer exists
+        #[arg(long)]
+        stale: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -784,13 +791,15 @@ fn main() -> ExitCode {
             },
         },
         Commands::Project { command } => match command {
-            ProjectCommands::List => match commands::run_project_list() {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    exit_code_for_project_list(&error)
+            ProjectCommands::List { json, stale } => {
+                match commands::run_project_list(json, stale) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_project_list(&error)
+                    }
                 }
-            },
+            }
         },
         Commands::Workflow { command } => match command {
             WorkflowCommands::List { json } => match resolve_initialized_project() {
