@@ -34,8 +34,8 @@ pub use phase::{
 pub use project::{ProjectListError, run_project_list};
 pub use remove::{RemoveError, run_remove};
 pub use runner::{
-    RunnerCommandError, run_runner_attach, run_runner_logs, run_runner_start, run_runner_status,
-    run_runner_stop,
+    RunnerCommandError, RunnerEventKind, run_runner_attach, run_runner_event, run_runner_logs,
+    run_runner_start, run_runner_status, run_runner_stop,
 };
 pub use self_update::{SelfUpdateError, run_self_update};
 pub use skill::{SkillError, run_skill_install, run_skill_uninstall};

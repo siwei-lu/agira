@@ -26,6 +26,14 @@ const LOG_FILE_NAME: &str = "runner.log";
 const HEARTBEAT_STALENESS_THRESHOLD: Duration = Duration::minutes(10);
 const TUI_READY_MAX_ATTEMPTS: usize = 60;
 const TUI_READY_BACKOFF: StdDuration = StdDuration::from_millis(500);
+#[cfg(not(test))]
+const HOOK_READY_MAX_ATTEMPTS: usize = 60;
+#[cfg(test)]
+const HOOK_READY_MAX_ATTEMPTS: usize = 1;
+#[cfg(not(test))]
+const HOOK_READY_BACKOFF: StdDuration = StdDuration::from_millis(500);
+#[cfg(test)]
+const HOOK_READY_BACKOFF: StdDuration = StdDuration::from_millis(0);
 
 #[derive(Debug, Error)]
 pub enum RunnerCommandError {
@@ -92,6 +100,24 @@ pub struct RunnerStatusOutput {
     pub current_task: Option<String>,
     pub liveness: String,
     pub heartbeat_age: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerEventKind {
+    Ready,
+    Idle,
+    Heartbeat,
+}
+
+impl RunnerEventKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ready" => Some(Self::Ready),
+            "idle" => Some(Self::Idle),
+            "heartbeat" => Some(Self::Heartbeat),
+            _ => None,
+        }
+    }
 }
 
 pub trait Tmux {
@@ -337,6 +363,15 @@ pub fn run_runner_logs(project: &Project, follow: bool) -> Result<(), RunnerComm
     write_runner_output(&contents, &log_path)
 }
 
+pub fn run_runner_event(
+    project: &Project,
+    kind: RunnerEventKind,
+    runner_id: Option<&str>,
+) -> Result<(), RunnerCommandError> {
+    runner_event(project, kind, runner_id, Utc::now())?;
+    Ok(())
+}
+
 /// Idempotent ensure-runner: starts a runner if none is live, otherwise returns the
 /// existing healthy runner.  Callers that need to handle failure non-fatally should
 /// call this and `eprintln!` any returned error; task creation continues regardless.
@@ -389,7 +424,7 @@ fn start_runner<T: Tmux>(
                 .cloned()
                 .unwrap_or(runner.clone());
             if fresh_runner.current_task.is_none() {
-                tmux.wait_for_ready(&session_name)?;
+                wait_for_hook_ready_or_tui_fallback(project, &fresh_runner.id, tmux)?;
                 tmux.send_keys(&session_name, DEFAULT_ORCHESTRATOR_KICKOFF, true)?;
             }
 
@@ -445,17 +480,16 @@ fn cold_start_runner<T: Tmux>(
         None => DEFAULT_ORCHESTRATOR_TEMPLATE.to_owned(),
     };
     let prompt = assemble_orchestrator_prompt(&template, &config);
-    let launch_command = claude_launch_command(&runner_id, &prompt);
+    let hooks_settings = runner_hooks_settings();
+    let launch_command = claude_launch_command(
+        &runner_id,
+        &prompt,
+        &hooks_settings,
+        DEFAULT_ORCHESTRATOR_KICKOFF,
+    );
 
     tmux.new_session(&session_name, &launch_command)?;
     tmux.pipe_pane(&session_name, &log_path)?;
-    if let Err(error) = tmux
-        .wait_for_ready(&session_name)
-        .and_then(|_| tmux.send_keys(&session_name, DEFAULT_ORCHESTRATOR_KICKOFF, true))
-    {
-        let _ = tmux.kill_session(&session_name);
-        return Err(error);
-    }
 
     let runner = store.register_at(
         &runner_id,
@@ -474,6 +508,24 @@ fn cold_start_runner<T: Tmux>(
         session_name,
         already_running: false,
     })
+}
+
+fn runner_event(
+    project: &Project,
+    kind: RunnerEventKind,
+    runner_id: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Option<Runner>, RunnerCommandError> {
+    let Some(runner_id) = runner_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let mut store = RunnerStore::new(&project.state_dir)?;
+    let runner = match kind {
+        RunnerEventKind::Ready => store.record_ready(runner_id, now)?,
+        RunnerEventKind::Idle => store.record_idle(runner_id, now)?,
+        RunnerEventKind::Heartbeat => store.record_heartbeat(runner_id, now)?,
+    };
+    Ok(runner)
 }
 
 fn stop_runner<T: Tmux>(project: &Project, tmux: &mut T) -> Result<(), RunnerCommandError> {
@@ -620,12 +672,112 @@ fn generate_runner_id(project: &Project, session_name: &str, now: DateTime<Utc>)
     format!("runner-{}", &digest[..12])
 }
 
-fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
+fn wait_for_hook_ready_or_tui_fallback<T: Tmux>(
+    project: &Project,
+    runner_id: &str,
+    tmux: &mut T,
+) -> Result<(), RunnerCommandError> {
+    for attempt in 0..HOOK_READY_MAX_ATTEMPTS {
+        let store = RunnerStore::new(&project.state_dir)?;
+        if store
+            .get_runner(runner_id)
+            .map(runner_ready_from_hook_state)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        if attempt + 1 < HOOK_READY_MAX_ATTEMPTS {
+            thread::sleep(HOOK_READY_BACKOFF);
+        }
+    }
+
+    append_runner_log(
+        project,
+        "primary hook-based readiness path did not signal in time; falling back to tmux capture-pane readiness\n",
+    )?;
+    tmux.wait_for_ready(&session_name(project))
+}
+
+fn runner_ready_from_hook_state(runner: &Runner) -> bool {
+    runner.current_task.is_none()
+        && (runner.idle_since.is_some()
+            || (runner.last_heartbeat.is_some() && runner.idle_since.is_none()))
+}
+
+fn append_runner_log(project: &Project, message: &str) -> Result<(), RunnerCommandError> {
+    let log_path = runner_log_path(project);
+    let parent = log_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| RunnerCommandError::Write {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|source| RunnerCommandError::Write {
+            path: log_path.clone(),
+            source,
+        })?;
+    file.write_all(message.as_bytes())
+        .map_err(|source| RunnerCommandError::Write {
+            path: log_path,
+            source,
+        })
+}
+
+fn claude_launch_command(
+    runner_id: &str,
+    prompt: &str,
+    hooks_settings: &str,
+    kickoff: &str,
+) -> String {
     format!(
-        "AGIRA_RUNNER_ID={} claude --append-system-prompt {}",
+        "AGIRA_RUNNER_ID={} claude --append-system-prompt {} --settings {} {}",
         shell_quote_string(runner_id),
-        shell_quote_string(prompt)
+        shell_quote_string(prompt),
+        shell_quote_string(hooks_settings),
+        shell_quote_string(kickoff)
     )
+}
+
+fn runner_hooks_settings() -> String {
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "agira runner event ready --runner \"$AGIRA_RUNNER_ID\""
+                        }
+                    ]
+                }
+            ],
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "agira runner event idle --runner \"$AGIRA_RUNNER_ID\""
+                        }
+                    ]
+                }
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "agira runner event heartbeat --runner \"$AGIRA_RUNNER_ID\""
+                        }
+                    ]
+                }
+            ]
+        }
+    })
+    .to_string()
 }
 
 fn claude_tui_input_ready(pane: &str) -> bool {
@@ -821,8 +973,9 @@ mod tests {
     };
 
     use super::{
-        OUTPUT_CAPTURE, RunnerCommandError, Tmux, attach_runner, claude_tui_input_ready,
-        format_status_output, run_runner_logs, start_runner, status_runner, stop_runner,
+        OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux, attach_runner,
+        claude_tui_input_ready, format_status_output, run_runner_logs, runner_event,
+        runner_hooks_settings, start_runner, status_runner, stop_runner,
     };
 
     struct RecordingTmux {
@@ -1122,25 +1275,13 @@ mod tests {
         assert_eq!(tmux.calls[2][3], "-o");
         let pipe_command = &tmux.calls[2][4];
         assert!(pipe_command.ends_with("/runner/runner.log'"));
-        assert_eq!(
-            tmux.calls[3],
-            vec!["wait-for-ready", "-t", "agira-runner-repo"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            &tmux.calls[4][..3],
-            ["send-keys", "-t", "agira-runner-repo"]
-        );
-        assert!(tmux.calls[4][3].contains("agira task todo --runner \"$AGIRA_RUNNER_ID\""));
-        assert_eq!(
-            tmux.calls[5],
-            vec!["send-keys", "-t", "agira-runner-repo", "Enter"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        );
+        assert!(tmux.calls[1][4].contains(" --settings '"));
+        assert!(tmux.calls[1][4].contains("agira runner event ready --runner"));
+        assert!(tmux.calls[1][4].contains("agira runner event idle --runner"));
+        assert!(tmux.calls[1][4].contains("agira runner event heartbeat --runner"));
+        assert!(tmux.calls[1][4].contains("agira task todo --runner \"$AGIRA_RUNNER_ID\""));
+        assert!(!tmux.calls.iter().any(|call| call[0] == "wait-for-ready"));
+        assert!(!tmux.calls.iter().any(|call| call[0] == "send-keys"));
 
         let store = RunnerStore::new(&project.state_dir).expect("open store");
         let runner = store
@@ -1220,13 +1361,12 @@ mod tests {
     }
 
     #[test]
-    fn start_errors_and_cleans_up_when_runner_tui_is_not_ready() {
+    fn start_does_not_wait_or_cleanup_when_runner_tui_is_not_ready_on_cold_start() {
         let (_dir, project) = project();
         let mut tmux = RecordingTmux::never_ready();
 
-        let result = start_runner(&project, None, &mut tmux, fixed_now());
+        let output = start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
 
-        assert!(matches!(result, Err(RunnerCommandError::RunnerNotReady)));
         assert_eq!(
             tmux.calls,
             vec![
@@ -1245,12 +1385,11 @@ mod tests {
                     "-o",
                     &tmux.calls[2][4],
                 ],
-                vec!["wait-for-ready", "-t", "agira-runner-repo"],
-                vec!["kill-session", "-t", "agira-runner-repo"],
+                vec!["pane-pgid", "-t", "agira-runner-repo"],
             ]
         );
         let store = RunnerStore::new(&project.state_dir).expect("open store");
-        assert!(store.registry().runners.is_empty());
+        assert!(store.get_runner(&output.runner_id).is_some());
     }
 
     #[test]
@@ -1279,7 +1418,7 @@ mod tests {
         assert_ne!(output.runner_id, "runner-zombie");
         assert!(!output.already_running);
         assert_eq!(
-            &tmux.calls[..8],
+            &tmux.calls[..5],
             [
                 vec!["has-session", "-t", "agira-runner-repo"],
                 vec!["pane-alive", "-t", "agira-runner-repo"],
@@ -1298,9 +1437,6 @@ mod tests {
                     "-o",
                     &tmux.calls[4][4]
                 ],
-                vec!["wait-for-ready", "-t", "agira-runner-repo"],
-                vec!["send-keys", "-t", "agira-runner-repo", &tmux.calls[6][3]],
-                vec!["send-keys", "-t", "agira-runner-repo", "Enter"],
             ]
         );
         let store = RunnerStore::new(&project.state_dir).expect("open store");
@@ -1777,6 +1913,86 @@ mod tests {
         });
 
         assert_eq!(output, "one\ntwo\n");
+    }
+
+    #[test]
+    fn runner_hooks_settings_wires_expected_lifecycle_events() {
+        let settings = runner_hooks_settings();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&settings).expect("settings are valid json");
+
+        assert_eq!(
+            parsed["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "agira runner event ready --runner \"$AGIRA_RUNNER_ID\""
+        );
+        assert!(parsed["hooks"]["SessionStart"][0].get("matcher").is_none());
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "agira runner event idle --runner \"$AGIRA_RUNNER_ID\""
+        );
+        assert!(parsed["hooks"]["Stop"][0].get("matcher").is_none());
+        assert_eq!(parsed["hooks"]["PostToolUse"][0]["matcher"], "*");
+        assert_eq!(
+            parsed["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "agira runner event heartbeat --runner \"$AGIRA_RUNNER_ID\""
+        );
+    }
+
+    #[test]
+    fn runner_event_command_records_ready_idle_and_heartbeat() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-event",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        drop(store);
+
+        runner_event(
+            &project,
+            RunnerEventKind::Idle,
+            Some("runner-event"),
+            fixed_now(),
+        )
+        .expect("record idle");
+        runner_event(
+            &project,
+            RunnerEventKind::Ready,
+            Some("runner-event"),
+            fixed_now() + Duration::seconds(1),
+        )
+        .expect("record ready");
+        runner_event(
+            &project,
+            RunnerEventKind::Heartbeat,
+            Some("runner-event"),
+            fixed_now() + Duration::seconds(2),
+        )
+        .expect("record heartbeat");
+
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        let runner = store.get_runner("runner-event").expect("runner exists");
+        assert!(runner.idle_since.is_none());
+        assert_eq!(
+            runner.last_heartbeat.as_deref(),
+            Some("2026-06-11T12:00:02+00:00")
+        );
+    }
+
+    #[test]
+    fn runner_event_without_resolved_runner_is_noop() {
+        let (_dir, project) = project();
+
+        let result = runner_event(&project, RunnerEventKind::Ready, None, fixed_now())
+            .expect("missing runner is non-fatal");
+
+        assert!(result.is_none());
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert!(store.registry().runners.is_empty());
     }
 
     #[test]

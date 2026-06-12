@@ -196,6 +196,15 @@ enum RunnerCommands {
         #[arg(short = 'f', long)]
         follow: bool,
     },
+    /// Record a runner lifecycle event
+    Event {
+        /// Event kind: ready, idle, or heartbeat
+        #[arg(value_name = "kind", value_parser = ["ready", "idle", "heartbeat"])]
+        kind: String,
+        /// Runner id, defaults to AGIRA_RUNNER_ID
+        #[arg(long, value_name = "id")]
+        runner: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -895,6 +904,21 @@ fn main() -> ExitCode {
                 },
                 RunnerCommands::Logs { follow } => {
                     match commands::run_runner_logs(&project, follow) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            exit_code_for_runner(&error)
+                        }
+                    }
+                }
+                RunnerCommands::Event { kind, runner } => {
+                    let kind = commands::RunnerEventKind::parse(&kind)
+                        .expect("clap restricts runner event kind");
+                    match commands::run_runner_event(
+                        &project,
+                        kind,
+                        resolve_runner_id(runner.as_deref()).as_deref(),
+                    ) {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) => {
                             eprintln!("error: {error}");

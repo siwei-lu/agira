@@ -485,6 +485,7 @@ mod tests {
             current_task: Some(task_id.to_owned()),
             lease_expires_at: Some(lease_expires_at.to_owned()),
             last_heartbeat: Some("2026-06-11T12:00:00Z".to_owned()),
+            idle_since: None,
             registered_at: "2026-06-11T12:00:00Z".to_owned(),
         }
     }

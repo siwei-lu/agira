@@ -20,6 +20,8 @@ pub struct Runner {
     pub current_task: Option<String>,
     pub lease_expires_at: Option<String>,
     pub last_heartbeat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<String>,
     pub registered_at: String,
 }
 
@@ -132,6 +134,7 @@ impl RunnerStore {
             current_task: None,
             lease_expires_at: None,
             last_heartbeat: None,
+            idle_since: None,
             registered_at: now.to_rfc3339(),
         };
 
@@ -167,6 +170,7 @@ impl RunnerStore {
         runner.current_task = Some(task_id.to_owned());
         runner.lease_expires_at = Some((now + ttl).to_rfc3339());
         runner.last_heartbeat = Some(now.to_rfc3339());
+        runner.idle_since = None;
 
         let runner = runner.clone();
         self.save(registry)?;
@@ -187,6 +191,7 @@ impl RunnerStore {
 
         runner.lease_expires_at = Some((now + ttl).to_rfc3339());
         runner.last_heartbeat = Some(now.to_rfc3339());
+        runner.idle_since = None;
 
         let runner = runner.clone();
         self.save(registry)?;
@@ -225,6 +230,57 @@ impl RunnerStore {
         let runner = runner.clone();
         self.save(registry)?;
         Ok(runner)
+    }
+
+    pub fn record_ready(
+        &mut self,
+        runner_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Runner>, RunnerStoreError> {
+        self.record_activity(runner_id, now)
+    }
+
+    pub fn record_heartbeat(
+        &mut self,
+        runner_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Runner>, RunnerStoreError> {
+        self.record_activity(runner_id, now)
+    }
+
+    pub fn record_idle(
+        &mut self,
+        runner_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Runner>, RunnerStoreError> {
+        let mut registry = self.registry.clone();
+        let Some(runner) = registry.runners.get_mut(runner_id) else {
+            return Ok(None);
+        };
+
+        runner.idle_since = Some(now.to_rfc3339());
+
+        let runner = runner.clone();
+        self.save(registry)?;
+        Ok(Some(runner))
+    }
+
+    fn record_activity(
+        &mut self,
+        runner_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Runner>, RunnerStoreError> {
+        let mut registry = self.registry.clone();
+        let Some(runner) = registry.runners.get_mut(runner_id) else {
+            return Ok(None);
+        };
+
+        runner.last_heartbeat = Some(now.to_rfc3339());
+        runner.idle_since = None;
+
+        let runner = runner.clone();
+        self.save(registry)?;
+        Ok(Some(runner))
     }
 }
 
@@ -298,6 +354,7 @@ mod tests {
         assert!(refreshed.current_task.is_none());
         assert!(refreshed.lease_expires_at.is_none());
         assert!(refreshed.last_heartbeat.is_none());
+        assert!(refreshed.idle_since.is_none());
     }
 
     #[test]
@@ -342,6 +399,7 @@ mod tests {
             runner.last_heartbeat.as_deref(),
             Some("2026-06-11T12:00:00+00:00")
         );
+        assert!(runner.idle_since.is_none());
         assert_eq!(
             runner.lease_expires_at.as_deref(),
             Some("2026-06-11T12:05:00+00:00")
@@ -369,6 +427,7 @@ mod tests {
             runner.last_heartbeat.as_deref(),
             Some("2026-06-11T12:03:00+00:00")
         );
+        assert!(runner.idle_since.is_none());
         assert_eq!(
             runner.lease_expires_at.as_deref(),
             Some("2026-06-11T12:08:00+00:00")
@@ -416,6 +475,74 @@ mod tests {
         assert!(runner.current_task.is_none());
         assert!(runner.lease_expires_at.is_none());
         assert!(runner.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn runner_events_record_idle_ready_and_heartbeat() {
+        let (_dir, mut store) = test_store();
+        let now = fixed_now();
+
+        store
+            .register("runner-a", "claude-tmux", "agira-test")
+            .expect("register runner");
+        let idle = store
+            .record_idle("runner-a", now)
+            .expect("record idle")
+            .expect("runner updated");
+
+        assert_eq!(
+            idle.idle_since.as_deref(),
+            Some("2026-06-11T12:00:00+00:00")
+        );
+
+        let ready = store
+            .record_ready("runner-a", now + Duration::seconds(1))
+            .expect("record ready")
+            .expect("runner updated");
+        assert!(ready.idle_since.is_none());
+        assert_eq!(
+            ready.last_heartbeat.as_deref(),
+            Some("2026-06-11T12:00:01+00:00")
+        );
+
+        store
+            .record_idle("runner-a", now + Duration::seconds(2))
+            .expect("record idle")
+            .expect("runner updated");
+        let heartbeat = store
+            .record_heartbeat("runner-a", now + Duration::seconds(3))
+            .expect("record heartbeat")
+            .expect("runner updated");
+        assert!(heartbeat.idle_since.is_none());
+        assert_eq!(
+            heartbeat.last_heartbeat.as_deref(),
+            Some("2026-06-11T12:00:03+00:00")
+        );
+    }
+
+    #[test]
+    fn runner_event_for_unknown_runner_is_noop() {
+        let (_dir, mut store) = test_store();
+
+        assert!(
+            store
+                .record_ready("missing", fixed_now())
+                .expect("ready no-op")
+                .is_none()
+        );
+        assert!(
+            store
+                .record_idle("missing", fixed_now())
+                .expect("idle no-op")
+                .is_none()
+        );
+        assert!(
+            store
+                .record_heartbeat("missing", fixed_now())
+                .expect("heartbeat no-op")
+                .is_none()
+        );
+        assert!(store.registry().runners.is_empty());
     }
 
     #[test]
