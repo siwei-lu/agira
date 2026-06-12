@@ -126,7 +126,7 @@ auto_start = true     # task_added 时先内部 ensure-runner(幂等),再派发�
 lease_ttl = "5m"
 ```
 
-`auto_start = true` 时,`task_added` 事件在派发用户 hooks **之前**先内部 ensure-runner(幂等:检查 tmux session 名 / lease / 心跳)。这取代现在 agira:todo skill 的核心职责,并把"避免重复启动"从 prompt 工程下沉为 Rust 锁逻辑。
+`auto_start = true` 时,`task_added` 事件在派发用户 hooks **之前**先内部 ensure-runner(幂等:检查 tmux session 名 / lease / 心跳)。这取代旧的外部 executor skill 职责,并把"避免重复启动"从 prompt 工程下沉为 Rust 锁逻辑。
 
 > runner 是独立的一等机制,**不是** `task_added` hook 的语法糖——`task_added` hook 保留给通知类集成(如 Telegram),避免用户删 hook 时连带删掉 runner。
 

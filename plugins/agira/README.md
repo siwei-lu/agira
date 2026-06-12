@@ -31,11 +31,11 @@ Safely adds a task to an Agira project via the CLI. Triggers when you ask to cre
 2. Check for duplicate tasks and conflicts
 3. Confirm the task details with you before running `agira task add`
 
-## Migration from `agira:todo`
+## Migration from the Legacy Executor Skill
 
-The `agira:todo` skill (tmux executor) has been removed. It is fully superseded by `agira runner`, which is built into the CLI and auto-starts on `task_added`.
+The legacy tmux executor skill has been removed. It is fully superseded by `agira runner`, which is built into the CLI and auto-starts on `task_added`.
 
-If you previously installed the `agira:todo`-based hook, clean it up:
+If you previously installed a global hook that launched the old executor, clean it up:
 
 1. Remove the old global `task_added` executor hook:
    ```sh
@@ -43,7 +43,8 @@ If you previously installed the `agira:todo`-based hook, clean it up:
    ```
 2. Kill any leftover executor sessions:
    ```sh
-   tmux kill-session -t agira-executor-<slug>
+   tmux ls
+   tmux kill-session -t <legacy-executor-session>
    ```
 
 Going forward, `agira runner start` manages the orchestration lifecycle.
