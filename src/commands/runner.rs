@@ -24,6 +24,7 @@ use crate::core::{
 
 const DEFAULT_RUNNER_TYPE: &str = "claude-tmux";
 const LOG_FILE_NAME: &str = "runner.log";
+const CLAUDE_RUNNER_SETTINGS_FILE: &str = "claude-runner-settings.json";
 const HEARTBEAT_STALENESS_THRESHOLD: Duration = Duration::minutes(10);
 const TUI_READY_MAX_ATTEMPTS: usize = 60;
 const TUI_READY_BACKOFF: StdDuration = StdDuration::from_millis(500);
@@ -78,6 +79,13 @@ pub enum RunnerCommandError {
         path: PathBuf,
         #[source]
         source: io::Error,
+    },
+
+    #[error("failed to parse {path} as JSON")]
+    SettingsJson {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
     },
 
     #[error(transparent)]
@@ -482,11 +490,16 @@ fn cold_start_runner<T: Tmux>(
     };
     let prompt = assemble_orchestrator_prompt(&template, &config);
     let hooks_settings = runner_hooks_settings();
+    let settings_arg = claude_runner_settings_argument(
+        &project.global_config.runner.claude,
+        &hooks_settings,
+        &runner_dir,
+    )?;
     let launch_command = claude_launch_command(
         &project.global_config.runner.claude,
         &runner_id,
         &prompt,
-        &hooks_settings,
+        settings_arg.as_deref(),
         DEFAULT_ORCHESTRATOR_KICKOFF,
     );
 
@@ -732,7 +745,7 @@ fn claude_launch_command(
     config: &ClaudeRunnerConfig,
     runner_id: &str,
     prompt: &str,
-    hooks_settings: &str,
+    settings_arg: Option<&str>,
     kickoff: &str,
 ) -> String {
     let mut tokens = Vec::new();
@@ -745,24 +758,106 @@ fn claude_launch_command(
     tokens.push(shell_quote_string(&config.model));
     tokens.push("--permission-mode".to_owned());
     tokens.push(shell_quote_string(&config.permission_mode));
-    if let Some(settings_path) = config
-        .settings_path
-        .as_ref()
-        .filter(|path| !path.as_os_str().is_empty())
-    {
+    if let Some(settings_arg) = settings_arg {
         tokens.push("--settings".to_owned());
-        tokens.push(shell_quote_string(&settings_path.to_string_lossy()));
+        tokens.push(shell_quote_string(settings_arg));
     }
     tokens.extend(config.extra_args.iter().map(|arg| shell_quote_string(arg)));
-    // Claude Code accepts --settings as either a file path or inline JSON. The
-    // runner emits user settings first and Agira's hook JSON last so the
-    // lifecycle hooks remain active even when a custom settings file is used.
-    tokens.push("--settings".to_owned());
-    tokens.push(shell_quote_string(hooks_settings));
     tokens.push("--append-system-prompt".to_owned());
     tokens.push(shell_quote_string(prompt));
     tokens.push(shell_quote_string(kickoff));
     tokens.join(" ")
+}
+
+fn claude_runner_settings_argument(
+    config: &ClaudeRunnerConfig,
+    hooks_settings: &str,
+    runner_dir: &Path,
+) -> Result<Option<String>, RunnerCommandError> {
+    let Some(settings_path) = config
+        .settings_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    else {
+        return Ok(Some(hooks_settings.to_owned()));
+    };
+
+    // Claude Code treats --settings as one scalar file-or-JSON value. When the
+    // user supplies a settings file, Agira writes one merged overlay so the
+    // user's settings and the runner lifecycle hooks are both active.
+    let user_settings =
+        fs::read_to_string(settings_path).map_err(|source| RunnerCommandError::Read {
+            path: settings_path.clone(),
+            source,
+        })?;
+    let user_settings = serde_json::from_str(&user_settings).map_err(|source| {
+        RunnerCommandError::SettingsJson {
+            path: settings_path.clone(),
+            source,
+        }
+    })?;
+    let hooks_settings = serde_json::from_str(hooks_settings).map_err(|source| {
+        RunnerCommandError::SettingsJson {
+            path: PathBuf::from("<agira runner hooks>"),
+            source,
+        }
+    })?;
+    let merged = merge_runner_hooks_settings(user_settings, hooks_settings);
+
+    fs::create_dir_all(runner_dir).map_err(|source| RunnerCommandError::Write {
+        path: runner_dir.to_path_buf(),
+        source,
+    })?;
+    let overlay_path = runner_dir.join(CLAUDE_RUNNER_SETTINGS_FILE);
+    let overlay_json = serde_json::to_string_pretty(&merged).expect("settings json serializes");
+    fs::write(&overlay_path, overlay_json).map_err(|source| RunnerCommandError::Write {
+        path: overlay_path.clone(),
+        source,
+    })?;
+
+    Ok(Some(overlay_path.to_string_lossy().into_owned()))
+}
+
+fn merge_runner_hooks_settings(
+    mut user_settings: serde_json::Value,
+    hooks_settings: serde_json::Value,
+) -> serde_json::Value {
+    let Some(user_object) = user_settings.as_object_mut() else {
+        return hooks_settings;
+    };
+    let Some(hooks_object) = hooks_settings
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return user_settings;
+    };
+
+    let user_hooks = user_object
+        .entry("hooks")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(user_hooks_object) = user_hooks.as_object_mut() else {
+        *user_hooks = serde_json::Value::Object(serde_json::Map::new());
+        let Some(user_hooks_object) = user_hooks.as_object_mut() else {
+            return user_settings;
+        };
+        for (event, hooks) in hooks_object {
+            user_hooks_object.insert(event.clone(), hooks.clone());
+        }
+        return user_settings;
+    };
+
+    for (event, hooks) in hooks_object {
+        match (user_hooks_object.get_mut(event), hooks.as_array()) {
+            (Some(serde_json::Value::Array(existing)), Some(agira_hooks)) => {
+                existing.extend(agira_hooks.iter().cloned());
+            }
+            _ => {
+                user_hooks_object.insert(event.clone(), hooks.clone());
+            }
+        }
+    }
+
+    user_settings
 }
 
 fn runner_hooks_settings() -> String {
@@ -1000,9 +1095,10 @@ mod tests {
     };
 
     use super::{
-        OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux, attach_runner,
-        claude_launch_command, claude_tui_input_ready, format_status_output, run_runner_logs,
-        runner_event, runner_hooks_settings, start_runner, status_runner, stop_runner,
+        CLAUDE_RUNNER_SETTINGS_FILE, OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux,
+        attach_runner, claude_launch_command, claude_runner_settings_argument,
+        claude_tui_input_ready, format_status_output, run_runner_logs, runner_event,
+        runner_hooks_settings, start_runner, status_runner, stop_runner,
     };
 
     struct RecordingTmux {
@@ -1967,11 +2063,12 @@ mod tests {
 
     #[test]
     fn claude_launch_command_uses_default_config_shape() {
+        let hooks_settings = runner_hooks_settings();
         let command = claude_launch_command(
             &ClaudeRunnerConfig::default(),
             "runner-123",
             "system prompt",
-            &runner_hooks_settings(),
+            Some(&hooks_settings),
             "kickoff now",
         );
 
@@ -2004,13 +2101,14 @@ mod tests {
             &config,
             "runner-xyz",
             "prompt with ' quote",
-            &runner_hooks_settings(),
+            Some("/tmp/agira-runner/claude-runner-settings.json"),
             "claim next",
         );
 
         assert!(command.starts_with(
-            "ANTHROPIC_BASE_URL='https://example.test' HTTPS_PROXY='http://127.0.0.1:8080' AGIRA_RUNNER_ID='runner-xyz' '/opt/bin/claude-wrapper' --model 'opus' --permission-mode 'dontAsk' --settings '/tmp/claude runner/settings.json' '--debug' 'category='\\''hooks'\\''' --settings '{\"hooks\":"
+            "ANTHROPIC_BASE_URL='https://example.test' HTTPS_PROXY='http://127.0.0.1:8080' AGIRA_RUNNER_ID='runner-xyz' '/opt/bin/claude-wrapper' --model 'opus' --permission-mode 'dontAsk' --settings '/tmp/agira-runner/claude-runner-settings.json' '--debug' 'category='\\''hooks'\\'''"
         ));
+        assert_eq!(command.matches("--settings").count(), 1);
         assert!(
             command.ends_with(" --append-system-prompt 'prompt with '\\'' quote' 'claim next'")
         );
@@ -2018,6 +2116,7 @@ mod tests {
 
     #[test]
     fn claude_launch_command_omits_user_settings_path_when_unset_or_empty() {
+        let hooks_settings = runner_hooks_settings();
         let command = claude_launch_command(
             &ClaudeRunnerConfig {
                 settings_path: Some(PathBuf::new()),
@@ -2025,7 +2124,7 @@ mod tests {
             },
             "runner-123",
             "prompt",
-            &runner_hooks_settings(),
+            Some(&hooks_settings),
             "kickoff",
         );
 
@@ -2044,12 +2143,12 @@ mod tests {
             &config,
             "runner-123",
             "prompt",
-            &runner_hooks_settings(),
+            Some("{\"hooks\":{}}"),
             "kickoff",
         );
 
         assert!(command.contains(
-            "--permission-mode 'auto' '--first' '--second=value' --settings '{\"hooks\":"
+            "--permission-mode 'auto' --settings '{\"hooks\":{}}' '--first' '--second=value'"
         ));
     }
 
@@ -2067,7 +2166,7 @@ mod tests {
             },
             "real-runner",
             "prompt",
-            &runner_hooks_settings(),
+            Some(&runner_hooks_settings()),
             "kickoff",
         );
 
@@ -2077,22 +2176,65 @@ mod tests {
     }
 
     #[test]
-    fn claude_launch_command_keeps_hooks_when_user_settings_path_is_set() {
-        let command = claude_launch_command(
+    fn claude_runner_settings_argument_merges_hooks_with_user_settings_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user_settings_path = dir.path().join("user-settings.json");
+        fs::write(
+            &user_settings_path,
+            r#"{
+  "allowedTools": ["Bash(git *)"],
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo user stop"
+          }
+        ]
+      }
+    ]
+  }
+}"#,
+        )
+        .expect("write user settings");
+        let runner_dir = dir.path().join("runner");
+
+        let settings_arg = claude_runner_settings_argument(
             &ClaudeRunnerConfig {
-                settings_path: Some(PathBuf::from("/tmp/user-settings.json")),
+                settings_path: Some(user_settings_path.clone()),
                 ..ClaudeRunnerConfig::default()
             },
-            "runner-123",
-            "prompt",
             &runner_hooks_settings(),
-            "kickoff",
-        );
+            &runner_dir,
+        )
+        .expect("settings arg")
+        .expect("settings arg present");
 
-        assert!(command.contains(" --settings '/tmp/user-settings.json' "));
-        assert!(command.contains("agira runner event ready --runner"));
-        assert!(command.contains("agira runner event idle --runner"));
-        assert!(command.contains("agira runner event heartbeat --runner"));
+        let overlay_path = runner_dir.join(CLAUDE_RUNNER_SETTINGS_FILE);
+        assert_eq!(settings_arg, overlay_path.to_string_lossy());
+        let overlay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&overlay_path).expect("read overlay settings"),
+        )
+        .expect("overlay json");
+
+        assert_eq!(overlay["allowedTools"][0], "Bash(git *)");
+        assert_eq!(
+            overlay["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "echo user stop"
+        );
+        assert_eq!(
+            overlay["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "agira runner event ready --runner \"$AGIRA_RUNNER_ID\""
+        );
+        assert_eq!(
+            overlay["hooks"]["Stop"][1]["hooks"][0]["command"],
+            "agira runner event idle --runner \"$AGIRA_RUNNER_ID\""
+        );
+        assert_eq!(
+            overlay["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "agira runner event heartbeat --runner \"$AGIRA_RUNNER_ID\""
+        );
     }
 
     #[test]

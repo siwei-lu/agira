@@ -1339,6 +1339,7 @@ fn exit_code_for_runner(error: &commands::RunnerCommandError) -> ExitCode {
         ) => ExitCode::from(1),
         TmuxIo { .. }
         | Read { .. }
+        | SettingsJson { .. }
         | Write { .. }
         | Config(crate::core::config::ConfigError::Read { .. }) => ExitCode::from(2),
         RunnerStore(store_error) => match store_error {
