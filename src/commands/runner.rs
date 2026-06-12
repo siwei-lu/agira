@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    global_config::ClaudeRunnerConfig,
     orchestrator::{
         DEFAULT_ORCHESTRATOR_KICKOFF, DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt,
         load_template_override,
@@ -482,6 +483,7 @@ fn cold_start_runner<T: Tmux>(
     let prompt = assemble_orchestrator_prompt(&template, &config);
     let hooks_settings = runner_hooks_settings();
     let launch_command = claude_launch_command(
+        &project.global_config.runner.claude,
         &runner_id,
         &prompt,
         &hooks_settings,
@@ -727,18 +729,40 @@ fn append_runner_log(project: &Project, message: &str) -> Result<(), RunnerComma
 }
 
 fn claude_launch_command(
+    config: &ClaudeRunnerConfig,
     runner_id: &str,
     prompt: &str,
     hooks_settings: &str,
     kickoff: &str,
 ) -> String {
-    format!(
-        "AGIRA_RUNNER_ID={} claude --append-system-prompt {} --settings {} {}",
-        shell_quote_string(runner_id),
-        shell_quote_string(prompt),
-        shell_quote_string(hooks_settings),
-        shell_quote_string(kickoff)
-    )
+    let mut tokens = Vec::new();
+    for (key, value) in &config.env {
+        tokens.push(format!("{key}={}", shell_quote_string(value)));
+    }
+    tokens.push(format!("AGIRA_RUNNER_ID={}", shell_quote_string(runner_id)));
+    tokens.push(shell_quote_string(&config.command));
+    tokens.push("--model".to_owned());
+    tokens.push(shell_quote_string(&config.model));
+    tokens.push("--permission-mode".to_owned());
+    tokens.push(shell_quote_string(&config.permission_mode));
+    if let Some(settings_path) = config
+        .settings_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        tokens.push("--settings".to_owned());
+        tokens.push(shell_quote_string(&settings_path.to_string_lossy()));
+    }
+    tokens.extend(config.extra_args.iter().map(|arg| shell_quote_string(arg)));
+    // Claude Code accepts --settings as either a file path or inline JSON. The
+    // runner emits user settings first and Agira's hook JSON last so the
+    // lifecycle hooks remain active even when a custom settings file is used.
+    tokens.push("--settings".to_owned());
+    tokens.push(shell_quote_string(hooks_settings));
+    tokens.push("--append-system-prompt".to_owned());
+    tokens.push(shell_quote_string(prompt));
+    tokens.push(shell_quote_string(kickoff));
+    tokens.join(" ")
 }
 
 fn runner_hooks_settings() -> String {
@@ -781,6 +805,9 @@ fn runner_hooks_settings() -> String {
 }
 
 fn claude_tui_input_ready(pane: &str) -> bool {
+    // Runner readiness is content-based on the Claude TUI prompt, not on the
+    // pane process name. A configured wrapper command is supported as long as it
+    // ultimately renders the Claude Code TUI prompt.
     pane.lines().any(|line| {
         let line = line
             .trim_start()
@@ -960,13 +987,13 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
 
     use chrono::{DateTime, Duration, Utc};
 
     use crate::core::{
         config::{Config, ConfigError, PhaseDef},
-        global_config::GlobalConfig,
+        global_config::{ClaudeRunnerConfig, GlobalConfig},
         hooks::HookConfig,
         project::Project,
         runner::RunnerStore,
@@ -974,8 +1001,8 @@ mod tests {
 
     use super::{
         OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux, attach_runner,
-        claude_tui_input_ready, format_status_output, run_runner_logs, runner_event,
-        runner_hooks_settings, start_runner, status_runner, stop_runner,
+        claude_launch_command, claude_tui_input_ready, format_status_output, run_runner_logs,
+        runner_event, runner_hooks_settings, start_runner, status_runner, stop_runner,
     };
 
     struct RecordingTmux {
@@ -1261,7 +1288,7 @@ mod tests {
             ["new-session", "-d", "-s", "agira-runner-repo"]
         );
         assert!(tmux.calls[1][4].starts_with("AGIRA_RUNNER_ID='runner-"));
-        assert!(tmux.calls[1][4].contains("' claude --append-system-prompt '"));
+        assert!(tmux.calls[1][4].contains("' 'claude' --model 'sonnet' --permission-mode 'auto'"));
         assert!(tmux.calls[1][4].contains("agira-orchestrator-template-v1"));
         assert!(
             tmux.calls[1][4]
@@ -1939,6 +1966,136 @@ mod tests {
     }
 
     #[test]
+    fn claude_launch_command_uses_default_config_shape() {
+        let command = claude_launch_command(
+            &ClaudeRunnerConfig::default(),
+            "runner-123",
+            "system prompt",
+            &runner_hooks_settings(),
+            "kickoff now",
+        );
+
+        assert!(command.starts_with(
+            "AGIRA_RUNNER_ID='runner-123' 'claude' --model 'sonnet' --permission-mode 'auto'"
+        ));
+        assert!(!command.contains("--settings ''"));
+        assert!(command.contains(" --settings '{\"hooks\":"));
+        assert!(command.contains(" --append-system-prompt 'system prompt' 'kickoff now'"));
+    }
+
+    #[test]
+    fn claude_launch_command_uses_full_config_in_token_order() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_owned(),
+            "https://example.test".to_owned(),
+        );
+        env.insert("HTTPS_PROXY".to_owned(), "http://127.0.0.1:8080".to_owned());
+        let config = ClaudeRunnerConfig {
+            command: "/opt/bin/claude-wrapper".to_owned(),
+            model: "opus".to_owned(),
+            permission_mode: "dontAsk".to_owned(),
+            settings_path: Some(PathBuf::from("/tmp/claude runner/settings.json")),
+            extra_args: vec!["--debug".to_owned(), "category='hooks'".to_owned()],
+            env,
+        };
+
+        let command = claude_launch_command(
+            &config,
+            "runner-xyz",
+            "prompt with ' quote",
+            &runner_hooks_settings(),
+            "claim next",
+        );
+
+        assert!(command.starts_with(
+            "ANTHROPIC_BASE_URL='https://example.test' HTTPS_PROXY='http://127.0.0.1:8080' AGIRA_RUNNER_ID='runner-xyz' '/opt/bin/claude-wrapper' --model 'opus' --permission-mode 'dontAsk' --settings '/tmp/claude runner/settings.json' '--debug' 'category='\\''hooks'\\''' --settings '{\"hooks\":"
+        ));
+        assert!(
+            command.ends_with(" --append-system-prompt 'prompt with '\\'' quote' 'claim next'")
+        );
+    }
+
+    #[test]
+    fn claude_launch_command_omits_user_settings_path_when_unset_or_empty() {
+        let command = claude_launch_command(
+            &ClaudeRunnerConfig {
+                settings_path: Some(PathBuf::new()),
+                ..ClaudeRunnerConfig::default()
+            },
+            "runner-123",
+            "prompt",
+            &runner_hooks_settings(),
+            "kickoff",
+        );
+
+        assert_eq!(command.matches("--settings").count(), 1);
+        assert!(command.contains(" --settings '{\"hooks\":"));
+    }
+
+    #[test]
+    fn claude_launch_command_preserves_extra_arg_order_before_hooks_overlay() {
+        let config = ClaudeRunnerConfig {
+            extra_args: vec!["--first".to_owned(), "--second=value".to_owned()],
+            ..ClaudeRunnerConfig::default()
+        };
+
+        let command = claude_launch_command(
+            &config,
+            "runner-123",
+            "prompt",
+            &runner_hooks_settings(),
+            "kickoff",
+        );
+
+        assert!(command.contains(
+            "--permission-mode 'auto' '--first' '--second=value' --settings '{\"hooks\":"
+        ));
+    }
+
+    #[test]
+    fn claude_launch_command_sorts_env_and_runner_id_wins() {
+        let mut env = BTreeMap::new();
+        env.insert("ZZZ".to_owned(), "z value".to_owned());
+        env.insert("AAA".to_owned(), "a'value $(rm -rf /)".to_owned());
+        env.insert("AGIRA_RUNNER_ID".to_owned(), "user-runner".to_owned());
+
+        let command = claude_launch_command(
+            &ClaudeRunnerConfig {
+                env,
+                ..ClaudeRunnerConfig::default()
+            },
+            "real-runner",
+            "prompt",
+            &runner_hooks_settings(),
+            "kickoff",
+        );
+
+        assert!(command.starts_with(
+            "AAA='a'\\''value $(rm -rf /)' AGIRA_RUNNER_ID='user-runner' ZZZ='z value' AGIRA_RUNNER_ID='real-runner'"
+        ));
+    }
+
+    #[test]
+    fn claude_launch_command_keeps_hooks_when_user_settings_path_is_set() {
+        let command = claude_launch_command(
+            &ClaudeRunnerConfig {
+                settings_path: Some(PathBuf::from("/tmp/user-settings.json")),
+                ..ClaudeRunnerConfig::default()
+            },
+            "runner-123",
+            "prompt",
+            &runner_hooks_settings(),
+            "kickoff",
+        );
+
+        assert!(command.contains(" --settings '/tmp/user-settings.json' "));
+        assert!(command.contains("agira runner event ready --runner"));
+        assert!(command.contains("agira runner event idle --runner"));
+        assert!(command.contains("agira runner event heartbeat --runner"));
+    }
+
+    #[test]
     fn runner_event_command_records_ready_idle_and_heartbeat() {
         let (_dir, project) = project();
         let mut store = RunnerStore::new(&project.state_dir).expect("open store");
@@ -2014,6 +2171,11 @@ mod tests {
         assert!(!claude_tui_input_ready("Loading…\n"));
         assert!(!claude_tui_input_ready("│ ▐▛███▜▌ Claude Code v2.1.175\n"));
         assert!(!claude_tui_input_ready(""));
+    }
+
+    #[test]
+    fn tui_input_ready_is_independent_of_binary_path() {
+        assert!(claude_tui_input_ready("/opt/bin/claude-wrapper\n│ > \n"));
     }
 
     #[test]
