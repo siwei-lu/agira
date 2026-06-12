@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{env, io, path::PathBuf};
 
 use thiserror::Error;
 
@@ -94,6 +94,9 @@ pub fn run_add(
 
     let runner_type = project.global_config.runner.runner_type.clone();
     let auto_start = project.global_config.runner.auto_start;
+    let inside_runner = env::var("AGIRA_RUNNER_ID")
+        .ok()
+        .is_some_and(|runner_id| !runner_id.trim().is_empty());
 
     add_task_flow_with_ensure(
         project,
@@ -104,6 +107,7 @@ pub fn run_add(
         phase,
         workflow_name,
         auto_start,
+        inside_runner,
         &runner_type,
         &mut |proj, rt| {
             let mut tmux = crate::commands::runner::ProcessTmux;
@@ -133,6 +137,7 @@ fn add_task_flow_with_ensure(
     phase: Option<&str>,
     workflow_name: String,
     auto_start: bool,
+    inside_runner: bool,
     runner_type: &str,
     ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
 ) -> Result<(), AddError> {
@@ -141,7 +146,7 @@ fn add_task_flow_with_ensure(
         Err(error) => return Err(map_store_error(error)),
     };
 
-    if auto_start {
+    if auto_start && !inside_runner {
         if let Err(message) = ensure_runner(project, runner_type) {
             eprintln!("warning: ensure-runner failed: {message}");
         }
@@ -276,6 +281,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             false,
+            false,
             "claude-tmux",
             &mut |_proj, _rt| {
                 called = true;
@@ -287,6 +293,114 @@ mod tests {
         assert!(
             !called,
             "ensure_runner must not be called when auto_start=false"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // inside_runner_auto_start_true_does_not_call_ensure_runner
+    // ---------------------------------------------------------------
+    #[test]
+    fn inside_runner_auto_start_true_does_not_call_ensure_runner() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut called = false;
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "task from runner pane",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            true,
+            "claude-tmux",
+            &mut |_proj, _rt| {
+                called = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !called,
+            "ensure_runner must not be called from inside a runner pane"
+        );
+        let tasks = store.all_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "task from runner pane");
+    }
+
+    // ---------------------------------------------------------------
+    // outside_runner_auto_start_true_calls_ensure_runner
+    // ---------------------------------------------------------------
+    #[test]
+    fn outside_runner_auto_start_true_calls_ensure_runner() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut called = false;
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "task outside runner pane",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            true,
+            false,
+            "claude-tmux",
+            &mut |_proj, _rt| {
+                called = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            called,
+            "ensure_runner must be called when auto_start=true outside a runner pane"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // inside_runner_auto_start_false_does_not_call_ensure_runner
+    // ---------------------------------------------------------------
+    #[test]
+    fn inside_runner_auto_start_false_does_not_call_ensure_runner() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut called = false;
+        let result = add_task_flow_with_ensure(
+            &project,
+            &mut store,
+            "task inside runner without autostart",
+            "",
+            vec![],
+            None,
+            config.default_workflow.clone(),
+            false,
+            true,
+            "claude-tmux",
+            &mut |_proj, _rt| {
+                called = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !called,
+            "ensure_runner must not be called when auto_start=false inside a runner pane"
         );
     }
 
@@ -312,6 +426,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "claude-tmux",
             &mut |_proj, rt| {
                 ensure_called = true;
@@ -346,6 +461,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "claude-tmux",
             &mut |_proj, _rt| Err("tmux not available".to_owned()),
         );
@@ -386,6 +502,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "claude-tmux",
             &mut |_proj, _rt| {
                 // ensure_runner fails
@@ -418,6 +535,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "custom-backend",
             &mut |_proj, rt| {
                 received_type = rt.to_owned();
@@ -455,6 +573,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "claude-tmux",
             &mut ensure,
         )
@@ -470,6 +589,7 @@ mod tests {
             None,
             config.default_workflow.clone(),
             true,
+            false,
             "claude-tmux",
             &mut ensure,
         )
