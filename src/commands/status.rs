@@ -723,6 +723,10 @@ mod runner_header_tests {
             Ok(self.has_session && self.pane_alive)
         }
 
+        fn pane_is_claude(&mut self, _session_name: &str) -> Result<bool, RunnerCommandError> {
+            Ok(self.pane_alive)
+        }
+
         fn pane_process_group(
             &mut self,
             _session_name: &str,
