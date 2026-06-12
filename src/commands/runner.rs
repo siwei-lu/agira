@@ -621,6 +621,18 @@ pub(crate) fn status_runner<T: Tmux>(
     })
 }
 
+pub(crate) fn runner_liveness_is_live(liveness: &str) -> bool {
+    matches!(liveness, "idle" | "live")
+}
+
+pub(crate) fn runner_is_live<T: Tmux>(
+    project: &Project,
+    tmux: &mut T,
+    now: DateTime<Utc>,
+) -> Result<bool, RunnerCommandError> {
+    status_runner(project, tmux, now).map(|status| runner_liveness_is_live(&status.liveness))
+}
+
 fn attach_runner<T: Tmux>(project: &Project, tmux: &mut T) -> Result<(), RunnerCommandError> {
     let session_name = session_name(project);
     if !tmux.has_session(&session_name)? {
@@ -1144,7 +1156,8 @@ mod tests {
         CLAUDE_RUNNER_SETTINGS_FILE, OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux,
         attach_runner, claude_launch_command, claude_runner_settings_argument,
         claude_tui_input_cleared, claude_tui_input_ready, format_status_output, run_runner_logs,
-        runner_event, runner_hooks_settings, start_runner, status_runner, stop_runner,
+        runner_event, runner_hooks_settings, runner_liveness_is_live, start_runner, status_runner,
+        stop_runner,
     };
 
     struct RecordingTmux {
@@ -1952,6 +1965,18 @@ mod tests {
         assert!(output.contains("current task: task-120"));
         assert!(output.contains("liveness: live"));
         assert!(output.contains("heartbeat: 12s ago"));
+    }
+
+    #[test]
+    fn runner_liveness_live_mapping_matches_status_contract() {
+        assert!(runner_liveness_is_live("idle"));
+        assert!(runner_liveness_is_live("live"));
+        assert!(!runner_liveness_is_live("no runner registered"));
+        assert!(!runner_liveness_is_live(
+            "session running but no runner registered"
+        ));
+        assert!(!runner_liveness_is_live("stale"));
+        assert!(!runner_liveness_is_live("zombie"));
     }
 
     #[test]

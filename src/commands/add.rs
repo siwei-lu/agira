@@ -2,6 +2,8 @@ use std::{env, io, path::PathBuf};
 
 use thiserror::Error;
 
+const NO_RUNNER_HINT: &str = "hint: no runner is running; start one with 'agira runner start' or set runner.auto_start = true in ~/.agira/config.toml";
+
 use crate::core::{
     config::{ConfigError, load_project_config},
     hooks::{HookContext, TASK_ADDED_EVENT, dispatch_hooks, hooks_for_event},
@@ -98,7 +100,7 @@ pub fn run_add(
         .ok()
         .is_some_and(|runner_id| !runner_id.trim().is_empty());
 
-    add_task_flow_with_ensure(
+    add_task_flow_with_ensure_and_liveness(
         project,
         &mut store,
         title,
@@ -115,6 +117,11 @@ pub fn run_add(
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         },
+        &mut |proj| {
+            let mut tmux = crate::commands::runner::ProcessTmux;
+            crate::commands::runner::runner_is_live(proj, &mut tmux, chrono::Utc::now())
+                .map_err(|e| e.to_string())
+        },
     )
 }
 
@@ -128,6 +135,7 @@ fn map_config_error(error: ConfigError) -> AddError {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn add_task_flow_with_ensure(
     project: &Project,
     store: &mut TaskStore,
@@ -140,6 +148,38 @@ fn add_task_flow_with_ensure(
     inside_runner: bool,
     runner_type: &str,
     ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
+) -> Result<(), AddError> {
+    let mut runner_is_live = |_project: &Project| Ok(true);
+    add_task_flow_with_ensure_and_liveness(
+        project,
+        store,
+        title,
+        description,
+        depends_on,
+        phase,
+        workflow_name,
+        auto_start,
+        inside_runner,
+        runner_type,
+        ensure_runner,
+        &mut runner_is_live,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_task_flow_with_ensure_and_liveness(
+    project: &Project,
+    store: &mut TaskStore,
+    title: &str,
+    description: &str,
+    depends_on: Vec<String>,
+    phase: Option<&str>,
+    workflow_name: String,
+    auto_start: bool,
+    inside_runner: bool,
+    runner_type: &str,
+    ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
+    runner_is_live: &mut dyn FnMut(&Project) -> Result<bool, String>,
 ) -> Result<(), AddError> {
     let task = match store.add_task(title, description, depends_on, phase, workflow_name) {
         Ok(task) => task,
@@ -154,6 +194,10 @@ fn add_task_flow_with_ensure(
 
     dispatch_task_added_hooks(project, &task);
     print_add_output(&format!("added {}: {}", task.id, task.title));
+
+    if !auto_start && !inside_runner && matches!(runner_is_live(project), Ok(false)) {
+        print_no_runner_hint();
+    }
 
     Ok(())
 }
@@ -202,9 +246,22 @@ fn print_add_output(message: &str) {
     println!("{message}");
 }
 
+fn print_no_runner_hint() {
+    #[cfg(test)]
+    STDERR_CAPTURE.with(|capture| {
+        if let Some(output) = capture.borrow_mut().as_mut() {
+            output.push_str(NO_RUNNER_HINT);
+            output.push('\n');
+        }
+    });
+
+    eprintln!("{NO_RUNNER_HINT}");
+}
+
 #[cfg(test)]
 thread_local! {
     static OUTPUT_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static STDERR_CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -219,7 +276,10 @@ mod tests {
         tasks::TaskStore,
     };
 
-    use super::add_task_flow_with_ensure;
+    use super::{
+        NO_RUNNER_HINT, STDERR_CAPTURE, add_task_flow_with_ensure,
+        add_task_flow_with_ensure_and_liveness,
+    };
 
     fn test_config() -> Config {
         Config::new_single_workflow(
@@ -259,6 +319,166 @@ mod tests {
             global_hooks: HookConfig::default(),
             project_hooks: HookConfig::default(),
         }
+    }
+
+    fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
+        STDERR_CAPTURE.with(|capture| {
+            *capture.borrow_mut() = Some(String::new());
+        });
+        let result = f();
+        let output = STDERR_CAPTURE.with(|capture| capture.borrow_mut().take().unwrap());
+        (result, output)
+    }
+
+    #[test]
+    fn auto_start_false_without_live_runner_prints_hint_to_stderr() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let (result, stderr) = capture_stderr(|| {
+            add_task_flow_with_ensure_and_liveness(
+                &project,
+                &mut store,
+                "task needing runner hint",
+                "",
+                vec![],
+                None,
+                config.default_workflow.clone(),
+                false,
+                false,
+                "claude-tmux",
+                &mut |_proj, _rt| Ok(()),
+                &mut |_proj| Ok(false),
+            )
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(stderr, format!("{NO_RUNNER_HINT}\n"));
+    }
+
+    #[test]
+    fn auto_start_false_with_live_runner_suppresses_hint() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let (result, stderr) = capture_stderr(|| {
+            add_task_flow_with_ensure_and_liveness(
+                &project,
+                &mut store,
+                "task with live runner",
+                "",
+                vec![],
+                None,
+                config.default_workflow.clone(),
+                false,
+                false,
+                "claude-tmux",
+                &mut |_proj, _rt| Ok(()),
+                &mut |_proj| Ok(true),
+            )
+        });
+
+        assert!(result.is_ok());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn auto_start_true_suppresses_no_runner_hint() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), true, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut live_called = false;
+        let (result, stderr) = capture_stderr(|| {
+            add_task_flow_with_ensure_and_liveness(
+                &project,
+                &mut store,
+                "task with auto start",
+                "",
+                vec![],
+                None,
+                config.default_workflow.clone(),
+                true,
+                false,
+                "claude-tmux",
+                &mut |_proj, _rt| Ok(()),
+                &mut |_proj| {
+                    live_called = true;
+                    Ok(false)
+                },
+            )
+        });
+
+        assert!(result.is_ok());
+        assert!(stderr.is_empty());
+        assert!(!live_called);
+    }
+
+    #[test]
+    fn inside_runner_suppresses_no_runner_hint() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let mut live_called = false;
+        let (result, stderr) = capture_stderr(|| {
+            add_task_flow_with_ensure_and_liveness(
+                &project,
+                &mut store,
+                "task from runner",
+                "",
+                vec![],
+                None,
+                config.default_workflow.clone(),
+                false,
+                true,
+                "claude-tmux",
+                &mut |_proj, _rt| Ok(()),
+                &mut |_proj| {
+                    live_called = true;
+                    Ok(false)
+                },
+            )
+        });
+
+        assert!(result.is_ok());
+        assert!(stderr.is_empty());
+        assert!(!live_called);
+    }
+
+    #[test]
+    fn no_runner_hint_liveness_failure_is_non_fatal() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let project = make_project(dir.path(), false, "claude-tmux");
+        let config = test_config();
+        let mut store = TaskStore::new(&project.state_dir, &config).expect("task store");
+
+        let (result, stderr) = capture_stderr(|| {
+            add_task_flow_with_ensure_and_liveness(
+                &project,
+                &mut store,
+                "task despite liveness failure",
+                "",
+                vec![],
+                None,
+                config.default_workflow.clone(),
+                false,
+                false,
+                "claude-tmux",
+                &mut |_proj, _rt| Ok(()),
+                &mut |_proj| Err("tmux unavailable".to_owned()),
+            )
+        });
+
+        assert!(result.is_ok());
+        assert!(stderr.is_empty());
+        assert_eq!(store.all_tasks().len(), 1);
     }
 
     // ---------------------------------------------------------------
