@@ -4,7 +4,7 @@ use crate::core::config::Config;
 
 pub const DEFAULT_ORCHESTRATOR_TEMPLATE: &str = r#"# agira claude-tmux orchestrator
 
-static marker: agira-orchestrator-template-v1
+static marker: agira-orchestrator-template-v2
 
 You are the thin Agira orchestrator for this project.
 
@@ -19,11 +19,14 @@ Agira CLI protocol:
 
 Backend routing:
 - Route each phase according to the phase table below.
-- Claude model phases delegate to a background Claude sub-agent.
-- `dispatch exec -a codex` phases run as a Bash one-shot `codex exec` command using `AGIRA_PROMPT_FILE`.
+- If the backend value is a Claude model name such as `opus`, `sonnet`, or `haiku`, delegate to a background Claude sub-agent running that model.
+- For any other backend value, treat it as the shell command carried by the phase.
+- Write the rendered task prompt to a temp file, expose that path as `AGIRA_PROMPT_FILE`, run the command as a Bash one-shot, and treat any non-zero exit code as phase failure.
 
 Thin-orchestrator rule:
-- Never implement, verify, review, fix, or enrich phase work directly in this interactive session.
+- Never perform ANY phase work directly in this interactive session, regardless of phase name, duty text, or which model the phase is configured with.
+- The backend column selects the sub-agent model or command to execute; it never assigns phase work to this session.
+- If a phase backend names the same model as this orchestrator session, still delegate that phase instead of doing it inline.
 - Only claim tasks, dispatch the configured backend, wait for completion, and advance with evidence.
 "#;
 
@@ -115,13 +118,46 @@ mod tests {
     fn assemble_orchestrator_prompt_concatenates_static_template_and_phase_table() {
         let prompt = assemble_orchestrator_prompt(DEFAULT_ORCHESTRATOR_TEMPLATE, &config());
 
-        assert!(prompt.contains("agira-orchestrator-template-v1"));
+        assert!(prompt.contains("agira-orchestrator-template-v2"));
         assert!(prompt.contains("Thin-orchestrator rule"));
         assert!(prompt.contains("`agira task todo --runner \"$AGIRA_RUNNER_ID\"`"));
         assert!(prompt.contains(
             "Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact \"<evidence>\"`"
         ));
         assert!(prompt.contains("| implementing | dispatch exec -a codex |"));
+    }
+
+    #[test]
+    fn default_template_uses_generic_backend_routing_contract() {
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "If the backend value is a Claude model name such as `opus`, `sonnet`, or `haiku`, delegate to a background Claude sub-agent running that model."
+        ));
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "For any other backend value, treat it as the shell command carried by the phase."
+        ));
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "Write the rendered task prompt to a temp file, expose that path as `AGIRA_PROMPT_FILE`, run the command as a Bash one-shot, and treat any non-zero exit code as phase failure."
+        ));
+        assert!(!DEFAULT_ORCHESTRATOR_TEMPLATE.contains("codex exec"));
+        assert!(!DEFAULT_ORCHESTRATOR_TEMPLATE.contains("dispatch exec -a codex"));
+        assert!(!DEFAULT_ORCHESTRATOR_TEMPLATE.contains("codex"));
+    }
+
+    #[test]
+    fn default_template_forbids_any_inline_phase_work() {
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "Never perform ANY phase work directly in this interactive session, regardless of phase name, duty text, or which model the phase is configured with."
+        ));
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "The backend column selects the sub-agent model or command to execute; it never assigns phase work to this session."
+        ));
+        assert!(DEFAULT_ORCHESTRATOR_TEMPLATE.contains(
+            "If a phase backend names the same model as this orchestrator session, still delegate that phase instead of doing it inline."
+        ));
+        assert!(
+            !DEFAULT_ORCHESTRATOR_TEMPLATE
+                .contains("Never implement, verify, review, fix, or enrich")
+        );
     }
 
     #[test]

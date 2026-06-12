@@ -43,7 +43,7 @@
 │  - 调 `agira task todo --runner <id>` 认领下一个任务         │
 │  - 按 phase 的 model 字段路由后端:                          │
 │      · claude phase → 后台 delegate 给 sub-agent             │
-│      · codex phase  → Bash 起一次性 `codex exec`             │
+│      · command backend → Bash 起一次性 backend 命令          │
 │  - 经 `agira task todo --artifact` / `task fail` 推进状态机  │
 │  - 自己不动手干 phase 的活(保持 thin)                      │
 └─────────────────────────────────────────────────────────────┘
@@ -52,8 +52,8 @@
 职责切分:
 
 - **agira(Rust)拥有 runner 的生命周期、身份、租约、prompt 渲染**;不拥有编排循环。
-- **tmux 里的 Claude 拥有编排循环**;但保持**薄**——只做调度与分发,把每个 phase 的实际工作甩给 sub-agent 或 `codex exec`。
-- **codex 是编排者手里的 per-phase 工具**,不是独立 runner。不存在驱动 codex 的独立 Rust supervisor daemon。
+- **tmux 里的 Claude 拥有编排循环**;但保持**薄**——只做调度与分发,把每个 phase 的实际工作甩给 sub-agent 或 backend column 携带的命令。
+- **非 Claude backend 命令是编排者手里的 per-phase 工具**,不是独立 runner。不存在驱动任意具体工具的独立 Rust supervisor daemon。
 
 ## 5. runner 概念模型:identity + lease
 
@@ -90,8 +90,8 @@
 
 - 取下一个 actionable task → 看 phase 的 `model` 字段 → delegate。
 - claude phase:后台派生 sub-agent 执行,idle-wait 其完成通知。
-- codex phase:Bash 起一次性 `codex exec`,wait 退出码。
-- 子任务完成后,由执行者(sub-agent / codex 命令内部)经 CLI `agira task todo --artifact` 推进 phase;非 0 退出走 escalating retry / `on_retry_exhausted`。
+- non-Claude backend phase:Bash 起一次性 backend column 携带的命令,wait 退出码。
+- 子任务完成后,由执行者(sub-agent / backend 命令内部)经 CLI `agira task todo --artifact` 推进 phase;非 0 退出走 escalating retry / `on_retry_exhausted`。
 
 好处:顶层 context 不膨胀、不跨 phase 污染、订阅 token 花在实际工作而非编排者自身的长上下文上。
 
@@ -99,7 +99,7 @@
 
 编排者是 Claude,所以编排 prompt 必须存在,但从松散文件升级为「内置模板 + config 渲染、启动时注入」:
 
-- **静态部分**(idle-wait 协议、怎么调 agira CLI、带 `runner-id` claim、advance with artifact、codex phase 走 Bash one-shot 的约定)→ 作为 **claude-tmux runner 定义里的内置模板**,编进 agira 二进制。
+- **静态部分**(idle-wait 协议、怎么调 agira CLI、带 `runner-id` claim、advance with artifact、non-Claude backend 走 Bash one-shot 的约定)→ 作为 **claude-tmux runner 定义里的内置模板**,编进 agira 二进制。
 - **动态部分**(phase 列表 + 每个 phase 的 `duty` / `model`)→ 从 `config.json` 的 `phases` 渲染。
 - `agira runner start --type claude-tmux` 把 [内置模板 + config 渲染的 phase 表] 拼好,在会话启动时注入(`--append-system-prompt` 或等价机制)。
 - **删除**松散的 `~/.agira/orchestrator-prompt.md`;需要定制时在 runner 配置里给覆盖路径。
@@ -172,7 +172,7 @@ extra_args = []              # 逃生舱:透传任意 CLI flag(--add-dir、--mcp
 
 孤儿清理三层防线:
 
-1. **`kill-session` 自动拆子树**:Claude 在 pane 里起的 codex / sub-agent 子进程属于该 pane 的进程树,`kill-session` 一并收掉,不留孤儿。
+1. **`kill-session` 自动拆子树**:Claude 在 pane 里起的 backend 命令 / sub-agent 子进程属于该 pane 的进程树,`kill-session` 一并收掉,不留孤儿。
 2. **stale-session 检测**:`runner start` / `status` 时,若 session 存在但其中 Claude 进程已死,判定为僵会话 → 杀掉重建。
 3. **lease / heartbeat 兜底**:编排者持 lease 并定期心跳;心跳 stale → 下次 `runner start` 接管(杀僵会话 + 释放 lease,任务回到可认领)。这层保证"崩溃后任务卡死"不可能发生,且不依赖任何清理代码成功执行。
 
@@ -183,14 +183,14 @@ extra_args = []              # 逃生舱:透传任意 CLI flag(--add-dir、--mcp
 沿用 `config.json` 现有的 per-phase `model` 字段作为后端选择器,由编排者解释:
 
 - `opus` / `sonnet` / `haiku` → 后台 delegate 给 Claude sub-agent(订阅计费)。
-- `dispatch exec -a codex`(或等价标记)→ Bash 起一次性 `codex exec`。
+- 任何其他值 → 视为 phase 的 `model` 字段携带的 shell command;编排者不内置任何具体工具知识,只把 backend column 里的命令作为 Bash one-shot 运行。
 
-编排者把 `agira task todo` 渲染出的 prompt 落到 `$AGIRA_PROMPT_FILE` 临时文件,后端命令引用文件而非塞超长字符串。环境契约沿用现有 `AGIRA_TASK_*` / `AGIRA_PROJECT_*` / `AGIRA_*_PHASE`,新增 `AGIRA_RUNNER_ID`、`AGIRA_PROMPT_FILE`。
+编排者把 `agira task todo` 渲染出的 prompt 落到 `$AGIRA_PROMPT_FILE` 临时文件,backend column 里的命令引用文件而非塞超长字符串。环境契约沿用现有 `AGIRA_TASK_*` / `AGIRA_PROJECT_*` / `AGIRA_*_PHASE`,新增 `AGIRA_RUNNER_ID`、`AGIRA_PROMPT_FILE`。
 
 ## 11. 暂不实现 / 砍掉
 
 - **多 runner / pool**:schema 预留,不实现。
-- **独立 codex-only command-mode runner**:仅纯 codex、不开 Claude 会话的项目才需要;当前混合 workflow 下 codex 由 Claude 编排者驱动,故砍掉或留 v2。
+- **独立 command-mode runner**:仅纯命令后端、不开 Claude 会话的项目才需要;当前混合 workflow 下非 Claude 命令由 Claude 编排者驱动,故砍掉或留 v2。
 - **自定义 runner 协议**(声明式 TOML:`mode` / `start` / `check` / `stop` / `run` + `AGIRA_*` env 契约;可执行文件契约 `agira-runner-<name>`)→ 留 v2;v1 只内置 `claude-tmux`。
 - **迁移/向后兼容**:单用户,无需考虑。旧的松散 `orchestrator-prompt.md` 直接删除。
 - **时序/健康度旋钮**(`ready_timeout`、`heartbeat_staleness`、僵会话重建时 `resume = fresh|continue`)→ **hold**:常量先留在代码里(TUI 就绪 60×500ms、心跳过期 10m),有人撞到再暴露。
