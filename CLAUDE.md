@@ -47,12 +47,12 @@ it does **not** run tests or lint, so run the verification commands above locall
 
 ```sh
 cargo build              # produces ./target/debug/agira
-./target/debug/agira -v  # smoke check → prints e.g. "agira 0.9.0 (aarch64-apple-darwin)"
+./target/debug/agira -v  # smoke check → prints "agira <version> (<build target>)"
 ```
 
-Verified: `cargo build` succeeds and `agira -v` prints the version + build target.
 No env vars or credentials are required to run. Runtime state lives in `~/.agira/<slug>/`;
-this project's own config is at `~/.agira/agira/config.json`.
+this project's own config is at `~/.agira/agira/config.json`. Note the globally installed
+`agira` binary may lag the repo version — use `./target/debug/agira` to test local changes.
 
 ## Commit conventions
 
@@ -68,25 +68,38 @@ chore: tooling / version bumps / cleanup
 
 ### agira state machine
 
-Phases: `pending → enriching → in_progress → verifying → done` (or `→ failed` from any phase).
-`pending` is always the first phase and `done` is always terminal; config may omit either and agira will insert them at startup.
+`pending` is always the first phase and `done` is always terminal; `failed` is reachable
+from any phase. Config may omit `pending`/`done` and agira inserts them at startup.
+
+This repo's own workflow (defined in `~/.agira/agira/config.json` — read it for the
+authoritative phase list, models, and duties) is currently:
+
+`pending → enriching → implementing → reviewing → verifying → done`
 
 - **pending** — task created, ready for the first real workflow step
-- **enriching** — architect elaborates the spec before implementation begins
-- **in_progress** — implementer writes the code
-- **verifying** — verifier runs checks and acceptance tests
+- **enriching** — architect rewrites the description as a complete spec
+- **implementing** — implementer writes tests first, then code (TDD)
+- **reviewing** — reviewer checks correctness, coverage, and conventions
+- **verifying** — verifier runs fmt/test/clippy plus an end-to-end acceptance run
 - **done** — task complete
 
 ### Common CLI commands
 
+Run `agira --help` (and `agira <command> --help`) for the full, current surface —
+top-level commands include `task`, `init`, `phase`, `config`, `hook`, `project`,
+`workflow`, `runner`, `skill`, `update`. Most-used:
+
 ```sh
-agira task list                # show task table
-agira task list --json         # raw JSON
+agira task list                # task table (latest 20; --json for raw)
+agira task inspect task-001    # detailed view of one task
 agira task todo                # print prompt for current task
 agira task todo --artifact ... # advance current task with evidence
 agira task add "title" --description "..." --depends-on task-001,task-002
 agira task update task-001 --title "new title"
 agira task fail task-001 --reason "..."
+agira project list             # all initialized projects
+agira workflow list            # named workflows in project config
+agira runner start|stop|status # manage the tmux-backed runner
 agira phase get
 agira phase update --add <phase:model> --after <existing>
 agira phase update --remove <phase>
