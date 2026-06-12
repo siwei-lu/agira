@@ -600,10 +600,11 @@ fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
 
 fn claude_tui_input_ready(pane: &str) -> bool {
     pane.lines().any(|line| {
-        line.trim_start()
-            .trim_start_matches(|ch: char| !ch.is_ascii())
+        let line = line
             .trim_start()
-            .starts_with('>')
+            .trim_start_matches(|ch: char| !ch.is_ascii() && ch != '❯')
+            .trim_start();
+        line.starts_with('>') || line.starts_with('❯')
     })
 }
 
@@ -790,8 +791,8 @@ mod tests {
     };
 
     use super::{
-        OUTPUT_CAPTURE, RunnerCommandError, Tmux, attach_runner, format_status_output,
-        run_runner_logs, start_runner, status_runner, stop_runner,
+        OUTPUT_CAPTURE, RunnerCommandError, Tmux, attach_runner, claude_tui_input_ready,
+        format_status_output, run_runner_logs, start_runner, status_runner, stop_runner,
     };
 
     struct RecordingTmux {
@@ -1704,6 +1705,27 @@ mod tests {
         });
 
         assert_eq!(output, "one\ntwo\n");
+    }
+
+    #[test]
+    fn tui_input_ready_detects_ascii_prompt() {
+        assert!(claude_tui_input_ready("│ > \n"));
+        assert!(claude_tui_input_ready("  > type here\n"));
+    }
+
+    #[test]
+    fn tui_input_ready_detects_heavy_angle_prompt() {
+        // Claude Code v2.1+ renders the input prompt as ❯ (U+276F), not >.
+        assert!(claude_tui_input_ready("❯ \n"));
+        assert!(claude_tui_input_ready("  ❯ \n"));
+        assert!(claude_tui_input_ready("│ ❯ \n"));
+    }
+
+    #[test]
+    fn tui_input_ready_rejects_pane_without_prompt() {
+        assert!(!claude_tui_input_ready("Loading…\n"));
+        assert!(!claude_tui_input_ready("│ ▐▛███▜▌ Claude Code v2.1.175\n"));
+        assert!(!claude_tui_input_ready(""));
     }
 
     #[test]
