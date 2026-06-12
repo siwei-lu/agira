@@ -746,6 +746,19 @@ mod runner_header_tests {
             Ok(())
         }
 
+        fn wait_for_ready(&mut self, _session_name: &str) -> Result<(), RunnerCommandError> {
+            Ok(())
+        }
+
+        fn send_keys(
+            &mut self,
+            _session_name: &str,
+            _keys: &str,
+            _enter: bool,
+        ) -> Result<(), RunnerCommandError> {
+            Ok(())
+        }
+
         fn kill_session(&mut self, _session_name: &str) -> Result<(), RunnerCommandError> {
             Ok(())
         }

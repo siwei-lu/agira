@@ -3,6 +3,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration as StdDuration,
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -12,7 +14,8 @@ use thiserror::Error;
 use crate::core::{
     config::{ConfigError, load_project_config},
     orchestrator::{
-        DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt, load_template_override,
+        DEFAULT_ORCHESTRATOR_KICKOFF, DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt,
+        load_template_override,
     },
     project::Project,
     runner::{Runner, RunnerStore, RunnerStoreError, is_lease_expired},
@@ -21,6 +24,8 @@ use crate::core::{
 const DEFAULT_RUNNER_TYPE: &str = "claude-tmux";
 const LOG_FILE_NAME: &str = "runner.log";
 const HEARTBEAT_STALENESS_THRESHOLD: Duration = Duration::minutes(10);
+const TUI_READY_MAX_ATTEMPTS: usize = 60;
+const TUI_READY_BACKOFF: StdDuration = StdDuration::from_millis(500);
 
 #[derive(Debug, Error)]
 pub enum RunnerCommandError {
@@ -32,6 +37,9 @@ pub enum RunnerCommandError {
 
     #[error("runner session is not alive")]
     SessionNotAlive,
+
+    #[error("runner session did not become ready for kickoff")]
+    RunnerNotReady,
 
     #[error("runner log file not found: {path}")]
     LogFileNotFound { path: PathBuf },
@@ -97,6 +105,13 @@ pub trait Tmux {
         launch_command: &str,
     ) -> Result<(), RunnerCommandError>;
     fn pipe_pane(&mut self, session_name: &str, log_path: &Path) -> Result<(), RunnerCommandError>;
+    fn wait_for_ready(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
+    fn send_keys(
+        &mut self,
+        session_name: &str,
+        keys: &str,
+        enter: bool,
+    ) -> Result<(), RunnerCommandError>;
     fn kill_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
     fn kill_process_group(&mut self, pgid: i32) -> Result<(), RunnerCommandError>;
     fn attach(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
@@ -155,6 +170,46 @@ impl Tmux for ProcessTmux {
             )?,
             "pipe-pane",
         )
+    }
+
+    fn wait_for_ready(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
+        for attempt in 0..TUI_READY_MAX_ATTEMPTS {
+            let output = tmux_command(["capture-pane", "-p", "-t", session_name], "capture-pane")?;
+            if !output.status.success() {
+                return Err(RunnerCommandError::TmuxFailed {
+                    action: "capture-pane",
+                    message: stderr_message(&output.stderr),
+                });
+            }
+            let pane = String::from_utf8_lossy(&output.stdout);
+            if claude_tui_input_ready(&pane) {
+                return Ok(());
+            }
+            if attempt + 1 < TUI_READY_MAX_ATTEMPTS {
+                thread::sleep(TUI_READY_BACKOFF);
+            }
+        }
+
+        Err(RunnerCommandError::RunnerNotReady)
+    }
+
+    fn send_keys(
+        &mut self,
+        session_name: &str,
+        keys: &str,
+        enter: bool,
+    ) -> Result<(), RunnerCommandError> {
+        ensure_tmux_success(
+            tmux_command(["send-keys", "-t", session_name, keys], "send-keys")?,
+            "send-keys",
+        )?;
+        if enter {
+            ensure_tmux_success(
+                tmux_command(["send-keys", "-t", session_name, "Enter"], "send-keys")?,
+                "send-keys",
+            )?;
+        }
+        Ok(())
     }
 
     fn kill_session(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
@@ -365,6 +420,13 @@ fn cold_start_runner<T: Tmux>(
 
     tmux.new_session(&session_name, &launch_command)?;
     tmux.pipe_pane(&session_name, &log_path)?;
+    if let Err(error) = tmux
+        .wait_for_ready(&session_name)
+        .and_then(|_| tmux.send_keys(&session_name, DEFAULT_ORCHESTRATOR_KICKOFF, true))
+    {
+        let _ = tmux.kill_session(&session_name);
+        return Err(error);
+    }
 
     let runner = store.register_at(
         &runner_id,
@@ -534,6 +596,15 @@ fn claude_launch_command(runner_id: &str, prompt: &str) -> String {
         shell_quote_string(runner_id),
         shell_quote_string(prompt)
     )
+}
+
+fn claude_tui_input_ready(pane: &str) -> bool {
+    pane.lines().any(|line| {
+        line.trim_start()
+            .trim_start_matches(|ch: char| !ch.is_ascii())
+            .trim_start()
+            .starts_with('>')
+    })
 }
 
 pub(crate) fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -723,12 +794,24 @@ mod tests {
         run_runner_logs, start_runner, status_runner, stop_runner,
     };
 
-    #[derive(Default)]
     struct RecordingTmux {
         live: bool,
         pane_alive: bool,
         pane_pgid: Option<i32>,
+        ready: bool,
         calls: Vec<Vec<String>>,
+    }
+
+    impl Default for RecordingTmux {
+        fn default() -> Self {
+            Self {
+                live: false,
+                pane_alive: false,
+                pane_pgid: Some(4242),
+                ready: true,
+                calls: Vec::new(),
+            }
+        }
     }
 
     impl RecordingTmux {
@@ -737,6 +820,7 @@ mod tests {
                 live: true,
                 pane_alive: true,
                 pane_pgid: Some(4242),
+                ready: true,
                 calls: Vec::new(),
             }
         }
@@ -746,6 +830,17 @@ mod tests {
                 live: true,
                 pane_alive: false,
                 pane_pgid: Some(4242),
+                ready: true,
+                calls: Vec::new(),
+            }
+        }
+
+        fn never_ready() -> Self {
+            Self {
+                live: false,
+                pane_alive: false,
+                pane_pgid: Some(4242),
+                ready: false,
                 calls: Vec::new(),
             }
         }
@@ -801,6 +896,42 @@ mod tests {
                 "-o".into(),
                 format!("cat >> '{}'", log_path.display()),
             ]);
+            Ok(())
+        }
+
+        fn wait_for_ready(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
+            self.calls.push(vec![
+                "wait-for-ready".into(),
+                "-t".into(),
+                session_name.into(),
+            ]);
+            if self.ready {
+                Ok(())
+            } else {
+                Err(RunnerCommandError::RunnerNotReady)
+            }
+        }
+
+        fn send_keys(
+            &mut self,
+            session_name: &str,
+            keys: &str,
+            enter: bool,
+        ) -> Result<(), RunnerCommandError> {
+            self.calls.push(vec![
+                "send-keys".into(),
+                "-t".into(),
+                session_name.into(),
+                keys.into(),
+            ]);
+            if enter {
+                self.calls.push(vec![
+                    "send-keys".into(),
+                    "-t".into(),
+                    session_name.into(),
+                    "Enter".into(),
+                ]);
+            }
             Ok(())
         }
 
@@ -935,6 +1066,25 @@ mod tests {
         assert_eq!(tmux.calls[2][3], "-o");
         let pipe_command = &tmux.calls[2][4];
         assert!(pipe_command.ends_with("/runner/runner.log'"));
+        assert_eq!(
+            tmux.calls[3],
+            vec!["wait-for-ready", "-t", "agira-runner-repo"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            &tmux.calls[4][..3],
+            ["send-keys", "-t", "agira-runner-repo"]
+        );
+        assert!(tmux.calls[4][3].contains("agira task todo --runner \"$AGIRA_RUNNER_ID\""));
+        assert_eq!(
+            tmux.calls[5],
+            vec!["send-keys", "-t", "agira-runner-repo", "Enter"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
 
         let store = RunnerStore::new(&project.state_dir).expect("open store");
         let runner = store
@@ -1014,6 +1164,40 @@ mod tests {
     }
 
     #[test]
+    fn start_errors_and_cleans_up_when_runner_tui_is_not_ready() {
+        let (_dir, project) = project();
+        let mut tmux = RecordingTmux::never_ready();
+
+        let result = start_runner(&project, None, &mut tmux, fixed_now());
+
+        assert!(matches!(result, Err(RunnerCommandError::RunnerNotReady)));
+        assert_eq!(
+            tmux.calls,
+            vec![
+                vec!["has-session", "-t", "agira-runner-repo"],
+                vec![
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "agira-runner-repo",
+                    &tmux.calls[1][4],
+                ],
+                vec![
+                    "pipe-pane",
+                    "-t",
+                    "agira-runner-repo",
+                    "-o",
+                    &tmux.calls[2][4],
+                ],
+                vec!["wait-for-ready", "-t", "agira-runner-repo"],
+                vec!["kill-session", "-t", "agira-runner-repo"],
+            ]
+        );
+        let store = RunnerStore::new(&project.state_dir).expect("open store");
+        assert!(store.registry().runners.is_empty());
+    }
+
+    #[test]
     fn start_rebuilds_zombie_session_and_removes_stale_registry_entry() {
         let (_dir, project) = project();
         let mut store = RunnerStore::new(&project.state_dir).expect("open store");
@@ -1039,7 +1223,7 @@ mod tests {
         assert_ne!(output.runner_id, "runner-zombie");
         assert!(!output.already_running);
         assert_eq!(
-            &tmux.calls[..5],
+            &tmux.calls[..8],
             [
                 vec!["has-session", "-t", "agira-runner-repo"],
                 vec!["pane-alive", "-t", "agira-runner-repo"],
@@ -1058,6 +1242,9 @@ mod tests {
                     "-o",
                     &tmux.calls[4][4]
                 ],
+                vec!["wait-for-ready", "-t", "agira-runner-repo"],
+                vec!["send-keys", "-t", "agira-runner-repo", &tmux.calls[6][3]],
+                vec!["send-keys", "-t", "agira-runner-repo", "Enter"],
             ]
         );
         let store = RunnerStore::new(&project.state_dir).expect("open store");
@@ -1274,6 +1461,7 @@ mod tests {
 
         assert_eq!(output.runner_id, "runner-existing");
         assert!(output.already_running);
+        assert!(!tmux.calls.iter().any(|call| call[0] == "send-keys"));
         assert_eq!(
             tmux.calls,
             vec![

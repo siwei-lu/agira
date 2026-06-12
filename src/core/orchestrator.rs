@@ -27,6 +27,8 @@ Thin-orchestrator rule:
 - Only claim tasks, dispatch the configured backend, wait for completion, and advance with evidence.
 "#;
 
+pub const DEFAULT_ORCHESTRATOR_KICKOFF: &str = r#"Start the Agira orchestration loop now. Claim the next actionable task with `agira task todo --runner "$AGIRA_RUNNER_ID"`, follow the orchestrator protocol from your system prompt exactly, and when no task is actionable, idle-wait silently for the next task notification or user instruction."#;
+
 pub fn render_phase_table(config: &Config) -> String {
     let mut output =
         String::from("\n## phase routing table\n\n| phase | backend | duty |\n|---|---|---|\n");
@@ -63,7 +65,10 @@ fn escape_table_cell(value: &str) -> String {
 mod tests {
     use crate::core::config::{Config, PhaseDef};
 
-    use super::{DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt, render_phase_table};
+    use super::{
+        DEFAULT_ORCHESTRATOR_KICKOFF, DEFAULT_ORCHESTRATOR_TEMPLATE, assemble_orchestrator_prompt,
+        render_phase_table,
+    };
 
     fn config() -> Config {
         Config::new_single_workflow(
@@ -117,5 +122,13 @@ mod tests {
             "Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact \"<evidence>\"`"
         ));
         assert!(prompt.contains("| implementing | dispatch exec -a codex |"));
+    }
+
+    #[test]
+    fn default_orchestrator_kickoff_claims_runner_task() {
+        assert!(
+            DEFAULT_ORCHESTRATOR_KICKOFF.contains("agira task todo --runner \"$AGIRA_RUNNER_ID\"")
+        );
+        assert!(DEFAULT_ORCHESTRATOR_KICKOFF.contains("idle-wait"));
     }
 }

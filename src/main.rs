@@ -1305,6 +1305,7 @@ fn exit_code_for_runner(error: &commands::RunnerCommandError) -> ExitCode {
         UnregisteredLiveSession
         | NoRunnerRegistered
         | SessionNotAlive
+        | RunnerNotReady
         | LogFileNotFound { .. }
         | TmuxFailed { .. }
         | Config(
