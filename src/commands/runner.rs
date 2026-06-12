@@ -29,6 +29,14 @@ const HEARTBEAT_STALENESS_THRESHOLD: Duration = Duration::minutes(10);
 const TUI_READY_MAX_ATTEMPTS: usize = 60;
 const TUI_READY_BACKOFF: StdDuration = StdDuration::from_millis(500);
 #[cfg(not(test))]
+const KICKOFF_SUBMIT_MAX_ATTEMPTS: usize = 3;
+#[cfg(test)]
+const KICKOFF_SUBMIT_MAX_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const KICKOFF_SUBMIT_BACKOFF: StdDuration = StdDuration::from_millis(500);
+#[cfg(test)]
+const KICKOFF_SUBMIT_BACKOFF: StdDuration = StdDuration::from_millis(0);
+#[cfg(not(test))]
 const HOOK_READY_MAX_ATTEMPTS: usize = 60;
 #[cfg(test)]
 const HOOK_READY_MAX_ATTEMPTS: usize = 1;
@@ -50,6 +58,9 @@ pub enum RunnerCommandError {
 
     #[error("runner session did not become ready for kickoff")]
     RunnerNotReady,
+
+    #[error("runner kickoff was not submitted")]
+    KickoffNotSubmitted,
 
     #[error("runner log file not found: {path}")]
     LogFileNotFound { path: PathBuf },
@@ -142,6 +153,7 @@ pub trait Tmux {
     ) -> Result<(), RunnerCommandError>;
     fn pipe_pane(&mut self, session_name: &str, log_path: &Path) -> Result<(), RunnerCommandError>;
     fn wait_for_ready(&mut self, session_name: &str) -> Result<(), RunnerCommandError>;
+    fn capture_pane(&mut self, session_name: &str) -> Result<String, RunnerCommandError>;
     fn send_keys(
         &mut self,
         session_name: &str,
@@ -219,14 +231,7 @@ impl Tmux for ProcessTmux {
 
     fn wait_for_ready(&mut self, session_name: &str) -> Result<(), RunnerCommandError> {
         for attempt in 0..TUI_READY_MAX_ATTEMPTS {
-            let output = tmux_command(["capture-pane", "-p", "-t", session_name], "capture-pane")?;
-            if !output.status.success() {
-                return Err(RunnerCommandError::TmuxFailed {
-                    action: "capture-pane",
-                    message: stderr_message(&output.stderr),
-                });
-            }
-            let pane = String::from_utf8_lossy(&output.stdout);
+            let pane = self.capture_pane(session_name)?;
             if claude_tui_input_ready(&pane) {
                 return Ok(());
             }
@@ -236,6 +241,17 @@ impl Tmux for ProcessTmux {
         }
 
         Err(RunnerCommandError::RunnerNotReady)
+    }
+
+    fn capture_pane(&mut self, session_name: &str) -> Result<String, RunnerCommandError> {
+        let output = tmux_command(["capture-pane", "-p", "-t", session_name], "capture-pane")?;
+        if !output.status.success() {
+            return Err(RunnerCommandError::TmuxFailed {
+                action: "capture-pane",
+                message: stderr_message(&output.stderr),
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn send_keys(
@@ -434,7 +450,7 @@ fn start_runner<T: Tmux>(
                 .unwrap_or(runner.clone());
             if fresh_runner.current_task.is_none() {
                 wait_for_hook_ready_or_tui_fallback(project, &fresh_runner.id, tmux)?;
-                tmux.send_keys(&session_name, DEFAULT_ORCHESTRATOR_KICKOFF, true)?;
+                send_kickoff_and_verify(tmux, &session_name, DEFAULT_ORCHESTRATOR_KICKOFF)?;
             }
 
             return Ok(RunnerStartOutput {
@@ -713,6 +729,27 @@ fn wait_for_hook_ready_or_tui_fallback<T: Tmux>(
     tmux.wait_for_ready(&session_name(project))
 }
 
+fn send_kickoff_and_verify<T: Tmux>(
+    tmux: &mut T,
+    session_name: &str,
+    kickoff: &str,
+) -> Result<(), RunnerCommandError> {
+    tmux.send_keys(session_name, kickoff, true)?;
+
+    for attempt in 0..KICKOFF_SUBMIT_MAX_ATTEMPTS {
+        let pane = tmux.capture_pane(session_name)?;
+        if claude_tui_input_cleared(&pane) {
+            return Ok(());
+        }
+        if attempt + 1 < KICKOFF_SUBMIT_MAX_ATTEMPTS {
+            thread::sleep(KICKOFF_SUBMIT_BACKOFF);
+            tmux.send_keys(session_name, "Enter", false)?;
+        }
+    }
+
+    Err(RunnerCommandError::KickoffNotSubmitted)
+}
+
 fn runner_ready_from_hook_state(runner: &Runner) -> bool {
     runner.current_task.is_none()
         && (runner.idle_since.is_some()
@@ -903,13 +940,21 @@ fn claude_tui_input_ready(pane: &str) -> bool {
     // Runner readiness is content-based on the Claude TUI prompt, not on the
     // pane process name. A configured wrapper command is supported as long as it
     // ultimately renders the Claude Code TUI prompt.
-    pane.lines().any(|line| {
-        let line = line
-            .trim_start()
-            .trim_start_matches(|ch: char| !ch.is_ascii() && ch != '❯')
-            .trim_start();
-        line.starts_with('>') || line.starts_with('❯')
-    })
+    pane.lines()
+        .any(|line| prompt_line_after_glyph(line).is_some())
+}
+
+fn claude_tui_input_cleared(pane: &str) -> bool {
+    pane.lines()
+        .any(|line| prompt_line_after_glyph(line).is_some_and(|input| input.trim().is_empty()))
+}
+
+fn prompt_line_after_glyph(line: &str) -> Option<&str> {
+    let line = line
+        .trim_start()
+        .trim_start_matches(|ch: char| !ch.is_ascii() && ch != '❯')
+        .trim_start();
+    line.strip_prefix('>').or_else(|| line.strip_prefix('❯'))
 }
 
 pub(crate) fn is_heartbeat_stale(last_heartbeat: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -1082,7 +1127,7 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
+    use std::{collections::BTreeMap, collections::VecDeque, fs, path::Path, path::PathBuf};
 
     use chrono::{DateTime, Duration, Utc};
 
@@ -1090,6 +1135,7 @@ mod tests {
         config::{Config, ConfigError, PhaseDef},
         global_config::{ClaudeRunnerConfig, GlobalConfig},
         hooks::HookConfig,
+        orchestrator::DEFAULT_ORCHESTRATOR_KICKOFF,
         project::Project,
         runner::RunnerStore,
     };
@@ -1097,8 +1143,8 @@ mod tests {
     use super::{
         CLAUDE_RUNNER_SETTINGS_FILE, OUTPUT_CAPTURE, RunnerCommandError, RunnerEventKind, Tmux,
         attach_runner, claude_launch_command, claude_runner_settings_argument,
-        claude_tui_input_ready, format_status_output, run_runner_logs, runner_event,
-        runner_hooks_settings, start_runner, status_runner, stop_runner,
+        claude_tui_input_cleared, claude_tui_input_ready, format_status_output, run_runner_logs,
+        runner_event, runner_hooks_settings, start_runner, status_runner, stop_runner,
     };
 
     struct RecordingTmux {
@@ -1107,6 +1153,7 @@ mod tests {
         pane_is_claude: bool,
         pane_pgid: Option<i32>,
         ready: bool,
+        pane_snapshots: VecDeque<String>,
         calls: Vec<Vec<String>>,
     }
 
@@ -1118,6 +1165,7 @@ mod tests {
                 pane_is_claude: true,
                 pane_pgid: Some(4242),
                 ready: true,
+                pane_snapshots: VecDeque::new(),
                 calls: Vec::new(),
             }
         }
@@ -1131,6 +1179,7 @@ mod tests {
                 pane_is_claude: true,
                 pane_pgid: Some(4242),
                 ready: true,
+                pane_snapshots: VecDeque::new(),
                 calls: Vec::new(),
             }
         }
@@ -1142,6 +1191,7 @@ mod tests {
                 pane_is_claude: true,
                 pane_pgid: Some(4242),
                 ready: true,
+                pane_snapshots: VecDeque::new(),
                 calls: Vec::new(),
             }
         }
@@ -1153,6 +1203,7 @@ mod tests {
                 pane_is_claude: false,
                 pane_pgid: Some(4242),
                 ready: true,
+                pane_snapshots: VecDeque::new(),
                 calls: Vec::new(),
             }
         }
@@ -1164,8 +1215,17 @@ mod tests {
                 pane_is_claude: true,
                 pane_pgid: Some(4242),
                 ready: false,
+                pane_snapshots: VecDeque::new(),
                 calls: Vec::new(),
             }
+        }
+
+        fn with_pane_snapshots(mut self, snapshots: &[&str]) -> Self {
+            self.pane_snapshots = snapshots
+                .iter()
+                .map(|snapshot| (*snapshot).to_owned())
+                .collect();
+            self
         }
     }
 
@@ -1242,6 +1302,19 @@ mod tests {
             } else {
                 Err(RunnerCommandError::RunnerNotReady)
             }
+        }
+
+        fn capture_pane(&mut self, session_name: &str) -> Result<String, RunnerCommandError> {
+            self.calls.push(vec![
+                "capture-pane".into(),
+                "-p".into(),
+                "-t".into(),
+                session_name.into(),
+            ]);
+            Ok(self
+                .pane_snapshots
+                .pop_front()
+                .unwrap_or_else(|| "│ > \n".to_owned()))
         }
 
         fn send_keys(
@@ -2321,6 +2394,14 @@ mod tests {
     }
 
     #[test]
+    fn tui_input_cleared_requires_empty_prompt_after_glyph() {
+        assert!(claude_tui_input_cleared("/opt/bin/claude-wrapper\n│ > \n"));
+        assert!(claude_tui_input_cleared("prefix\n❯ \n"));
+        assert!(!claude_tui_input_cleared("prefix\n│ > kickoff now\n"));
+        assert!(!claude_tui_input_cleared("prefix\n❯ kickoff now\n"));
+    }
+
+    #[test]
     fn logs_missing_file_returns_error() {
         let (_dir, project) = project();
 
@@ -2369,6 +2450,109 @@ mod tests {
         // Store must still hold the same runner_id — no deregister/cold-start.
         let store = RunnerStore::new(&project.state_dir).expect("open store");
         assert!(store.get_runner("runner-idle").is_some());
+    }
+
+    #[test]
+    fn start_rekick_retries_standalone_enter_when_initial_enter_is_swallowed() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-idle-swallowed-enter",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        drop(store);
+        let mut tmux = RecordingTmux::live()
+            .with_pane_snapshots(&[&format!("│ > {DEFAULT_ORCHESTRATOR_KICKOFF}\n"), "│ > \n"]);
+
+        let output = start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-idle-swallowed-enter");
+        assert!(output.already_running);
+        let send_keys: Vec<&Vec<String>> = tmux
+            .calls
+            .iter()
+            .filter(|call| call[0] == "send-keys")
+            .collect();
+        assert_eq!(send_keys.len(), 3);
+        assert_eq!(send_keys[0][3], DEFAULT_ORCHESTRATOR_KICKOFF);
+        assert_eq!(send_keys[1][3], "Enter");
+        assert_eq!(send_keys[2][3], "Enter");
+        let capture_count = tmux
+            .calls
+            .iter()
+            .filter(|call| call[0] == "capture-pane")
+            .count();
+        assert_eq!(capture_count, 2);
+    }
+
+    #[test]
+    fn start_rekick_does_not_retry_when_initial_submit_clears_input() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-idle-first-submit",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        drop(store);
+        let mut tmux = RecordingTmux::live().with_pane_snapshots(&["│ > \n"]);
+
+        let output = start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
+
+        assert_eq!(output.runner_id, "runner-idle-first-submit");
+        assert!(output.already_running);
+        let send_keys: Vec<&Vec<String>> = tmux
+            .calls
+            .iter()
+            .filter(|call| call[0] == "send-keys")
+            .collect();
+        assert_eq!(send_keys.len(), 2);
+        assert_eq!(send_keys[0][3], DEFAULT_ORCHESTRATOR_KICKOFF);
+        assert_eq!(send_keys[1][3], "Enter");
+    }
+
+    #[test]
+    fn start_rekick_returns_error_when_kickoff_submission_never_clears() {
+        let (_dir, project) = project();
+        let mut store = RunnerStore::new(&project.state_dir).expect("open store");
+        store
+            .register_at(
+                "runner-idle-never-submits",
+                "claude-tmux",
+                "agira-runner-repo",
+                fixed_now(),
+            )
+            .expect("register runner");
+        drop(store);
+        let mut tmux = RecordingTmux::live().with_pane_snapshots(&[
+            &format!("│ > {DEFAULT_ORCHESTRATOR_KICKOFF}\n"),
+            &format!("│ > {DEFAULT_ORCHESTRATOR_KICKOFF}\n"),
+            &format!("│ > {DEFAULT_ORCHESTRATOR_KICKOFF}\n"),
+        ]);
+
+        let result = start_runner(&project, None, &mut tmux, fixed_now());
+
+        assert!(matches!(
+            result,
+            Err(RunnerCommandError::KickoffNotSubmitted)
+        ));
+        let send_keys: Vec<&Vec<String>> = tmux
+            .calls
+            .iter()
+            .filter(|call| call[0] == "send-keys")
+            .collect();
+        assert_eq!(send_keys.len(), 4);
+        assert_eq!(send_keys[0][3], DEFAULT_ORCHESTRATOR_KICKOFF);
+        assert_eq!(send_keys[1][3], "Enter");
+        assert_eq!(send_keys[2][3], "Enter");
+        assert_eq!(send_keys[3][3], "Enter");
     }
 
     #[test]

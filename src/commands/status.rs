@@ -754,6 +754,10 @@ mod runner_header_tests {
             Ok(())
         }
 
+        fn capture_pane(&mut self, _session_name: &str) -> Result<String, RunnerCommandError> {
+            Ok("│ > \n".to_owned())
+        }
+
         fn send_keys(
             &mut self,
             _session_name: &str,
