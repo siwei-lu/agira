@@ -1,8 +1,7 @@
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
 };
 
 use chrono::{Duration, Utc};
@@ -19,22 +18,6 @@ fn agira(home: &Path, repo: &Path) -> Command {
 
 fn run(command: &mut Command) -> Output {
     command.output().unwrap()
-}
-
-fn run_with_stdin(command: &mut Command, stdin: &str) -> Output {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
 }
 
 fn setup_uninitialized_repo() -> (TempDir, TempDir, PathBuf) {
@@ -130,6 +113,19 @@ fn task_status_is_unrecognized_subcommand() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand 'status'"));
 }
 
+#[test]
+fn task_add_batch_is_unrecognized_subcommand() {
+    let (home, _workspace, repo) = setup_uninitialized_repo();
+
+    let output = run(agira(home.path(), &repo).args(["task", "add-batch"]));
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand 'add-batch'")
+    );
+}
+
 fn setup_initialized_repo(name: &str) -> (TempDir, TempDir, PathBuf) {
     let home = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
@@ -155,183 +151,61 @@ fn setup_initialized_repo(name: &str) -> (TempDir, TempDir, PathBuf) {
 }
 
 #[test]
-fn task_add_batch_file_creates_alias_wired_dag() {
-    let (home, _workspace, repo) = setup_initialized_repo("Batch Add Repo");
-    let manifest = repo.join("tasks.toml");
-    fs::write(
-        &manifest,
-        r#"
-[[task]]
-id = "root"
-title = "root task"
-description = "first"
+fn concurrent_task_adds_persist_both_tasks_with_distinct_ids() {
+    let (home, _workspace, repo) = setup_initialized_repo("Concurrent Add Repo");
 
-[[task]]
-id = "child"
-title = "child task"
-depends_on = ["root"]
+    let first = agira(home.path(), &repo)
+        .args(["task", "add", "concurrent first"])
+        .spawn()
+        .expect("spawn first add");
+    let second = agira(home.path(), &repo)
+        .args(["task", "add", "concurrent second"])
+        .spawn()
+        .expect("spawn second add");
 
-[[task]]
-title = "leaf task"
-depends_on = ["child"]
-"#,
+    let first_output = first.wait_with_output().expect("wait for first add");
+    let second_output = second.wait_with_output().expect("wait for second add");
+
+    assert!(
+        first_output.status.success(),
+        "first add failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&first_output.stdout),
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    assert!(
+        second_output.status.success(),
+        "second add failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&second_output.stdout),
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+
+    let tasks_json = fs::read_to_string(
+        project_state_dir_for(home.path(), "concurrent-add-repo").join("tasks.json"),
     )
-    .unwrap();
+    .expect("read tasks.json");
+    let value: serde_json::Value = serde_json::from_str(&tasks_json).expect("parse tasks.json");
+    let tasks = value["tasks"].as_array().expect("tasks array");
+    assert_eq!(tasks.len(), 2, "tasks.json:\n{tasks_json}");
 
-    let output = run(agira(home.path(), &repo).args([
-        "task",
-        "add-batch",
-        "--file",
-        manifest.to_str().unwrap(),
-    ]));
+    let mut ids = tasks
+        .iter()
+        .map(|task| task["id"].as_str().expect("task id"))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 2, "tasks.json:\n{tasks_json}");
 
+    let titles = tasks
+        .iter()
+        .map(|task| task["title"].as_str().expect("task title"))
+        .collect::<Vec<_>>();
     assert!(
-        output.status.success(),
-        "add-batch failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        titles.contains(&"concurrent first"),
+        "tasks.json:\n{tasks_json}"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("root -> task-001"));
-    assert!(stdout.contains("child -> task-002"));
-    assert!(stdout.contains("added task-003: leaf task"));
-
-    let tasks_json =
-        fs::read_to_string(project_state_dir_for(home.path(), "batch-add-repo").join("tasks.json"))
-            .unwrap();
-    assert!(tasks_json.contains("\"id\": \"task-001\""));
-    assert!(tasks_json.contains("\"dependencies\": [\n        \"task-001\"\n      ]"));
-    assert!(tasks_json.contains("\"dependencies\": [\n        \"task-002\"\n      ]"));
-}
-
-#[test]
-fn task_add_batch_stdin_dry_run_json_writes_nothing() {
-    let (home, _workspace, repo) = setup_initialized_repo("Batch Dry Run Repo");
-    let manifest = r#"
-[[task]]
-id = "a"
-title = "dry root"
-
-[[task]]
-id = "b"
-title = "dry child"
-depends_on = ["a"]
-"#;
-
-    let output = run_with_stdin(
-        agira(home.path(), &repo).args(["task", "add-batch", "--stdin", "--dry-run", "--json"]),
-        manifest,
-    );
-
     assert!(
-        output.status.success(),
-        "dry-run failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["dry_run"], true);
-    assert_eq!(value["tasks"][0]["alias"], "a");
-    assert_eq!(value["tasks"][1]["id"], "task-002");
-    assert!(
-        !project_state_dir_for(home.path(), "batch-dry-run-repo")
-            .join("tasks.json")
-            .exists()
-    );
-}
-
-#[test]
-fn task_add_batch_reports_all_preflight_errors_and_writes_nothing() {
-    let (home, _workspace, repo) = setup_initialized_repo("Batch Errors Repo");
-    run(agira(home.path(), &repo).args(["task", "add", "existing title"]));
-    run(agira(home.path(), &repo).args(["workflow", "add", "alt", "--phases", "implementing"]));
-
-    let manifest = repo.join("bad.toml");
-    fs::write(
-        &manifest,
-        r#"
-[[task]]
-id = "dup"
-title = "existing title"
-depends_on = ["missing"]
-phase = "not-a-phase"
-workflow = "missing-workflow"
-
-[[task]]
-id = "dup"
-title = "Local Duplicate"
-
-[[task]]
-id = "cycle-a"
-title = "local duplicate"
-depends_on = ["cycle-b"]
-
-[[task]]
-id = "cycle-b"
-title = "cycle b"
-depends_on = ["cycle-a"]
-"#,
-    )
-    .unwrap();
-
-    let before = fs::read_to_string(
-        project_state_dir_for(home.path(), "batch-errors-repo").join("tasks.json"),
-    )
-    .unwrap();
-    let output = run(agira(home.path(), &repo).args([
-        "task",
-        "add-batch",
-        "--file",
-        manifest.to_str().unwrap(),
-    ]));
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for expected in [
-        "unknown dependency reference: missing",
-        "duplicate local id alias: dup",
-        "duplicate title in manifest: local duplicate",
-        "a task with this title already exists: task-001 \"existing title\"",
-        "unknown workflow 'missing-workflow'",
-        "unknown phase: not-a-phase",
-        "dependency cycle among manifest tasks",
-    ] {
-        assert!(
-            stderr.contains(expected),
-            "missing {expected:?} in:\n{stderr}"
-        );
-    }
-    let after = fs::read_to_string(
-        project_state_dir_for(home.path(), "batch-errors-repo").join("tasks.json"),
-    )
-    .unwrap();
-    assert_eq!(after, before);
-}
-
-#[test]
-fn task_add_batch_rejects_file_and_stdin_combinations_with_exit_1() {
-    let (home, _workspace, repo) = setup_initialized_repo("Batch Args Repo");
-    let manifest = repo.join("tasks.toml");
-    fs::write(&manifest, "[[task]]\ntitle = \"x\"\n").unwrap();
-
-    let neither = run(agira(home.path(), &repo).args(["task", "add-batch"]));
-    assert_eq!(neither.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&neither.stderr)
-            .contains("supply exactly one of --file or --stdin")
-    );
-
-    let both = run(agira(home.path(), &repo).args([
-        "task",
-        "add-batch",
-        "--file",
-        manifest.to_str().unwrap(),
-        "--stdin",
-    ]));
-    assert_eq!(both.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&both.stderr).contains("supply exactly one of --file or --stdin")
+        titles.contains(&"concurrent second"),
+        "tasks.json:\n{tasks_json}"
     );
 }
 

@@ -6,9 +6,10 @@ const NO_RUNNER_HINT: &str = "hint: no runner is running; start one with 'agira 
 
 use crate::core::{
     config::{ConfigError, load_project_config},
+    file_lock::{FileLock, FileLockError},
     hooks::{HookContext, TASK_ADDED_EVENT, dispatch_hooks, hooks_for_event},
     project::Project,
-    tasks::{StoreError, TaskStore},
+    tasks::{StoreError, Task, TaskStore},
 };
 
 #[derive(Debug, Error)]
@@ -47,6 +48,9 @@ pub enum AddError {
 
     #[error(transparent)]
     StoreError(#[from] StoreError),
+
+    #[error(transparent)]
+    FileLockError(#[from] FileLockError),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -66,32 +70,45 @@ pub fn run_add(
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
-    let mut store = TaskStore::new(&project.state_dir, &config)?;
-    let title_lowercase = title.to_lowercase();
-    let duplicate = store
-        .all_tasks()
-        .iter()
-        .find(|task| {
-            Some(task.state.as_str()) != config.terminal_phase()
-                && task.title.to_lowercase() == title_lowercase
-        })
-        .map(|task| (task.id.clone(), task.title.clone()));
 
-    if let Some((id, title)) = duplicate {
-        return Err(AddError::DuplicateTitle { id, title });
-    }
+    let task = {
+        let _lock = FileLock::acquire(project.state_dir.join("tasks.lock"))?;
+        let mut store = TaskStore::new(&project.state_dir, &config)?;
+        let title_lowercase = title.to_lowercase();
+        let duplicate = store
+            .all_tasks()
+            .iter()
+            .find(|task| {
+                Some(task.state.as_str()) != config.terminal_phase()
+                    && task.title.to_lowercase() == title_lowercase
+            })
+            .map(|task| (task.id.clone(), task.title.clone()));
 
-    let workflow_name = if let Some(wf_name) = workflow {
-        if config.sequence(wf_name).is_empty() {
-            let names: Vec<String> = config.workflows.keys().cloned().collect();
-            return Err(AddError::UnknownWorkflow {
-                name: wf_name.to_owned(),
-                available: names.join(", "),
-            });
+        if let Some((id, title)) = duplicate {
+            return Err(AddError::DuplicateTitle { id, title });
         }
-        wf_name.to_owned()
-    } else {
-        config.default_workflow.clone()
+
+        let workflow_name = if let Some(wf_name) = workflow {
+            if config.sequence(wf_name).is_empty() {
+                let names: Vec<String> = config.workflows.keys().cloned().collect();
+                return Err(AddError::UnknownWorkflow {
+                    name: wf_name.to_owned(),
+                    available: names.join(", "),
+                });
+            }
+            wf_name.to_owned()
+        } else {
+            config.default_workflow.clone()
+        };
+
+        create_task(
+            &mut store,
+            title,
+            description.unwrap_or(""),
+            depends_on.to_vec(),
+            phase,
+            workflow_name,
+        )?
     };
 
     let runner_type = project.global_config.runner.runner_type.clone();
@@ -100,14 +117,9 @@ pub fn run_add(
         .ok()
         .is_some_and(|runner_id| !runner_id.trim().is_empty());
 
-    add_task_flow_with_ensure_and_liveness(
+    run_add_side_effects(
         project,
-        &mut store,
-        title,
-        description.unwrap_or(""),
-        depends_on.to_vec(),
-        phase,
-        workflow_name,
+        &task,
         auto_start,
         inside_runner,
         &runner_type,
@@ -167,6 +179,7 @@ fn add_task_flow_with_ensure(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn add_task_flow_with_ensure_and_liveness(
     project: &Project,
     store: &mut TaskStore,
@@ -181,18 +194,47 @@ fn add_task_flow_with_ensure_and_liveness(
     ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
     runner_is_live: &mut dyn FnMut(&Project) -> Result<bool, String>,
 ) -> Result<(), AddError> {
-    let task = match store.add_task(title, description, depends_on, phase, workflow_name) {
-        Ok(task) => task,
-        Err(error) => return Err(map_store_error(error)),
-    };
+    let task = create_task(store, title, description, depends_on, phase, workflow_name)?;
+    run_add_side_effects(
+        project,
+        &task,
+        auto_start,
+        inside_runner,
+        runner_type,
+        ensure_runner,
+        runner_is_live,
+    )
+}
 
+fn create_task(
+    store: &mut TaskStore,
+    title: &str,
+    description: &str,
+    depends_on: Vec<String>,
+    phase: Option<&str>,
+    workflow_name: String,
+) -> Result<Task, AddError> {
+    store
+        .add_task(title, description, depends_on, phase, workflow_name)
+        .map_err(map_store_error)
+}
+
+fn run_add_side_effects(
+    project: &Project,
+    task: &Task,
+    auto_start: bool,
+    inside_runner: bool,
+    runner_type: &str,
+    ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
+    runner_is_live: &mut dyn FnMut(&Project) -> Result<bool, String>,
+) -> Result<(), AddError> {
     if auto_start && !inside_runner {
         if let Err(message) = ensure_runner(project, runner_type) {
             eprintln!("warning: ensure-runner failed: {message}");
         }
     }
 
-    dispatch_task_added_hooks(project, &task);
+    dispatch_task_added_hooks(project, task);
     print_add_output(&format!("added {}: {}", task.id, task.title));
 
     if !auto_start && !inside_runner && matches!(runner_is_live(project), Ok(false)) {

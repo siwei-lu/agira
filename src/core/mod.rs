@@ -1,5 +1,6 @@
 pub(crate) mod advance;
 pub(crate) mod config;
+pub(crate) mod file_lock;
 pub(crate) mod global_config;
 pub(crate) mod hooks;
 pub(crate) mod orchestrator;
