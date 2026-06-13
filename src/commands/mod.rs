@@ -26,7 +26,10 @@ pub use add_batch::{AddBatchError, AddBatchOptions, run_add_batch};
 pub use block::{BlockError, run_block};
 pub use blocked::run_blocked;
 pub use close::{CloseError, run_close};
-pub use config::{ConfigCommandError, run_config_get, run_config_set};
+pub use config::{
+    CONFIG_GET_HELP, CONFIG_KEYS_HELP, CONFIG_SET_HELP, ConfigCommandError, run_config_get,
+    run_config_set,
+};
 pub use fail::{FailError, run_fail};
 pub use hook::{HookError, run_hook_add, run_hook_list, run_hook_remove, run_hook_update};
 pub use init::{InitError, InitFlags, run_init};

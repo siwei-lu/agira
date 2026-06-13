@@ -148,12 +148,24 @@ fn runner_start_help_lists_type_flag() {
 fn config_help_lists_valid_keys() {
     let out = help_stdout(&["config"]);
     assert!(
-        out.contains("default-max-retries"),
-        "expected 'agira config --help' to list default-max-retries, got:\n{out}"
+        out.contains("default_max_retries"),
+        "expected 'agira config --help' to list default_max_retries, got:\n{out}"
     );
     assert!(
-        out.contains("hook-debug"),
-        "expected 'agira config --help' to list hook-debug, got:\n{out}"
+        out.contains("hook_debug"),
+        "expected 'agira config --help' to list hook_debug, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.auto_start"),
+        "expected 'agira config --help' to list runner.auto_start, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.lease_ttl"),
+        "expected 'agira config --help' to list runner.lease_ttl, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.type"),
+        "expected 'agira config --help' to list runner.type, got:\n{out}"
     );
 }
 
@@ -161,21 +173,45 @@ fn config_help_lists_valid_keys() {
 fn config_get_help_lists_displayed_keys() {
     let out = help_stdout(&["config", "get"]);
     assert!(
-        out.contains("default-max-retries"),
-        "expected 'agira config get --help' to list default-max-retries, got:\n{out}"
+        out.contains("default_max_retries"),
+        "expected 'agira config get --help' to list default_max_retries, got:\n{out}"
     );
     assert!(
-        out.contains("hook-debug"),
-        "expected 'agira config get --help' to list hook-debug, got:\n{out}"
+        out.contains("hook_debug"),
+        "expected 'agira config get --help' to list hook_debug, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.auto_start"),
+        "expected 'agira config get --help' to list runner.auto_start, got:\n{out}"
     );
 }
 
 #[test]
-fn config_set_help_lists_settable_key() {
+fn config_set_help_lists_settable_keys() {
     let out = help_stdout(&["config", "set"]);
     assert!(
-        out.contains("hook-debug"),
-        "expected 'agira config set --help' to list hook-debug, got:\n{out}"
+        out.contains("hook_debug"),
+        "expected 'agira config set --help' to list hook_debug, got:\n{out}"
+    );
+    assert!(
+        out.contains("default_max_retries"),
+        "expected 'agira config set --help' to list default_max_retries, got:\n{out}"
+    );
+    assert!(
+        out.contains("on_retry_exhausted"),
+        "expected 'agira config set --help' to list on_retry_exhausted, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.auto_start"),
+        "expected 'agira config set --help' to list runner.auto_start, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.lease_ttl"),
+        "expected 'agira config set --help' to list runner.lease_ttl, got:\n{out}"
+    );
+    assert!(
+        out.contains("runner.type"),
+        "expected 'agira config set --help' to list runner.type, got:\n{out}"
     );
     assert!(
         out.contains("<key>"),
@@ -192,9 +228,5 @@ fn config_set_help_lists_settable_key() {
     assert!(
         !out.contains("<VALUE>"),
         "found uppercase <VALUE> in 'agira config set --help'"
-    );
-    assert!(
-        !out.contains("default-max-retries"),
-        "did not expect 'agira config set --help' to advertise default-max-retries as settable, got:\n{out}"
     );
 }

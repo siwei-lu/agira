@@ -34,17 +34,24 @@ fn config_get_and_set_work_without_git_repo() {
     let output = run_ok(agira(home.path(), cwd.path()).args(["config", "get"]));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "default-max-retries = 3\nhook-debug = false\n"
+        "hook_debug = false\ndefault_max_retries = 3\non_retry_exhausted = block\nrunner.auto_start = false\nrunner.lease_ttl = 5m\nrunner.type = claude-tmux\n"
     );
 
     let output =
-        run_ok(agira(home.path(), cwd.path()).args(["config", "set", "hook-debug", "true"]));
+        run_ok(agira(home.path(), cwd.path()).args(["config", "set", "hook_debug", "true"]));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "hook-debug = true\n"
+        "hook_debug = true\n"
+    );
+
+    let output =
+        run_ok(agira(home.path(), cwd.path()).args(["config", "set", "default-max-retries", "5"]));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "default_max_retries = 5\n"
     );
 
     let contents = fs::read_to_string(home.path().join(".agira").join("config.toml")).unwrap();
-    assert!(contents.contains("default_max_retries = 3"));
+    assert!(contents.contains("default_max_retries = 5"));
     assert!(contents.contains("hook_debug = true"));
 }

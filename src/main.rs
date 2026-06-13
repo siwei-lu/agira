@@ -42,7 +42,7 @@ enum Commands {
     /// Manage global agira configuration
     #[command(
         subcommand_value_name = "command",
-        long_about = "Manage global agira configuration.\n\nValid config keys:\n\n  config get shows default-max-retries and hook-debug.\n  Only hook-debug is settable with value true or false."
+        long_about = commands::CONFIG_KEYS_HELP
     )]
     Config {
         #[command(subcommand)]
@@ -51,7 +51,7 @@ enum Commands {
     /// Manage lifecycle hooks
     #[command(
         subcommand_value_name = "command",
-        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
+        long_about = "Manage lifecycle hooks.\n\nValid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nHook commands inject the following environment variables into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook_debug true` to enable hook debug logging.\n\nExample hook script:\n\n  echo \"$AGIRA_TASK_ID transitioned to $AGIRA_TO_PHASE\""
     )]
     Hook {
         #[command(subcommand)]
@@ -217,12 +217,10 @@ enum RunnerCommands {
 #[derive(Subcommand)]
 enum ConfigCommands {
     /// List global config settings
-    #[command(after_help = "Displayed config keys:\n\n  default-max-retries\n  hook-debug")]
+    #[command(after_help = commands::CONFIG_GET_HELP)]
     Get,
     /// Set a global config setting
-    #[command(
-        after_help = "valid keys: hook-debug\n\nOnly hook-debug is settable. Value must be true or false."
-    )]
+    #[command(after_help = commands::CONFIG_SET_HELP)]
     Set {
         /// Config key to update
         #[arg(value_name = "key")]
@@ -239,7 +237,7 @@ enum HookCommands {
     List,
     /// Add a lifecycle hook
     #[command(
-        after_help = "Valid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook_debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook add task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Add {
         /// Write the hook to ~/.agira/config.toml instead of the current project
@@ -254,7 +252,7 @@ enum HookCommands {
     },
     /// Update lifecycle hooks for an event
     #[command(
-        after_help = "Valid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook-debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
+        after_help = "Valid events are *, task_added, all_tasks_done, failed, blocked, and configured phase names.\n\nThe blocked event fires whenever a task transitions into blocked; AGIRA_ARTIFACT contains the block reason or questions from 'agira task block --reason'.\n\nEnvironment variables injected into every hook script:\n\n  AGIRA_TASK_ID             task ID (e.g. task-001)\n  AGIRA_TASK_TITLE          task title\n  AGIRA_TASK_DESCRIPTION    task description\n  AGIRA_TASK_STATE          current task state after the lifecycle event\n  AGIRA_TASK_DEPENDENCIES   comma-separated dependency IDs\n  AGIRA_TASK_RETRY_COUNT    current retry count\n  AGIRA_TASK_MAX_RETRIES    configured maximum retries for the task\n  AGIRA_TASK_CREATED_AT     RFC3339 creation timestamp\n  AGIRA_PROJECT_SLUG        lowercased git-root basename\n  AGIRA_PROJECT_PATH        canonical git root path\n  AGIRA_FROM_PHASE          phase the task is leaving (empty string for task_added)\n  AGIRA_TO_PHASE            phase/event target (blocked for blocked hooks)\n  AGIRA_ARTIFACT            --artifact text from 'agira task todo --artifact', or block reason/questions for blocked hooks (empty if not provided)\n\nDebug logging:\n\n  Use `agira config set hook_debug true` to enable hook debug logging.\n\nExample:\n\n  agira hook update task_added echo \"$AGIRA_TASK_ID created in $AGIRA_TO_PHASE\""
     )]
     Update {
         /// Update hooks in ~/.agira/config.toml instead of the current project
@@ -1300,6 +1298,7 @@ fn exit_code_for_config_command(error: &commands::ConfigCommandError) -> ExitCod
         commands::ConfigCommandError::HomeDirectoryMissing
         | commands::ConfigCommandError::UnknownKey { .. }
         | commands::ConfigCommandError::InvalidValue { .. }
+        | commands::ConfigCommandError::InvalidDurationValue { .. }
         | commands::ConfigCommandError::GlobalConfig(crate::core::GlobalConfigError::Parse {
             ..
         }) => ExitCode::from(1),
