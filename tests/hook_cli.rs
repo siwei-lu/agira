@@ -98,6 +98,17 @@ fn hook_add_accepts_task_added_event() {
 }
 
 #[test]
+fn hook_add_accepts_blocked_event() {
+    let (home, _workspace, repo) = setup_repo();
+
+    run_ok(agira(home.path(), &repo).args(["hook", "add", "blocked", "printf", "blocked"]));
+
+    let contents = fs::read_to_string(project_hooks_path(home.path())).unwrap();
+    assert!(contents.contains("on = \"blocked\""));
+    assert!(contents.contains("run = \"printf blocked\""));
+}
+
+#[test]
 fn hook_add_global_writes_user_config_and_list_shows_global_hook() {
     let (home, _workspace, repo) = setup_repo();
 
@@ -229,6 +240,18 @@ fn hook_add_help_documents_injected_env_vars() {
         "expected task_added in hook add --help output"
     );
     assert!(
+        stdout.contains("blocked"),
+        "expected blocked in hook add --help output"
+    );
+    assert!(
+        stdout.contains("transitions into blocked"),
+        "expected blocked transition semantics in hook add --help output"
+    );
+    assert!(
+        stdout.contains("block reason"),
+        "expected blocked artifact semantics in hook add --help output"
+    );
+    assert!(
         stdout.contains("AGIRA_TASK_DESCRIPTION"),
         "expected AGIRA_TASK_DESCRIPTION in hook add --help output"
     );
@@ -259,6 +282,14 @@ fn hook_help_documents_injected_env_vars() {
     assert!(
         stdout.contains("task_added"),
         "expected task_added in hook --help output"
+    );
+    assert!(
+        stdout.contains("blocked"),
+        "expected blocked in hook --help output"
+    );
+    assert!(
+        stdout.contains("transitions into blocked"),
+        "expected blocked transition semantics in hook --help output"
     );
     assert!(
         stdout.contains("AGIRA_TASK_DESCRIPTION"),

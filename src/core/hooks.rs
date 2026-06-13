@@ -13,6 +13,7 @@ use crate::core::tasks::Task;
 
 pub const TASK_ADDED_EVENT: &str = "task_added";
 pub const ALL_TASKS_DONE_EVENT: &str = "all_tasks_done";
+pub const BLOCKED_EVENT: &str = "blocked";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HookEntry {

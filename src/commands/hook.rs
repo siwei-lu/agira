@@ -8,8 +8,8 @@ use thiserror::Error;
 use crate::core::{
     config::{Config, ConfigError, load_project_config},
     hooks::{
-        ALL_TASKS_DONE_EVENT, HookConfig, HookConfigError, HookEntry, TASK_ADDED_EVENT, save_hooks,
-        save_hooks_preserving_toml,
+        ALL_TASKS_DONE_EVENT, BLOCKED_EVENT, HookConfig, HookConfigError, HookEntry,
+        TASK_ADDED_EVENT, save_hooks, save_hooks_preserving_toml,
     },
     project::Project,
 };
@@ -262,11 +262,17 @@ fn validate_event(project: &Project, event: &str) -> Result<(), HookError> {
 }
 
 fn valid_hook_events(config: &Config) -> Vec<String> {
-    ["*", TASK_ADDED_EVENT, ALL_TASKS_DONE_EVENT, "failed"]
-        .into_iter()
-        .map(str::to_owned)
-        .chain(config.phases.keys().cloned())
-        .collect()
+    [
+        "*",
+        TASK_ADDED_EVENT,
+        ALL_TASKS_DONE_EVENT,
+        "failed",
+        BLOCKED_EVENT,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(config.phases.keys().cloned())
+    .collect()
 }
 
 fn map_config_error(error: ConfigError) -> HookError {

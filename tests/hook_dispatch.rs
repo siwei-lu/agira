@@ -152,6 +152,35 @@ fn global_hook_registered_by_cli_fires_on_matching_task_transition() {
 }
 
 #[test]
+fn blocked_hook_registered_by_cli_receives_block_reason_as_artifact() {
+    let (home, _workspace, repo) = setup_repo("Blocked Hook Repo");
+    let hook_output = home.path().join("cli-blocked-hook-output.txt");
+    let hook_path = shell_quote(&hook_output);
+    let hook_command = format!(
+        "printf '%s\\n' \"$AGIRA_TASK_ID|$AGIRA_TASK_TITLE|$AGIRA_FROM_PHASE|$AGIRA_TO_PHASE|$AGIRA_ARTIFACT\" > {hook_path}"
+    );
+
+    run_ok(agira(home.path(), &repo).args(["hook", "add", "blocked", &hook_command]));
+    run_ok(agira(home.path(), &repo).args(["task", "add", "Blocked hook task"]));
+    run_ok(agira(home.path(), &repo).args(["task", "todo", "--artifact", "claimed"]));
+    run_ok(agira(home.path(), &repo).args([
+        "task",
+        "block",
+        "task-001",
+        "--reason",
+        "question one?\nquestion two?",
+    ]));
+
+    let contents = non_empty_file_contents_within(&hook_output, Duration::from_secs(2))
+        .expect("blocked hook registered by CLI did not write output within 2s");
+
+    assert_eq!(
+        contents,
+        "task-001|Blocked hook task|enriching|blocked|question one?\nquestion two?\n"
+    );
+}
+
+#[test]
 fn task_added_hook_receives_new_task_env_vars() {
     let (home, _workspace, repo) = setup_repo("Task Added Hook Repo");
     let hooks_path = home
