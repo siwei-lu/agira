@@ -1,4 +1,5 @@
 mod add;
+mod add_batch;
 mod block;
 mod close;
 mod config;
@@ -20,6 +21,7 @@ mod update;
 mod workflow;
 
 pub use add::{AddError, run_add};
+pub use add_batch::{AddBatchError, AddBatchOptions, run_add_batch};
 pub use block::{BlockError, run_block};
 pub use close::{CloseError, run_close};
 pub use config::{ConfigCommandError, run_config_get, run_config_set};

@@ -367,6 +367,27 @@ enum TaskCommands {
         #[arg(long, value_name = "workflow")]
         workflow: Option<String>,
     },
+    /// Add multiple tasks from a TOML manifest
+    AddBatch {
+        /// Read the TOML manifest from this file
+        #[arg(long, value_name = "path")]
+        file: Option<PathBuf>,
+        /// Read the TOML manifest from standard input
+        #[arg(long)]
+        stdin: bool,
+        /// Validate and print the creation plan without writing tasks
+        #[arg(long)]
+        dry_run: bool,
+        /// Output structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// Default workflow for manifest entries that do not specify one
+        #[arg(long, value_name = "name")]
+        workflow: Option<String>,
+        /// Default starting phase for manifest entries that do not specify one
+        #[arg(long, value_name = "name")]
+        phase: Option<String>,
+    },
     /// Update editable fields of an existing task
     Update {
         /// Task ID to update (e.g. task-001)
@@ -539,6 +560,36 @@ fn main() -> ExitCode {
                     Err(error) => {
                         eprintln!("error: {error}");
                         exit_code_for_add(&error)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::AddBatch {
+                file,
+                stdin,
+                dry_run,
+                json,
+                workflow,
+                phase,
+            } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_add_batch(
+                    &project,
+                    commands::AddBatchOptions {
+                        file,
+                        stdin,
+                        dry_run,
+                        json,
+                        workflow,
+                        phase,
+                    },
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_add_batch(&error)
                     }
                 },
                 Err(error) => {
@@ -1254,6 +1305,18 @@ fn exit_code_for_add(error: &commands::AddError) -> ExitCode {
             | crate::core::StoreError::Deserialize(_) => ExitCode::from(2),
             _ => ExitCode::from(1),
         },
+    }
+}
+
+fn exit_code_for_add_batch(error: &commands::AddBatchError) -> ExitCode {
+    match error {
+        commands::AddBatchError::User { .. } | commands::AddBatchError::ManifestParse { .. } => {
+            ExitCode::from(1)
+        }
+        commands::AddBatchError::ManifestRead { .. }
+        | commands::AddBatchError::StdinRead(_)
+        | commands::AddBatchError::Json(_) => ExitCode::from(2),
+        commands::AddBatchError::Add(error) => exit_code_for_add(error),
     }
 }
 

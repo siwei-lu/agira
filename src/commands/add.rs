@@ -125,7 +125,7 @@ pub fn run_add(
     )
 }
 
-fn map_config_error(error: ConfigError) -> AddError {
+pub(super) fn map_config_error(error: ConfigError) -> AddError {
     match error {
         ConfigError::NotFound { path } => AddError::ConfigNotFound { path },
         ConfigError::Read { path, source } => AddError::ConfigRead { path, source },
@@ -202,7 +202,7 @@ fn add_task_flow_with_ensure_and_liveness(
     Ok(())
 }
 
-fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task) {
+pub(super) fn dispatch_task_added_hooks(project: &Project, task: &crate::core::tasks::Task) {
     let hooks = hooks_for_event(
         &project.global_hooks,
         &project.project_hooks,
