@@ -267,7 +267,7 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     }
 
     subagent.push_str(&format!(
-        "\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block {} --reason \"<explanation>\"`",
+        "\n\n## Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block {} --reason \"<questions>\"`",
         task.id
     ));
 
@@ -600,11 +600,31 @@ mod tests {
         let task = test_task();
 
         let output = format_task_prompt_output(&task, &config, state_dir);
-        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nIf you are not confident about a decision and human input is required, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Run:\n`agira task block task-109 --reason \"<explanation>\"`\n\n## Completion\n`agira task todo --task task-109 --from implementing --artifact \"<evidence>\"`";
+        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block task-109 --reason \"<questions>\"`\n\n## Completion\n`agira task todo --task task-109 --from implementing --artifact \"<evidence>\"`";
 
         assert_eq!(output, expected);
         assert!(!output.contains("## Previous Review Feedback"));
         assert!(!output.contains("Read any existing files under"));
+    }
+
+    #[test]
+    fn task_prompt_requires_blocking_instead_of_in_session_questions() {
+        let config = test_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let task = test_task();
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(output.contains("NEVER ask the user a question in-session."));
+        assert!(output.contains(
+            "If a user decision is required to proceed, block the task instead of proceeding or guessing."
+        ));
+        assert!(
+            output
+                .contains("Write each question clearly on its own line in the reason, then stop.")
+        );
+        assert!(output.contains("`agira task block task-109 --reason \"<questions>\"`"));
+        assert!(!output.contains("--task task-109 --reason"));
     }
 
     #[test]

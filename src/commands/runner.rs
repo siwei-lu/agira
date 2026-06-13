@@ -1471,7 +1471,7 @@ mod tests {
         );
         assert!(tmux.calls[1][4].starts_with("AGIRA_RUNNER_ID='runner-"));
         assert!(tmux.calls[1][4].contains("' 'claude' --model 'sonnet' --permission-mode 'auto'"));
-        assert!(tmux.calls[1][4].contains("agira-orchestrator-template-v2"));
+        assert!(tmux.calls[1][4].contains("agira-orchestrator-template-v3"));
         assert!(
             tmux.calls[1][4]
                 .contains("| implementing | dispatch exec -a codex | write tests first |")
@@ -1531,7 +1531,7 @@ mod tests {
 
         let launch_command = &tmux.calls[1][4];
         assert!(launch_command.contains("custom static marker"));
-        assert!(!launch_command.contains("agira-orchestrator-template-v2"));
+        assert!(!launch_command.contains("agira-orchestrator-template-v3"));
         assert!(launch_command.contains("| verifying | sonnet | run cargo test |"));
     }
 
@@ -1545,7 +1545,7 @@ mod tests {
         start_runner(&project, None, &mut tmux, fixed_now()).expect("start runner");
 
         let launch_command = &tmux.calls[1][4];
-        assert!(launch_command.contains("agira-orchestrator-template-v2"));
+        assert!(launch_command.contains("agira-orchestrator-template-v3"));
         assert!(launch_command.contains("| verifying | sonnet | run cargo test |"));
     }
 
