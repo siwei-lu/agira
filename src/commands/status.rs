@@ -502,7 +502,7 @@ fn format_status_table(tasks: &[&Task], terminal_phase: &str) -> String {
     lines.join("\n")
 }
 
-fn sort_tasks_by_id_asc(tasks: &[Task]) -> Vec<&Task> {
+pub(crate) fn sort_tasks_by_id_asc(tasks: &[Task]) -> Vec<&Task> {
     let mut sorted_tasks: Vec<&Task> = tasks.iter().collect();
     sorted_tasks.sort_by(|left, right| compare_task_ids_asc(&left.id, &right.id));
     sorted_tasks
@@ -566,7 +566,7 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     }
 }
 
-fn compare_task_ids_asc(left: &str, right: &str) -> Ordering {
+pub(crate) fn compare_task_ids_asc(left: &str, right: &str) -> Ordering {
     match (task_id_number(left), task_id_number(right)) {
         (Some(left_number), Some(right_number)) => {
             left_number.cmp(&right_number).then_with(|| left.cmp(right))

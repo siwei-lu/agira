@@ -301,6 +301,12 @@ enum TaskCommands {
         #[arg(value_name = "task-id")]
         filter: Option<String>,
     },
+    /// List blocked tasks with their clarifying questions
+    Blocked {
+        /// Output blocked tasks as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the current actionable task prompt, or advance it when --artifact is given
     Todo {
         /// Evidence of completion for this phase; advances the current task when provided
@@ -461,6 +467,19 @@ fn main() -> ExitCode {
                         }
                     }
                 }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    exit_code_for(&error)
+                }
+            },
+            TaskCommands::Blocked { json } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_blocked(&project, json) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        exit_code_for_status(&error)
+                    }
+                },
                 Err(error) => {
                     eprintln!("error: {error}");
                     exit_code_for(&error)
