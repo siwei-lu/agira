@@ -40,7 +40,7 @@ pub enum UnblockError {
     StoreError(#[from] StoreError),
 }
 
-pub fn run_unblock(project: &Project, id: &str) -> Result<(), UnblockError> {
+pub fn run_unblock(project: &Project, id: &str, answer: Option<&str>) -> Result<(), UnblockError> {
     let config_path = project.state_dir.join("config.json");
     let config =
         load_project_config(&config_path, &project.global_config).map_err(map_config_error)?;
@@ -52,10 +52,14 @@ pub fn run_unblock(project: &Project, id: &str) -> Result<(), UnblockError> {
         })?;
 
     let mut store = TaskStore::new(&project.state_dir, &config)?;
-    unblock_task_flow(&mut store, id)
+    unblock_task_flow(&mut store, id, answer)
 }
 
-fn unblock_task_flow(store: &mut TaskStore, id: &str) -> Result<(), UnblockError> {
+fn unblock_task_flow(
+    store: &mut TaskStore,
+    id: &str,
+    answer: Option<&str>,
+) -> Result<(), UnblockError> {
     let (current_state, blocked_at_phase) = {
         let task = store
             .get_task(id)
@@ -67,7 +71,7 @@ fn unblock_task_flow(store: &mut TaskStore, id: &str) -> Result<(), UnblockError
         return Err(UnblockError::NotBlocked { id: id.to_owned() });
     }
 
-    if let Err(error) = store.unblock_task(id) {
+    if let Err(error) = store.unblock_task(id, answer) {
         return Err(map_store_error(error, id));
     }
 

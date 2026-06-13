@@ -25,6 +25,14 @@ pub struct HistoryEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Clarification {
+    pub question: String,
+    pub answer: String,
+    pub phase: String,
+    pub timestamp: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -34,6 +42,8 @@ pub struct Task {
     pub blocked_at_phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clarifications: Vec<Clarification>,
     pub dependencies: Vec<String>,
     pub retry_count: u32,
     #[serde(default = "default_max_retries")]
@@ -78,6 +88,8 @@ struct TaskWire {
     blocked_at_phase: Option<String>,
     #[serde(default)]
     blocked_reason: Option<String>,
+    #[serde(default)]
+    clarifications: Vec<Clarification>,
     dependencies: Vec<String>,
     retry_count: u32,
     #[serde(default = "default_max_retries")]
@@ -111,6 +123,7 @@ impl TaskWire {
             state: self.state,
             blocked_at_phase: self.blocked_at_phase,
             blocked_reason: self.blocked_reason,
+            clarifications: self.clarifications,
             dependencies: self.dependencies,
             retry_count: self.retry_count,
             max_retries: self.max_retries,
@@ -255,6 +268,124 @@ mod tests {
         assert_eq!(history.from.as_deref(), Some("enriching"));
         assert_eq!(history.to, "enriching");
         assert_eq!(history.reason, "retry 1/3: try again");
+    }
+
+    #[test]
+    fn unblock_with_answer_appends_clarification_and_restores_state() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "clarify target",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+        store
+            .block_task(&task.id, "Which API should be used?")
+            .expect("block task");
+
+        store
+            .unblock_task(&task.id, Some("Use the stable v2 endpoint."))
+            .expect("unblock task");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "implementing");
+        assert_eq!(task.blocked_at_phase, None);
+        assert_eq!(task.blocked_reason, None);
+        assert_eq!(task.clarifications.len(), 1);
+        let clarification = &task.clarifications[0];
+        assert_eq!(clarification.question, "Which API should be used?");
+        assert_eq!(clarification.answer, "Use the stable v2 endpoint.");
+        assert_eq!(clarification.phase, "implementing");
+        chrono::DateTime::parse_from_rfc3339(&clarification.timestamp)
+            .expect("timestamp is rfc3339");
+    }
+
+    #[test]
+    fn unblock_without_answer_restores_state_without_clarification() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "plain unblock target",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+        store
+            .block_task(&task.id, "needs input")
+            .expect("block task");
+
+        store.unblock_task(&task.id, None).expect("unblock task");
+
+        let task = store.get_task(&task.id).expect("get task");
+        assert_eq!(task.state, "implementing");
+        assert_eq!(task.blocked_at_phase, None);
+        assert_eq!(task.blocked_reason, None);
+        assert!(task.clarifications.is_empty());
+    }
+
+    #[test]
+    fn clarifications_round_trip_and_missing_field_loads_as_empty() {
+        let (dir, mut store) = retry_test_store();
+        let state_dir = dir.path().join(".agira");
+        let tasks_path = state_dir.join("tasks.json");
+        let task = store
+            .add_task(
+                "round trip target",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        let clean_json = fs::read_to_string(&tasks_path).expect("read clean tasks");
+        assert!(
+            !clean_json.contains("\"clarifications\""),
+            "empty clarifications should not be serialized"
+        );
+
+        store.block_task(&task.id, "Pick one").expect("block task");
+        store
+            .unblock_task(&task.id, Some("Pick option B"))
+            .expect("unblock task");
+
+        let config = store.config.clone();
+        let reloaded = TaskStore::new(&state_dir, &config).expect("reload store");
+        let reloaded_task = reloaded.get_task(&task.id).expect("get reloaded task");
+        assert_eq!(reloaded_task.clarifications.len(), 1);
+        assert_eq!(reloaded_task.clarifications[0].question, "Pick one");
+        assert_eq!(reloaded_task.clarifications[0].answer, "Pick option B");
+
+        fs::write(
+            &tasks_path,
+            r#"{
+  "tasks": [
+    {
+      "id": "task-999",
+      "title": "old task",
+      "description": "old description",
+      "state": "implementing",
+      "dependencies": [],
+      "retry_count": 0,
+      "max_retries": 3,
+      "phases": {},
+      "history": [],
+      "created_at": "2026-06-13T10:00:00Z",
+      "workflow": "default"
+    }
+  ]
+}"#,
+        )
+        .expect("write old tasks file");
+
+        let old_reloaded = TaskStore::new(&state_dir, &config).expect("load old tasks");
+        let old_task = old_reloaded.get_task("task-999").expect("get old task");
+        assert!(old_task.clarifications.is_empty());
     }
 
     // ---------------------------------------------------------------------------
@@ -615,6 +746,7 @@ impl TaskStore {
             state: initial_phase.clone(),
             blocked_at_phase: None,
             blocked_reason: None,
+            clarifications: Vec::new(),
             dependencies,
             retry_count: 0,
             max_retries: self.max_retries,
@@ -866,7 +998,7 @@ impl TaskStore {
         self.save(tasks_file)
     }
 
-    pub fn unblock_task(&mut self, id: &str) -> Result<(), StoreError> {
+    pub fn unblock_task(&mut self, id: &str, answer: Option<&str>) -> Result<(), StoreError> {
         let mut tasks_file = self.tasks_file.clone();
         let task_index = self.task_index(&tasks_file, id)?;
 
@@ -883,6 +1015,14 @@ impl TaskStore {
             })?;
 
         let task = &mut tasks_file.tasks[task_index];
+        if let Some(answer) = answer {
+            task.clarifications.push(Clarification {
+                question: task.blocked_reason.clone().unwrap_or_default(),
+                answer: answer.to_owned(),
+                phase: target_state.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
         task.state = target_state.clone();
         task.blocked_at_phase = None;
         task.blocked_reason = None;

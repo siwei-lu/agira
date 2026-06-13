@@ -348,6 +348,9 @@ enum TaskCommands {
         /// Task ID to unblock (e.g. task-001)
         #[arg(value_name = "id")]
         id: String,
+        /// Resolved answer to the blocked clarification
+        #[arg(long, value_name = "resolution")]
+        answer: Option<String>,
     },
     /// Add a new task to the project
     Add {
@@ -526,8 +529,8 @@ fn main() -> ExitCode {
                     exit_code_for(&error)
                 }
             },
-            TaskCommands::Unblock { id } => match resolve_initialized_project() {
-                Ok(project) => match commands::run_unblock(&project, &id) {
+            TaskCommands::Unblock { id, answer } => match resolve_initialized_project() {
+                Ok(project) => match commands::run_unblock(&project, &id, answer.as_deref()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("error: {error}");

@@ -780,6 +780,7 @@ mod tests {
             state: state.to_owned(),
             blocked_at_phase: None,
             blocked_reason: None,
+            clarifications: Vec::new(),
             dependencies: Vec::new(),
             retry_count: 0,
             max_retries: 3,

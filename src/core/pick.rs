@@ -243,6 +243,16 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
 
     if task.state != INITIAL_PHASE_NAME && task.state != TERMINAL_PHASE_NAME {
         let attachments_path = state_dir.join("attachments").join(&task.id);
+        if !task.clarifications.is_empty() {
+            subagent.push_str("\n\n## 已澄清事项");
+            for clarification in &task.clarifications {
+                subagent.push_str(&format!(
+                    "\n- Phase: {}\n  Question: {}\n  Answer: {}",
+                    clarification.phase, clarification.question, clarification.answer
+                ));
+            }
+        }
+
         if let Some(feedback) = previous_review_feedback(task) {
             subagent.push_str(&format!(
                 "\n\n## Previous Review Feedback\n{feedback}\n\nRead any existing files under {}/ before implementing; prior reviewer findings or evidence may already be there.",
@@ -417,7 +427,7 @@ mod tests {
     use crate::core::{
         config::{Config, DEFAULT_WORKFLOW_NAME, PhaseDef},
         runner::{Runner, RunnerRegistry},
-        tasks::{HistoryEntry, Task},
+        tasks::{Clarification, HistoryEntry, Task},
     };
 
     use super::{format_task_prompt_output, select_next_task_for_runner};
@@ -445,6 +455,7 @@ mod tests {
             state: "implementing".to_owned(),
             blocked_at_phase: None,
             blocked_reason: None,
+            clarifications: Vec::new(),
             dependencies: Vec::new(),
             retry_count: 0,
             max_retries: 3,
@@ -464,6 +475,7 @@ mod tests {
             state: state.to_owned(),
             blocked_at_phase: None,
             blocked_reason: None,
+            clarifications: Vec::new(),
             dependencies: Vec::new(),
             retry_count: 0,
             max_retries: 3,
@@ -593,5 +605,36 @@ mod tests {
         assert_eq!(output, expected);
         assert!(!output.contains("## Previous Review Feedback"));
         assert!(!output.contains("Read any existing files under"));
+    }
+
+    #[test]
+    fn task_prompt_includes_resolved_clarifications_when_present() {
+        let config = test_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let mut task = test_task();
+        task.clarifications.push(Clarification {
+            question: "Which API should be used?".to_owned(),
+            answer: "Use the stable v2 endpoint.".to_owned(),
+            phase: "implementing".to_owned(),
+            timestamp: "2026-06-13T10:00:00Z".to_owned(),
+        });
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(output.contains("## 已澄清事项"));
+        assert!(output.contains("Question: Which API should be used?"));
+        assert!(output.contains("Answer: Use the stable v2 endpoint."));
+        assert!(output.contains("Phase: implementing"));
+    }
+
+    #[test]
+    fn task_prompt_omits_resolved_clarifications_when_empty() {
+        let config = test_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let task = test_task();
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(!output.contains("## 已澄清事项"));
     }
 }
