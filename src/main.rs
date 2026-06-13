@@ -42,7 +42,7 @@ enum Commands {
     /// Manage global agira configuration
     #[command(
         subcommand_value_name = "command",
-        long_about = commands::CONFIG_KEYS_HELP
+        long_about = commands::config_keys_help()
     )]
     Config {
         #[command(subcommand)]
@@ -217,10 +217,10 @@ enum RunnerCommands {
 #[derive(Subcommand)]
 enum ConfigCommands {
     /// List global config settings
-    #[command(after_help = commands::CONFIG_GET_HELP)]
+    #[command(after_help = commands::config_get_help())]
     Get,
     /// Set a global config setting
-    #[command(after_help = commands::CONFIG_SET_HELP)]
+    #[command(after_help = commands::config_set_help())]
     Set {
         /// Config key to update
         #[arg(value_name = "key")]

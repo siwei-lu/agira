@@ -27,7 +27,7 @@ pub use block::{BlockError, run_block};
 pub use blocked::run_blocked;
 pub use close::{CloseError, run_close};
 pub use config::{
-    CONFIG_GET_HELP, CONFIG_KEYS_HELP, CONFIG_SET_HELP, ConfigCommandError, run_config_get,
+    ConfigCommandError, config_get_help, config_keys_help, config_set_help, run_config_get,
     run_config_set,
 };
 pub use fail::{FailError, run_fail};

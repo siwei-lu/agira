@@ -6,37 +6,6 @@ use crate::core::global_config::{
     GlobalConfig, GlobalConfigError, OnRetryExhausted, load_or_create, save_global_config,
 };
 
-pub const CONFIG_KEYS_HELP: &str = "Valid config keys:
-
-  hook_debug
-  default_max_retries
-  on_retry_exhausted
-  runner.auto_start
-  runner.lease_ttl
-  runner.type
-
-Keys use the same snake_case dotted paths as ~/.agira/config.toml.";
-
-pub const CONFIG_GET_HELP: &str = "Displayed config keys:
-
-  hook_debug
-  default_max_retries
-  on_retry_exhausted
-  runner.auto_start
-  runner.lease_ttl
-  runner.type";
-
-pub const CONFIG_SET_HELP: &str = "Valid keys:
-
-  hook_debug                 bool
-  default_max_retries        u32
-  on_retry_exhausted         block|fail
-  runner.auto_start          bool
-  runner.lease_ttl           duration string, e.g. 5m
-  runner.type                string
-
-Legacy aliases hook-debug and default-max-retries are still accepted.";
-
 const LEGACY_ALIASES: &[(&str, &str)] = &[
     ("hook-debug", "hook_debug"),
     ("default-max-retries", "default_max_retries"),
@@ -47,38 +16,66 @@ type Setter = fn(&mut GlobalConfig, &str, &str) -> Result<(), ConfigCommandError
 
 struct ConfigEntry {
     cli_key: &'static str,
+    kind: ConfigValueKind,
     getter: Getter,
     setter: Setter,
+}
+
+#[derive(Clone, Copy)]
+enum ConfigValueKind {
+    Bool,
+    U32,
+    DurationString,
+    OnRetryExhausted,
+    String,
+}
+
+impl ConfigValueKind {
+    fn help_label(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::U32 => "u32",
+            Self::DurationString => "duration string, e.g. 5m",
+            Self::OnRetryExhausted => "block|fail",
+            Self::String => "string",
+        }
+    }
 }
 
 const CONFIG_REGISTRY: &[ConfigEntry] = &[
     ConfigEntry {
         cli_key: "hook_debug",
+        kind: ConfigValueKind::Bool,
         getter: |config| config.hook_debug.to_string(),
         setter: set_hook_debug,
     },
     ConfigEntry {
         cli_key: "default_max_retries",
+        kind: ConfigValueKind::U32,
         getter: |config| config.default_max_retries.to_string(),
         setter: set_default_max_retries,
     },
     ConfigEntry {
         cli_key: "on_retry_exhausted",
+        kind: ConfigValueKind::OnRetryExhausted,
         getter: |config| config.on_retry_exhausted.as_str().to_owned(),
         setter: set_on_retry_exhausted,
     },
     ConfigEntry {
         cli_key: "runner.auto_start",
+        kind: ConfigValueKind::Bool,
         getter: |config| config.runner.auto_start.to_string(),
         setter: set_runner_auto_start,
     },
     ConfigEntry {
         cli_key: "runner.lease_ttl",
+        kind: ConfigValueKind::DurationString,
         getter: |config| config.runner.lease_ttl.clone(),
         setter: set_runner_lease_ttl,
     },
     ConfigEntry {
         cli_key: "runner.type",
+        kind: ConfigValueKind::String,
         getter: |config| config.runner.runner_type.clone(),
         setter: set_runner_type,
     },
@@ -137,6 +134,43 @@ pub fn run_config_set(agira_root: &Path, key: &str, value: &str) -> Result<(), C
     ));
 
     Ok(())
+}
+
+pub fn config_keys_help() -> String {
+    let mut help = String::from("Valid config keys:\n\n");
+    for key in valid_keys() {
+        writeln!(help, "  {key}").expect("write config help");
+    }
+    help.push_str("\nKeys use the same snake_case dotted paths as ~/.agira/config.toml.");
+    help
+}
+
+pub fn config_get_help() -> String {
+    let mut help = String::from("Displayed config keys:\n\n");
+    for key in valid_keys() {
+        writeln!(help, "  {key}").expect("write config get help");
+    }
+    help
+}
+
+pub fn config_set_help() -> String {
+    let key_width = CONFIG_REGISTRY
+        .iter()
+        .map(|entry| entry.cli_key.len())
+        .max()
+        .unwrap_or(0);
+    let mut help = String::from("Valid keys:\n\n");
+    for entry in CONFIG_REGISTRY {
+        writeln!(
+            help,
+            "  {key:<key_width$}  {kind}",
+            key = entry.cli_key,
+            kind = entry.kind.help_label()
+        )
+        .expect("write config set help");
+    }
+    help.push_str("\nLegacy aliases hook-debug and default-max-retries are still accepted.");
+    help
 }
 
 fn set_hook_debug(
