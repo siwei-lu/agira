@@ -89,8 +89,8 @@ fn scan_project(git_root: &Path, max_retries: u32) -> ScanResult {
             "rust",
             vec![
                 "cargo fmt -- --check".to_owned(),
-                "cargo clippy -- -D warnings".to_owned(),
                 "cargo test".to_owned(),
+                "cargo clippy -- -D warnings".to_owned(),
             ],
             max_retries,
         );
@@ -276,14 +276,6 @@ fn write_config(path: &Path, config: &Config) -> Result<(), InitError> {
     Ok(())
 }
 
-#[cfg(any())]
-fn legacy_removed() {
-    let _ = vec![PhaseDef {
-        model: None,
-        duty: None,
-    }];
-}
-
 fn read_package_json(path: &Path) -> Option<Value> {
     fs::read_to_string(path)
         .ok()
@@ -416,7 +408,7 @@ Read and record findings from each of the following before asking the user anyth
 2. **Build / test / lint commands** — read `package.json` scripts section, any `Makefile`,
    CI configs (`.github/workflows/`, `.gitlab-ci.yml`). Record the exact commands.
 
-3. **Run / start instructions** — SCAN ONLY — read the run instructions, do NOT execute here.
+3. **Run / start instructions** — SCAN ONLY here; you execute these in Step 2, not yet.
    Check README files, docs, `package.json` scripts (`dev`, `start`, `serve`), `Makefile`,
    `Cargo.toml`, `pyproject.toml`, Docker Compose files, Procfiles, or framework config.
    Record documented start commands, expected ports or URLs, and any env setup.
@@ -499,7 +491,8 @@ where unit tests ARE the complete acceptance criterion and there is no runtime t
 Present the full resulting state machine to the user, including built-ins, in arrow form:
 `pending -> [chosen phases] -> done`
 
-Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],...`
+Lead with the two primary options below (1 and 2) and their trade-off; offer the
+variants only where they apply. Format: `phase[:model],phase[:model],...`
 
 - **Option 1 (recommended, lean):** `in_progress:sonnet,accepting:sonnet` — implementing agent
   guarded by a deterministic gate, then a behavioral acceptance agent. Suitable for most projects.
@@ -533,7 +526,11 @@ From your scan and required start proof, propose exact deterministic commands to
 gate on `in_progress`. Prefer commands found in CI or Makefile over anything you infer.
 If a reliable check requires multiple shell operations, prefer an existing single project
 script or Makefile target. Join multiple commands with `&&` so the gate fails fast.
-Canonical example for Rust projects: `cargo fmt -- --check && cargo test && cargo clippy -- -D warnings`
+Canonical example for Rust projects: `"#,
+    );
+    prompt.push_str(CANONICAL_GATE_COMMAND);
+    prompt.push_str(
+        r#"`
 
 ## Step 4 — Interview the user
 
@@ -587,12 +584,6 @@ agent can record any artifact. Run:
 agira phase update in_progress --set-gate "<deterministic check commands joined by &&>"
 ```
 
-Canonical example: `"#
-    );
-    prompt.push_str(CANONICAL_GATE_COMMAND);
-    prompt.push_str(
-        r#"`
-
 Derive the actual gate commands from your scan findings (CI, Makefile, project scripts).
 Use the same commands you identified as the implementing-phase gate commands in Step 3.
 
@@ -630,7 +621,7 @@ fn auto_detected_defaults_block(defaults: &Config, commands: &[String]) -> Strin
         let commands = if commands.is_empty() {
             "none found, derive from CI/scripts".to_owned()
         } else {
-            commands.join(";")
+            commands.join(" && ")
         };
 
         write!(
