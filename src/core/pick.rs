@@ -205,14 +205,16 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     if let Some(m) = model {
         subagent.push_str(&format!("\n- Agent role: {m}"));
     }
-    subagent.push_str(&format!(
-        "\n\n## Description\n{}",
-        if task.description.is_empty() {
-            "No description provided."
-        } else {
-            task.description.as_str()
-        }
-    ));
+    let rendered_description: String;
+    let description_text = if task.description.is_empty() {
+        "No description provided."
+    } else if phase_is_gated(&task.state, config) {
+        rendered_description = strip_acceptance_criteria(&task.description);
+        rendered_description.as_str()
+    } else {
+        task.description.as_str()
+    };
+    subagent.push_str(&format!("\n\n## Description\n{description_text}"));
 
     if description_warning_applies(task, config) {
         let description_len = task.description.chars().count();
@@ -281,6 +283,105 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     }
 
     subagent
+}
+
+/// Returns true when the heading text (without the `#` prefix and trimmed) identifies an
+/// Acceptance-Criteria section.  Matches English and two common Chinese localizations.
+fn is_acceptance_criteria_heading(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    lower == "acceptance criteria" || lower == "验收" || lower == "验收标准"
+}
+
+/// Parse the `#` level of an ATX heading line (e.g. `## Foo` → 2). Returns `None` when the
+/// line is not an ATX heading.
+fn atx_heading_level(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start_matches('#');
+    let level = line.len() - trimmed.len();
+    if level == 0 || level > 6 {
+        return None;
+    }
+    // After the `#` characters there must be a space (or the line ends)
+    if !trimmed.is_empty() && !trimmed.starts_with(' ') {
+        return None;
+    }
+    Some(level)
+}
+
+/// Remove the `## Acceptance Criteria` section (and its Chinese aliases) from `text`.
+/// Only the first matching section is removed. If no such heading exists, returns the input
+/// string unchanged.  Surrounding blank lines are collapsed so the output stays clean.
+pub(crate) fn strip_acceptance_criteria(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let n = lines.len();
+
+    // Find the index of the AC heading line.
+    let ac_start = lines.iter().position(|line| {
+        if let Some(level) = atx_heading_level(line) {
+            if level == 2 {
+                let heading_text = line.trim_start_matches('#').trim();
+                return is_acceptance_criteria_heading(heading_text);
+            }
+        }
+        false
+    });
+
+    let Some(ac_start) = ac_start else {
+        return text.to_owned();
+    };
+
+    // The AC heading is at level 2.  Find the next heading at the same or higher level (≤ 2).
+    let ac_end = lines[ac_start + 1..]
+        .iter()
+        .position(|line| atx_heading_level(line).is_some_and(|lvl| lvl <= 2));
+
+    let section_end = match ac_end {
+        Some(rel) => ac_start + 1 + rel, // exclusive end: first line of next section
+        None => n,
+    };
+
+    // Build result by omitting lines [ac_start, section_end).
+    let before: Vec<&str> = lines[..ac_start].to_vec();
+    let after: Vec<&str> = lines[section_end..].to_vec();
+
+    // Trim trailing blank lines from `before` and leading blank lines from `after`
+    // so we don't accumulate extra empty lines.
+    let before_trimmed = trim_trailing_blank_lines(before);
+    let after_trimmed = trim_leading_blank_lines(after);
+
+    match (before_trimmed.is_empty(), after_trimmed.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => after_trimmed.join("\n"),
+        (false, true) => before_trimmed.join("\n"),
+        (false, false) => {
+            let mut result = before_trimmed;
+            result.push("");
+            result.push("");
+            result.extend(after_trimmed);
+            result.join("\n")
+        }
+    }
+}
+
+fn trim_trailing_blank_lines(mut lines: Vec<&str>) -> Vec<&str> {
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+fn trim_leading_blank_lines(mut lines: Vec<&str>) -> Vec<&str> {
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
+        lines.remove(0);
+    }
+    lines
+}
+
+/// Returns true when the given phase has a non-empty `gate` in config.
+fn phase_is_gated(phase: &str, config: &Config) -> bool {
+    config
+        .phase_def(phase)
+        .and_then(|p| p.gate.as_deref())
+        .is_some_and(|g| !g.is_empty())
 }
 
 fn previous_review_feedback(task: &Task) -> Option<&str> {
@@ -430,7 +531,9 @@ mod tests {
         tasks::{Clarification, HistoryEntry, Task},
     };
 
-    use super::{format_task_prompt_output, select_next_task_for_runner};
+    use super::{
+        format_task_prompt_output, select_next_task_for_runner, strip_acceptance_criteria,
+    };
 
     fn test_config() -> Config {
         Config::new_single_workflow(
@@ -656,5 +759,180 @@ mod tests {
         let output = format_task_prompt_output(&task, &config, state_dir);
 
         assert!(!output.contains("## 已澄清事项"));
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_acceptance_criteria unit tests
+    // -----------------------------------------------------------------------
+
+    /// AC section followed by another heading: only the AC section is removed;
+    /// Goal, Changes, and Constraints survive.
+    #[test]
+    fn strip_ac_removes_ac_section_preserves_others() {
+        let input = "## Goal\nDo the thing.\n\n## Acceptance Criteria\n- AC item 1\n- AC item 2\n\n## Constraints\nDo not do X.";
+        let result = strip_acceptance_criteria(input);
+        assert!(
+            !result.contains("Acceptance Criteria"),
+            "AC heading must be gone"
+        );
+        assert!(!result.contains("AC item 1"), "AC body must be gone");
+        assert!(result.contains("## Goal"), "Goal must survive");
+        assert!(
+            result.contains("## Constraints"),
+            "Constraints must survive"
+        );
+    }
+
+    /// AC section as the last section (no trailing heading): stripped to end-of-string.
+    #[test]
+    fn strip_ac_removes_ac_section_when_last() {
+        let input = "## Goal\nDo the thing.\n\n## Acceptance Criteria\n- AC item 1\n- AC item 2\n";
+        let result = strip_acceptance_criteria(input);
+        assert!(!result.contains("Acceptance Criteria"));
+        assert!(!result.contains("AC item"));
+        assert!(result.contains("## Goal"));
+    }
+
+    /// No AC heading: output is byte-identical to input.
+    #[test]
+    fn strip_ac_noop_when_no_ac_heading() {
+        let input = "## Goal\nDo the thing.\n\n## Constraints\nDo not do X.";
+        let result = strip_acceptance_criteria(input);
+        assert_eq!(result, input);
+    }
+
+    /// Localized heading `## 验收标准` is also stripped.
+    #[test]
+    fn strip_ac_strips_localized_heading_yan_shou_biao_zhun() {
+        let input =
+            "## Goal\nDo the thing.\n\n## 验收标准\n- 条件 1\n\n## Constraints\nDo not do X.";
+        let result = strip_acceptance_criteria(input);
+        assert!(!result.contains("验收标准"));
+        assert!(!result.contains("条件 1"));
+        assert!(result.contains("## Goal"));
+        assert!(result.contains("## Constraints"));
+    }
+
+    /// Localized heading `## 验收` is also stripped.
+    #[test]
+    fn strip_ac_strips_localized_heading_yan_shou() {
+        let input = "## Goal\nDo the thing.\n\n## 验收\n- 条件 1\n\n## Constraints\nDo not do X.";
+        let result = strip_acceptance_criteria(input);
+        assert!(!result.contains("验收"));
+        assert!(!result.contains("条件 1"));
+        assert!(result.contains("## Constraints"));
+    }
+
+    // -----------------------------------------------------------------------
+    // format_task_prompt_output: AC stripping integrated tests
+    // -----------------------------------------------------------------------
+
+    fn gated_config() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![(
+                "in_progress".to_owned(),
+                PhaseDef {
+                    model: Some("sonnet".to_owned()),
+                    duty: Some("Implement the task.".to_owned()),
+                    gate: Some("cargo test".to_owned()),
+                },
+            )],
+            3,
+        )
+    }
+
+    fn ungated_config() -> Config {
+        Config::new_single_workflow(
+            "test",
+            vec![(
+                "accepting".to_owned(),
+                PhaseDef {
+                    model: Some("opus".to_owned()),
+                    duty: Some("Accept the task.".to_owned()),
+                    gate: None,
+                },
+            )],
+            3,
+        )
+    }
+
+    fn task_with_ac_description(state: &str) -> Task {
+        Task {
+            id: "task-200".to_owned(),
+            title: "feature with ac".to_owned(),
+            description: "## Goal\nBuild the feature.\n\n## Acceptance Criteria\n- Must pass tests\n- Must lint clean\n\n## Constraints\nNo new deps.".to_owned(),
+            state: state.to_owned(),
+            blocked_at_phase: None,
+            blocked_reason: None,
+            clarifications: Vec::new(),
+            dependencies: Vec::new(),
+            retry_count: 0,
+            max_retries: 3,
+            phases: std::collections::BTreeMap::new(),
+            history: Vec::new(),
+            created_at: "2026-06-18T00:00:00Z".to_owned(),
+            workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
+            locked_at: None,
+        }
+    }
+
+    /// Gated phase: AC section is stripped from the rendered Description.
+    #[test]
+    fn prompt_gated_phase_strips_ac_from_description() {
+        let config = gated_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let task = task_with_ac_description("in_progress");
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(
+            !output.contains("Acceptance Criteria"),
+            "AC must be absent for gated phase"
+        );
+        assert!(
+            !output.contains("Must pass tests"),
+            "AC body must be absent"
+        );
+        assert!(output.contains("## Goal"), "Goal must be present");
+        assert!(
+            output.contains("## Constraints"),
+            "Constraints must be present"
+        );
+    }
+
+    /// Ungated phase: Description is rendered verbatim including AC section.
+    #[test]
+    fn prompt_ungated_phase_keeps_ac_in_description() {
+        let config = ungated_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let task = task_with_ac_description("accepting");
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(
+            output.contains("Acceptance Criteria"),
+            "AC must be present for ungated phase"
+        );
+        assert!(
+            output.contains("Must pass tests"),
+            "AC body must be present"
+        );
+    }
+
+    /// Gated phase with a Description that has no AC section: output is not changed.
+    #[test]
+    fn prompt_gated_phase_no_ac_description_unchanged() {
+        let config = gated_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let mut task = task_with_ac_description("in_progress");
+        task.description = "## Goal\nBuild the feature.\n\n## Constraints\nNo new deps.".to_owned();
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(output.contains("## Goal"));
+        assert!(output.contains("## Constraints"));
+        // No extra blank lines or corruption
+        assert!(!output.contains("Acceptance Criteria"));
     }
 }
