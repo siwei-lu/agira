@@ -205,12 +205,8 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     if let Some(m) = model {
         subagent.push_str(&format!("\n- Agent role: {m}"));
     }
-    let rendered_description: String;
     let description_text = if task.description.is_empty() {
         "No description provided."
-    } else if phase_is_gated(&task.state, config) {
-        rendered_description = strip_acceptance_criteria(&task.description);
-        rendered_description.as_str()
     } else {
         task.description.as_str()
     };
@@ -228,9 +224,18 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
         subagent.push_str(&format!("\n\n# Phase Duty\n{duty}"));
     }
 
-    if !task.phases.is_empty() {
-        subagent.push_str("\n\n# Acceptance Criteria");
-        for (phase_name, phase) in prior_phases(task, config) {
+    // Render acceptance criteria from the field (non-gated phases only).
+    if let Some(ac) = &task.acceptance_criteria {
+        if !phase_is_gated(&task.state, config) {
+            subagent.push_str(&format!("\n\n# Acceptance Criteria\n{ac}"));
+        }
+    }
+
+    // Render prior phases under "# Prior Phases"; skip pending and empty-artifact entries.
+    let prior = prior_phases_filtered(task, config);
+    if !prior.is_empty() {
+        subagent.push_str("\n\n# Prior Phases");
+        for (phase_name, phase) in prior {
             let artifact = if phase.artifact.is_empty() {
                 "<empty>"
             } else {
@@ -286,97 +291,6 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     }
 
     subagent
-}
-
-/// Returns true when the heading text (without the `#` prefix and trimmed) identifies an
-/// Acceptance-Criteria section.  Matches English and two common Chinese localizations.
-fn is_acceptance_criteria_heading(text: &str) -> bool {
-    let lower = text.trim().to_lowercase();
-    lower == "acceptance criteria" || lower == "验收" || lower == "验收标准"
-}
-
-/// Parse the `#` level of an ATX heading line (e.g. `## Foo` → 2). Returns `None` when the
-/// line is not an ATX heading.
-fn atx_heading_level(line: &str) -> Option<usize> {
-    let trimmed = line.trim_start_matches('#');
-    let level = line.len() - trimmed.len();
-    if level == 0 || level > 6 {
-        return None;
-    }
-    // After the `#` characters there must be a space (or the line ends)
-    if !trimmed.is_empty() && !trimmed.starts_with(' ') {
-        return None;
-    }
-    Some(level)
-}
-
-/// Remove the `## Acceptance Criteria` section (and its Chinese aliases) from `text`.
-/// Only the first matching section is removed. If no such heading exists, returns the input
-/// string unchanged.  Surrounding blank lines are collapsed so the output stays clean.
-pub(crate) fn strip_acceptance_criteria(text: &str) -> String {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let n = lines.len();
-
-    // Find the index of the AC heading line.
-    let ac_start = lines.iter().position(|line| {
-        if let Some(level) = atx_heading_level(line) {
-            if level == 2 {
-                let heading_text = line.trim_start_matches('#').trim();
-                return is_acceptance_criteria_heading(heading_text);
-            }
-        }
-        false
-    });
-
-    let Some(ac_start) = ac_start else {
-        return text.to_owned();
-    };
-
-    // The AC heading is at level 2.  Find the next heading at the same or higher level (≤ 2).
-    let ac_end = lines[ac_start + 1..]
-        .iter()
-        .position(|line| atx_heading_level(line).is_some_and(|lvl| lvl <= 2));
-
-    let section_end = match ac_end {
-        Some(rel) => ac_start + 1 + rel, // exclusive end: first line of next section
-        None => n,
-    };
-
-    // Build result by omitting lines [ac_start, section_end).
-    let before: Vec<&str> = lines[..ac_start].to_vec();
-    let after: Vec<&str> = lines[section_end..].to_vec();
-
-    // Trim trailing blank lines from `before` and leading blank lines from `after`
-    // so we don't accumulate extra empty lines.
-    let before_trimmed = trim_trailing_blank_lines(before);
-    let after_trimmed = trim_leading_blank_lines(after);
-
-    match (before_trimmed.is_empty(), after_trimmed.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => after_trimmed.join("\n"),
-        (false, true) => before_trimmed.join("\n"),
-        (false, false) => {
-            let mut result = before_trimmed;
-            result.push("");
-            result.push("");
-            result.extend(after_trimmed);
-            result.join("\n")
-        }
-    }
-}
-
-fn trim_trailing_blank_lines(mut lines: Vec<&str>) -> Vec<&str> {
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines
-}
-
-fn trim_leading_blank_lines(mut lines: Vec<&str>) -> Vec<&str> {
-    while lines.first().is_some_and(|l| l.trim().is_empty()) {
-        lines.remove(0);
-    }
-    lines
 }
 
 /// Returns true when the given phase has a non-empty `gate` in config.
@@ -463,6 +377,18 @@ fn prior_phases<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a Tas
         .collect()
 }
 
+/// Like `prior_phases` but additionally filters out:
+/// - the initial `pending` phase (INITIAL_PHASE_NAME), and
+/// - entries where the artifact is empty.
+///
+/// Returns an empty vec when nothing remains after filtering.
+fn prior_phases_filtered<'a>(task: &'a Task, config: &'a Config) -> Vec<(&'a str, &'a TaskPhase)> {
+    prior_phases(task, config)
+        .into_iter()
+        .filter(|(name, phase)| *name != INITIAL_PHASE_NAME && !phase.artifact.is_empty())
+        .collect()
+}
+
 fn format_completion_summary(tasks: &[Task]) -> String {
     let mut completed_tasks: Vec<&Task> = tasks.iter().collect();
     completed_tasks.sort_by_key(|task| task_id_number(&task.id));
@@ -534,9 +460,7 @@ mod tests {
         tasks::{Clarification, HistoryEntry, Task},
     };
 
-    use super::{
-        format_task_prompt_output, select_next_task_for_runner, strip_acceptance_criteria,
-    };
+    use super::{format_task_prompt_output, select_next_task_for_runner};
 
     fn test_config() -> Config {
         Config::new_single_workflow(
@@ -570,6 +494,7 @@ mod tests {
             created_at: "2026-06-10T05:00:00Z".to_owned(),
             workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
             locked_at: None,
+            acceptance_criteria: None,
         }
     }
 
@@ -590,6 +515,7 @@ mod tests {
             created_at: "2026-06-10T00:00:00Z".to_owned(),
             workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
             locked_at: None,
+            acceptance_criteria: None,
         }
     }
 
@@ -771,69 +697,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // strip_acceptance_criteria unit tests
-    // -----------------------------------------------------------------------
-
-    /// AC section followed by another heading: only the AC section is removed;
-    /// Goal, Changes, and Constraints survive.
-    #[test]
-    fn strip_ac_removes_ac_section_preserves_others() {
-        let input = "## Goal\nDo the thing.\n\n## Acceptance Criteria\n- AC item 1\n- AC item 2\n\n## Constraints\nDo not do X.";
-        let result = strip_acceptance_criteria(input);
-        assert!(
-            !result.contains("Acceptance Criteria"),
-            "AC heading must be gone"
-        );
-        assert!(!result.contains("AC item 1"), "AC body must be gone");
-        assert!(result.contains("## Goal"), "Goal must survive");
-        assert!(
-            result.contains("## Constraints"),
-            "Constraints must survive"
-        );
-    }
-
-    /// AC section as the last section (no trailing heading): stripped to end-of-string.
-    #[test]
-    fn strip_ac_removes_ac_section_when_last() {
-        let input = "## Goal\nDo the thing.\n\n## Acceptance Criteria\n- AC item 1\n- AC item 2\n";
-        let result = strip_acceptance_criteria(input);
-        assert!(!result.contains("Acceptance Criteria"));
-        assert!(!result.contains("AC item"));
-        assert!(result.contains("## Goal"));
-    }
-
-    /// No AC heading: output is byte-identical to input.
-    #[test]
-    fn strip_ac_noop_when_no_ac_heading() {
-        let input = "## Goal\nDo the thing.\n\n## Constraints\nDo not do X.";
-        let result = strip_acceptance_criteria(input);
-        assert_eq!(result, input);
-    }
-
-    /// Localized heading `## 验收标准` is also stripped.
-    #[test]
-    fn strip_ac_strips_localized_heading_yan_shou_biao_zhun() {
-        let input =
-            "## Goal\nDo the thing.\n\n## 验收标准\n- 条件 1\n\n## Constraints\nDo not do X.";
-        let result = strip_acceptance_criteria(input);
-        assert!(!result.contains("验收标准"));
-        assert!(!result.contains("条件 1"));
-        assert!(result.contains("## Goal"));
-        assert!(result.contains("## Constraints"));
-    }
-
-    /// Localized heading `## 验收` is also stripped.
-    #[test]
-    fn strip_ac_strips_localized_heading_yan_shou() {
-        let input = "## Goal\nDo the thing.\n\n## 验收\n- 条件 1\n\n## Constraints\nDo not do X.";
-        let result = strip_acceptance_criteria(input);
-        assert!(!result.contains("验收"));
-        assert!(!result.contains("条件 1"));
-        assert!(result.contains("## Constraints"));
-    }
-
-    // -----------------------------------------------------------------------
-    // format_task_prompt_output: AC stripping integrated tests
+    // format_task_prompt_output: field-based AC rendering
     // -----------------------------------------------------------------------
 
     fn gated_config() -> Config {
@@ -866,7 +730,7 @@ mod tests {
         )
     }
 
-    fn task_with_ac_description(state: &str) -> Task {
+    fn task_with_ac_field(state: &str, ac: Option<&str>) -> Task {
         Task {
             id: "task-200".to_owned(),
             title: "feature with ac".to_owned(),
@@ -883,66 +747,195 @@ mod tests {
             created_at: "2026-06-18T00:00:00Z".to_owned(),
             workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
             locked_at: None,
+            acceptance_criteria: ac.map(str::to_owned),
         }
     }
 
-    /// Gated phase: AC section is stripped from the rendered Description.
+    /// Non-gated phase + field set: prompt contains # Acceptance Criteria from field.
     #[test]
-    fn prompt_gated_phase_strips_ac_from_description() {
-        let config = gated_config();
-        let state_dir = Path::new("/tmp/agira-state");
-        let task = task_with_ac_description("in_progress");
-
-        let output = format_task_prompt_output(&task, &config, state_dir);
-
-        assert!(
-            !output.contains("Acceptance Criteria"),
-            "AC must be absent for gated phase"
-        );
-        assert!(
-            !output.contains("Must pass tests"),
-            "AC body must be absent"
-        );
-        assert!(output.contains("## Goal"), "Goal must be present");
-        assert!(
-            output.contains("## Constraints"),
-            "Constraints must be present"
-        );
-    }
-
-    /// Ungated phase: Description is rendered verbatim including AC section.
-    #[test]
-    fn prompt_ungated_phase_keeps_ac_in_description() {
+    fn prompt_ungated_phase_with_ac_field_renders_ac_section() {
         let config = ungated_config();
         let state_dir = Path::new("/tmp/agira-state");
-        let task = task_with_ac_description("accepting");
+        let task = task_with_ac_field("accepting", Some("- Must pass tests\n- Must lint"));
 
         let output = format_task_prompt_output(&task, &config, state_dir);
 
         assert!(
-            output.contains("Acceptance Criteria"),
-            "AC must be present for ungated phase"
+            output.contains("# Acceptance Criteria"),
+            "AC section must appear for non-gated phase with field set"
         );
         assert!(
-            output.contains("Must pass tests"),
-            "AC body must be present"
+            output.contains("- Must pass tests"),
+            "AC body from field must appear"
+        );
+        // Description rendered verbatim (contains embedded AC heading too)
+        assert!(
+            output.contains("## Acceptance Criteria"),
+            "description is verbatim even when it contains AC heading"
         );
     }
 
-    /// Gated phase with a Description that has no AC section: output is not changed.
+    /// Gated phase + field set: prompt has NO # Acceptance Criteria, description verbatim.
     #[test]
-    fn prompt_gated_phase_no_ac_description_unchanged() {
+    fn prompt_gated_phase_with_ac_field_omits_ac_section() {
         let config = gated_config();
         let state_dir = Path::new("/tmp/agira-state");
-        let mut task = task_with_ac_description("in_progress");
-        task.description = "## Goal\nBuild the feature.\n\n## Constraints\nNo new deps.".to_owned();
+        let task = task_with_ac_field("in_progress", Some("- Must pass tests\n- Must lint"));
 
         let output = format_task_prompt_output(&task, &config, state_dir);
 
-        assert!(output.contains("## Goal"));
-        assert!(output.contains("## Constraints"));
-        // No extra blank lines or corruption
-        assert!(!output.contains("Acceptance Criteria"));
+        // The top-level "# Acceptance Criteria" section must be absent
+        assert!(
+            !output.contains("\n# Acceptance Criteria"),
+            "top-level AC section must be absent for gated phase"
+        );
+        // But description is verbatim — the embedded heading survives
+        assert!(
+            output.contains("## Goal"),
+            "description content (Goal) must be present"
+        );
+        assert!(
+            output.contains("## Acceptance Criteria"),
+            "description is verbatim (embedded heading not stripped)"
+        );
+    }
+
+    /// Field None: no AC section regardless of phase gate; description verbatim.
+    #[test]
+    fn prompt_field_none_no_ac_section_description_verbatim() {
+        // Try on gated phase
+        {
+            let config = gated_config();
+            let state_dir = Path::new("/tmp/agira-state");
+            let task = task_with_ac_field("in_progress", None);
+
+            let output = format_task_prompt_output(&task, &config, state_dir);
+
+            assert!(
+                !output.contains("\n# Acceptance Criteria"),
+                "no top-level AC section when field is None (gated)"
+            );
+            // Description verbatim — the embedded heading still in description
+            assert!(
+                output.contains("## Acceptance Criteria"),
+                "description verbatim on gated phase when AC field is None"
+            );
+        }
+        // Try on non-gated phase
+        {
+            let config = ungated_config();
+            let state_dir = Path::new("/tmp/agira-state");
+            let task = task_with_ac_field("accepting", None);
+
+            let output = format_task_prompt_output(&task, &config, state_dir);
+
+            assert!(
+                !output.contains("\n# Acceptance Criteria"),
+                "no top-level AC section when field is None (ungated)"
+            );
+            assert!(
+                output.contains("## Acceptance Criteria"),
+                "description verbatim on ungated phase when AC field is None"
+            );
+        }
+    }
+
+    /// Prior phases render under "# Prior Phases", not "# Acceptance Criteria".
+    /// Uses a two-phase config so there is a non-pending prior phase to display.
+    #[test]
+    fn prompt_prior_phases_uses_prior_phases_heading() {
+        // Config with two real phases: enriching then accepting.
+        let config = Config::new_single_workflow(
+            "test",
+            vec![
+                (
+                    "enriching".to_owned(),
+                    PhaseDef {
+                        model: None,
+                        duty: None,
+                        gate: None,
+                    },
+                ),
+                (
+                    "accepting".to_owned(),
+                    PhaseDef {
+                        model: Some("opus".to_owned()),
+                        duty: Some("Accept the task.".to_owned()),
+                        gate: None,
+                    },
+                ),
+            ],
+            3,
+        );
+        let state_dir = Path::new("/tmp/agira-state");
+        let mut task = task_with_ac_field("accepting", None);
+        // Insert a real (non-pending) prior phase artifact.
+        task.phases.insert(
+            "enriching".to_owned(),
+            crate::core::tasks::TaskPhase {
+                artifact: "spec written".to_owned(),
+                completed_at: "2026-06-18T00:00:00Z".to_owned(),
+            },
+        );
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        // Must use "# Prior Phases" heading
+        assert!(
+            output.contains("# Prior Phases"),
+            "prior phases must use '# Prior Phases' heading; got:\n{output}"
+        );
+        assert!(
+            output.contains("Phase: enriching"),
+            "enriching phase must appear"
+        );
+        assert!(output.contains("spec written"), "artifact must appear");
+        // Must NOT use old "# Acceptance Criteria" heading for prior phases
+        assert!(
+            !output.contains("# Acceptance Criteria\n- Phase:"),
+            "prior phases must not use old '# Acceptance Criteria' heading"
+        );
+    }
+
+    /// Prior phases section excludes the initial pending phase and empty-artifact entries,
+    /// and is omitted entirely when nothing remains.
+    #[test]
+    fn prompt_prior_phases_excludes_pending_and_empty_artifacts() {
+        let config = ungated_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        let mut task = task_with_ac_field("accepting", None);
+        // Add pending phase (should be excluded by INITIAL_PHASE_NAME filter)
+        task.phases.insert(
+            "pending".to_owned(),
+            crate::core::tasks::TaskPhase {
+                artifact: "task accepted".to_owned(),
+                completed_at: "2026-06-18T00:00:00Z".to_owned(),
+            },
+        );
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        // pending phase must be skipped
+        assert!(
+            !output.contains("Phase: pending"),
+            "pending phase must be excluded from # Prior Phases"
+        );
+    }
+
+    /// Prior phases section is omitted entirely when empty after filtering.
+    #[test]
+    fn prompt_prior_phases_omitted_when_empty() {
+        let config = ungated_config();
+        let state_dir = Path::new("/tmp/agira-state");
+        // task has no completed phases
+        let task = task_with_ac_field("accepting", None);
+
+        let output = format_task_prompt_output(&task, &config, state_dir);
+
+        assert!(
+            !output.contains("# Prior Phases"),
+            "# Prior Phases must be omitted when there are no prior phases"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -996,6 +989,7 @@ mod tests {
             created_at: "2026-06-18T00:00:00Z".to_owned(),
             workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
             locked_at: None,
+            acceptance_criteria: None,
         }
     }
 

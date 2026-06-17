@@ -205,6 +205,7 @@ mod tests {
             created_at: "2026-06-13T10:00:00Z".to_owned(),
             workflow: "default".to_owned(),
             locked_at: None,
+            acceptance_criteria: None,
         }
     }
 

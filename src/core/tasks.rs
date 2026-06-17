@@ -54,6 +54,8 @@ pub struct Task {
     pub workflow: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria: Option<String>,
 }
 
 fn default_max_retries() -> u32 {
@@ -103,6 +105,8 @@ struct TaskWire {
     locked_at: Option<String>,
     #[serde(default, rename = "state_machine")]
     state_machine_snapshot: Option<serde_json::Value>,
+    #[serde(default)]
+    acceptance_criteria: Option<String>,
 }
 
 struct LoadedTasksFile {
@@ -135,6 +139,7 @@ impl TaskWire {
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| config.default_workflow.clone()),
             locked_at: self.locked_at,
+            acceptance_criteria: self.acceptance_criteria,
         }
     }
 }
@@ -386,6 +391,179 @@ mod tests {
         let old_reloaded = TaskStore::new(&state_dir, &config).expect("load old tasks");
         let old_task = old_reloaded.get_task("task-999").expect("get old task");
         assert!(old_task.clarifications.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // acceptance_criteria: new optional first-class field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn add_task_with_ac_stores_field() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task_with_ac(
+                "task with AC",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+                Some("- Must pass all tests\n- Must lint clean".to_owned()),
+            )
+            .expect("add task");
+
+        assert_eq!(
+            task.acceptance_criteria.as_deref(),
+            Some("- Must pass all tests\n- Must lint clean")
+        );
+    }
+
+    #[test]
+    fn add_task_without_ac_stores_none() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "task without AC",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        assert_eq!(task.acceptance_criteria, None);
+    }
+
+    #[test]
+    fn acceptance_criteria_not_serialized_when_none() {
+        let (dir, mut store) = retry_test_store();
+        let tasks_path = dir.path().join(".agira").join("tasks.json");
+        store
+            .add_task(
+                "no AC task",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        let json = fs::read_to_string(&tasks_path).expect("read tasks.json");
+        assert!(
+            !json.contains("acceptance_criteria"),
+            "acceptance_criteria must not be serialized when None"
+        );
+    }
+
+    #[test]
+    fn acceptance_criteria_serialized_when_set() {
+        let (dir, mut store) = retry_test_store();
+        let tasks_path = dir.path().join(".agira").join("tasks.json");
+        store
+            .add_task_with_ac(
+                "AC task",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+                Some("must pass tests".to_owned()),
+            )
+            .expect("add task");
+
+        let json = fs::read_to_string(&tasks_path).expect("read tasks.json");
+        assert!(
+            json.contains("\"acceptance_criteria\""),
+            "acceptance_criteria must be serialized when Some"
+        );
+        assert!(json.contains("must pass tests"));
+    }
+
+    #[test]
+    fn old_tasks_json_without_acceptance_criteria_loads_as_none() {
+        let (dir, store) = retry_test_store();
+        let state_dir = dir.path().join(".agira");
+        let tasks_path = state_dir.join("tasks.json");
+
+        fs::write(
+            &tasks_path,
+            r#"{
+  "tasks": [
+    {
+      "id": "task-888",
+      "title": "legacy task",
+      "description": "old description",
+      "state": "implementing",
+      "dependencies": [],
+      "retry_count": 0,
+      "max_retries": 3,
+      "phases": {},
+      "history": [],
+      "created_at": "2026-06-13T10:00:00Z",
+      "workflow": "default"
+    }
+  ]
+}"#,
+        )
+        .expect("write old tasks file");
+
+        let config = store.config.clone();
+        let reloaded = TaskStore::new(&state_dir, &config).expect("reload store");
+        let task = reloaded.get_task("task-888").expect("get task");
+        assert_eq!(
+            task.acceptance_criteria, None,
+            "legacy task should have no AC"
+        );
+
+        // Re-save should NOT add acceptance_criteria to JSON
+        let json_after = fs::read_to_string(&tasks_path).expect("read tasks.json after reload");
+        // After the reload migration (workflow field was default), acceptance_criteria
+        // should still be absent since it's None
+        assert!(
+            !json_after.contains("acceptance_criteria"),
+            "acceptance_criteria must not appear in JSON after loading legacy task"
+        );
+    }
+
+    #[test]
+    fn update_task_with_ac_sets_acceptance_criteria() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task(
+                "updatable task",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+            )
+            .expect("add task");
+
+        store
+            .update_task_with_ac(&task.id, None, None, None, Some(Some("new AC text")))
+            .expect("update with AC");
+
+        let updated = store.get_task(&task.id).expect("get updated task");
+        assert_eq!(updated.acceptance_criteria.as_deref(), Some("new AC text"));
+    }
+
+    #[test]
+    fn update_task_with_ac_can_clear_acceptance_criteria() {
+        let (_dir, mut store) = retry_test_store();
+        let task = store
+            .add_task_with_ac(
+                "task with AC to clear",
+                "description",
+                Vec::new(),
+                Some("implementing"),
+                "default".to_owned(),
+                Some("old AC".to_owned()),
+            )
+            .expect("add task");
+
+        store
+            .update_task_with_ac(&task.id, None, None, None, Some(None))
+            .expect("update with None AC");
+
+        let updated = store.get_task(&task.id).expect("get updated task");
+        assert_eq!(updated.acceptance_criteria, None);
     }
 
     // ---------------------------------------------------------------------------
@@ -691,6 +869,9 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Convenience wrapper around `add_task_with_ac` with no acceptance criteria.
+    /// Used extensively in tests; `#[allow(dead_code)]` suppresses the lint in non-test builds.
+    #[allow(dead_code)]
     pub fn add_task(
         &mut self,
         title: &str,
@@ -698,6 +879,25 @@ impl TaskStore {
         dependencies: Vec<String>,
         phase_override: Option<&str>,
         workflow: String,
+    ) -> Result<Task, StoreError> {
+        self.add_task_with_ac(
+            title,
+            description,
+            dependencies,
+            phase_override,
+            workflow,
+            None,
+        )
+    }
+
+    pub fn add_task_with_ac(
+        &mut self,
+        title: &str,
+        description: &str,
+        dependencies: Vec<String>,
+        phase_override: Option<&str>,
+        workflow: String,
+        acceptance_criteria: Option<String>,
     ) -> Result<Task, StoreError> {
         let sequence = self.sequence_for_workflow(&workflow)?;
         let next_num = self
@@ -760,6 +960,7 @@ impl TaskStore {
             created_at,
             workflow,
             locked_at: None,
+            acceptance_criteria,
         };
 
         let mut tasks_file = self.tasks_file.clone();
@@ -1036,12 +1237,26 @@ impl TaskStore {
         self.save(tasks_file)
     }
 
+    /// Convenience wrapper around `update_task_with_ac` with no acceptance criteria change.
+    /// Used extensively in tests; `#[allow(dead_code)]` suppresses the lint in non-test builds.
+    #[allow(dead_code)]
     pub fn update_task(
         &mut self,
         id: &str,
         title: Option<&str>,
         description: Option<&str>,
         depends_on: Option<&[String]>,
+    ) -> Result<(), StoreError> {
+        self.update_task_with_ac(id, title, description, depends_on, None)
+    }
+
+    pub fn update_task_with_ac(
+        &mut self,
+        id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        depends_on: Option<&[String]>,
+        acceptance_criteria: Option<Option<&str>>,
     ) -> Result<(), StoreError> {
         let target_task = self.get_task(id).ok_or(StoreError::NotFound)?;
         let terminal_phase = self.terminal_for(target_task)?;
@@ -1078,6 +1293,9 @@ impl TaskStore {
         }
         if let Some(deps) = depends_on {
             task.dependencies = deps.to_vec();
+        }
+        if let Some(ac) = acceptance_criteria {
+            task.acceptance_criteria = ac.map(str::to_owned);
         }
 
         self.save(tasks_file)

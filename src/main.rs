@@ -364,6 +364,9 @@ enum TaskCommands {
         /// Optional longer description of the task
         #[arg(long, value_name = "description")]
         description: Option<String>,
+        /// Structured acceptance criteria for the task (omitted from gated-phase prompts)
+        #[arg(long, value_name = "acceptance-criteria")]
+        acceptance_criteria: Option<String>,
         /// Comma-separated task IDs this task depends on
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Vec<String>,
@@ -388,6 +391,9 @@ enum TaskCommands {
         /// Replacement comma-separated dependency list
         #[arg(long, value_delimiter = ',', value_name = "depends-on")]
         depends_on: Option<Vec<String>>,
+        /// Set or replace the structured acceptance criteria field
+        #[arg(long, value_name = "acceptance-criteria")]
+        acceptance_criteria: Option<String>,
     },
     /// Remove a pending task from the project
     Remove {
@@ -541,6 +547,7 @@ fn main() -> ExitCode {
             TaskCommands::Add {
                 title,
                 description,
+                acceptance_criteria,
                 depends_on,
                 phase,
                 workflow,
@@ -549,6 +556,7 @@ fn main() -> ExitCode {
                     &project,
                     &title,
                     description.as_deref(),
+                    acceptance_criteria.as_deref(),
                     &depends_on,
                     phase.as_deref(),
                     None,
@@ -571,6 +579,7 @@ fn main() -> ExitCode {
                 title,
                 description,
                 depends_on,
+                acceptance_criteria,
             } => match resolve_initialized_project() {
                 Ok(project) => match commands::run_update(
                     &project,
@@ -579,6 +588,7 @@ fn main() -> ExitCode {
                         title,
                         description,
                         depends_on,
+                        acceptance_criteria,
                     },
                 ) {
                     Ok(()) => ExitCode::SUCCESS,

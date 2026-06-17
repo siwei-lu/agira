@@ -50,10 +50,15 @@ pub struct UpdateInput {
     pub title: Option<String>,
     pub description: Option<String>,
     pub depends_on: Option<Vec<String>>,
+    pub acceptance_criteria: Option<String>,
 }
 
 pub fn run_update(project: &Project, id: &str, input: UpdateInput) -> Result<(), UpdateError> {
-    if input.title.is_none() && input.description.is_none() && input.depends_on.is_none() {
+    if input.title.is_none()
+        && input.description.is_none()
+        && input.depends_on.is_none()
+        && input.acceptance_criteria.is_none()
+    {
         return Err(UpdateError::NoFields);
     }
 
@@ -64,11 +69,14 @@ pub fn run_update(project: &Project, id: &str, input: UpdateInput) -> Result<(),
     let mut store = TaskStore::new(&project.state_dir, &config)?;
 
     let depends_on_ref = input.depends_on.as_deref();
-    let result = store.update_task(
+    // Some(Some("text")) means set; None means no change (we never clear via this path).
+    let ac = input.acceptance_criteria.as_deref().map(Some);
+    let result = store.update_task_with_ac(
         id,
         input.title.as_deref(),
         input.description.as_deref(),
         depends_on_ref,
+        ac,
     );
 
     match result {

@@ -58,6 +58,7 @@ pub fn run_add(
     project: &Project,
     title: &str,
     description: Option<&str>,
+    acceptance_criteria: Option<&str>,
     depends_on: &[String],
     phase: Option<&str>,
     phases: Option<&str>,
@@ -105,6 +106,7 @@ pub fn run_add(
             &mut store,
             title,
             description.unwrap_or(""),
+            acceptance_criteria.map(str::to_owned),
             depends_on.to_vec(),
             phase,
             workflow_name,
@@ -194,7 +196,15 @@ fn add_task_flow_with_ensure_and_liveness(
     ensure_runner: &mut dyn FnMut(&Project, &str) -> Result<(), String>,
     runner_is_live: &mut dyn FnMut(&Project) -> Result<bool, String>,
 ) -> Result<(), AddError> {
-    let task = create_task(store, title, description, depends_on, phase, workflow_name)?;
+    let task = create_task(
+        store,
+        title,
+        description,
+        None,
+        depends_on,
+        phase,
+        workflow_name,
+    )?;
     run_add_side_effects(
         project,
         &task,
@@ -210,12 +220,20 @@ fn create_task(
     store: &mut TaskStore,
     title: &str,
     description: &str,
+    acceptance_criteria: Option<String>,
     depends_on: Vec<String>,
     phase: Option<&str>,
     workflow_name: String,
 ) -> Result<Task, AddError> {
     store
-        .add_task(title, description, depends_on, phase, workflow_name)
+        .add_task_with_ac(
+            title,
+            description,
+            depends_on,
+            phase,
+            workflow_name,
+            acceptance_criteria,
+        )
         .map_err(map_store_error)
 }
 

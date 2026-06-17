@@ -794,6 +794,7 @@ mod tests {
             created_at: "2026-06-10T00:00:00Z".to_owned(),
             workflow: DEFAULT_WORKFLOW_NAME.to_owned(),
             locked_at: None,
+            acceptance_criteria: None,
         }
     }
 
