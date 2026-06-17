@@ -74,13 +74,14 @@ from any phase. Config may omit `pending`/`done` and agira inserts them at start
 This repo's own workflow (defined in `~/.agira/agira/config.json` — read it for the
 authoritative phase list, models, and duties) is currently:
 
-`pending → enriching → implementing → reviewing → verifying → done`
+`pending → in_progress → accepting → done`
 
 - **pending** — task created, ready for the first real workflow step
-- **enriching** — architect rewrites the description as a complete spec
-- **implementing** — implementer writes tests first, then code (TDD)
-- **reviewing** — reviewer checks correctness, coverage, and conventions
-- **verifying** — verifier runs fmt/test/clippy plus an end-to-end acceptance run
+- **in_progress** — implementer writes tests first, then code (TDD); gated on
+  `cargo fmt -- --check && cargo test && cargo clippy -- -D warnings` before advancing;
+  advances with the commit hash as artifact
+- **accepting** — runs `./target/debug/agira` against representative inputs to confirm CLI
+  behavior (stdout/stderr/exit codes) matches the spec, plus a confirming cargo check
 - **done** — task complete
 
 ### Common CLI commands
