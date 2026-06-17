@@ -15,7 +15,7 @@ implementation specs. The planner writes new resolutions here so they are never 
 - Prompts and structured output → stdout
 - Error messages → stderr (via `eprintln!` or logging to stderr)
 - No ANSI escape sequences in stdout output (verify with `cat -v`)
-- Status messages: `task-001 → verifying`, `task-001 done ✓`, `task-001 failed — max retries reached`
+- Status messages: `task-001 → accepting`, `task-001 done ✓`, `task-001 failed — max retries reached`
 
 ## File I/O
 

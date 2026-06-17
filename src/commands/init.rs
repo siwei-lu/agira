@@ -47,7 +47,8 @@ struct ScanResult {
     commands: Vec<String>,
 }
 
-const CANONICAL_VERIFYING_DUTY_EXAMPLE: &str = "Run cargo fmt -- --check, cargo test, cargo clippy -- -D warnings. All must pass. Then advance.";
+const CANONICAL_GATE_COMMAND: &str =
+    "cargo fmt -- --check && cargo test && cargo clippy -- -D warnings";
 
 pub fn run_init(project: &Project, flags: InitFlags) -> Result<(), InitError> {
     let missing = detect_missing_flags(&flags);
@@ -455,7 +456,7 @@ Do not proceed to `agira init` until the project starts successfully, unless you
    CLI output, or equivalent smoke check.
 
 Record the start command, required env setup, port or URL, and verification evidence.
-These findings must feed into the verifying phase duty and `CLAUDE.md`.
+These findings must feed into the implementing-phase gate and `CLAUDE.md`.
 
 ## Step 3 — Reason and recommend
 
@@ -475,19 +476,21 @@ A bare phase name is valid when the phase should be model-less in config.
 - Design / enrichment phases → `opus` or another reasoning-heavy agent label
 - Implementation phases → `sonnet`, `codex`, or another code execution label
 - Independent review / acceptance phases → `sonnet`, `codex`, or another code-aware label
-- Verification / linting phases → `haiku` or another fast mechanical-check label
 
 Phase selection rules:
 - Each middle phase is one dedicated subagent invocation.
 - Add a phase only when that step genuinely needs its own focused context.
 - Prefer fewer phases because each handoff has cost.
 
-**`verifying` vs `accepting` — use both when the project has observable behavior:**
-- `verifying` answers "Is this code written correctly?" — runs lint, format, type-check, and
-  unit tests. It runs without the app and completes mechanically and quickly.
-- `accepting` answers "Does this feature work?" — must start the app, exercise it from outside
-  (browser, HTTP client, CLI invocation, e2e suite), and confirm that observable behavior matches spec.
-  It requires a running process.
+**Deterministic checks (lint / format / type-check / unit tests) are enforced as a GATE on
+the implementing phase (`in_progress`), NOT as a separate agent phase.** A gate runs
+automatically before the phase is allowed to record its artifact and advance; it is
+unfakeable and needs no agent. Place it on the code-producing phase so the actor who can
+fix a failure is the one blocked.
+
+`accepting` is the agent phase for behavioral verification — it starts the app, exercises it
+from outside (browser, HTTP client, CLI invocation, e2e suite), and confirms that observable
+behavior matches the spec. It requires a running process and cannot be replaced by a gate.
 
 **Rule:** add `accepting` whenever the project has observable runtime behavior — UI, API
 endpoints, CLI output, or an e2e suite. Omit `accepting` only for pure libraries or utilities
@@ -496,14 +499,17 @@ where unit tests ARE the complete acceptance criterion and there is no runtime t
 Present the full resulting state machine to the user, including built-ins, in arrow form:
 `pending -> [chosen phases] -> done`
 
-Examples:
-- Project with review loop: `enriching:opus,in_progress:sonnet,accepting:sonnet,verifying:haiku`
-- CLI binary or API server: `in_progress:sonnet,accepting:sonnet,verifying:haiku`
-- Pure library (no runtime): `in_progress:codex,verifying:haiku`
-- Prototype with explicit model: `in_progress:sonnet`
-- Prototype using a configured default model: `in_progress`
-
 Present 2 options with a clear trade-off. Format: `phase[:model],phase[:model],...`
+
+- **Option 1 (recommended, lean):** `in_progress:sonnet,accepting:sonnet` — implementing agent
+  guarded by a deterministic gate, then a behavioral acceptance agent. Suitable for most projects.
+- **Option 2 (alternative, spec-heavy):** `enriching:opus,in_progress:sonnet,accepting:sonnet`
+  — adds an upfront enriching phase to turn a rough task into a complete spec before any code
+  is written. Use when tasks arrive underspecified and a clarification step saves rework.
+- **Pure-library variant (no runtime):** `in_progress:codex` with a gate; skip `accepting`
+  because unit tests are the complete acceptance criterion and there is no observable runtime.
+- **Prototype with explicit model:** `in_progress:sonnet`
+- **Prototype using a configured default model:** `in_progress`
 
 **Phase duties**
 Each middle phase should carry a `duty` paragraph that states what the subagent does and what evidence or artifact it must produce. Duties are not set in `agira init`; after init, set them with:
@@ -522,12 +528,12 @@ For an accepting phase, choose the template that matches what Step 1.7 found:
 
 Do not set duties on `pending` or `done`; they are mandatory phases and reject duties.
 
-**Verifying phase duty commands**
-From your scan and required start proof, propose exact commands to embed in the verifying phase duty.
-Prefer commands found in CI or Makefile over anything you infer. Include the confirmed project-start smoke command
-or wrapper command when it is part of final verification.
-If a reliable check requires multiple shell operations, prefer an existing single project script
-or Makefile target and describe that in the duty.
+**Implementing-phase gate commands**
+From your scan and required start proof, propose exact deterministic commands to use as the
+gate on `in_progress`. Prefer commands found in CI or Makefile over anything you infer.
+If a reliable check requires multiple shell operations, prefer an existing single project
+script or Makefile target. Join multiple commands with `&&` so the gate fails fast.
+Canonical example for Rust projects: `cargo fmt -- --check && cargo test && cargo clippy -- -D warnings`
 
 ## Step 4 — Interview the user
 
@@ -545,8 +551,8 @@ middle phase for the user to confirm.
 
 If Step 1.7 found observable runtime behavior (UI, API endpoints, CLI output, or an e2e suite),
 propose `accepting` as the **default recommendation** — not as an implicit option. Explain
-clearly why: the project has a runtime that can be exercised from outside, and `verifying`
-alone cannot confirm that behavior. The user may override, but the default must include it.
+clearly why: the project has a runtime that can be exercised from outside, and a gate alone
+cannot confirm observable behavior. The user may override, but the default must include it.
 
 ## Step 5 — Run agira init
 
@@ -558,30 +564,37 @@ agira init \
   --phases <phase[:model],...>
 ```
 
-## Step 6 — Set phase duties
+## Step 6 — Set phase duties and the implementing gate
 
-After running `agira init`, run one command per meaningful middle phase:
+After running `agira init`, run one command per meaningful middle phase to set its duty:
 
 ```sh
 agira phase update --set-duty <phase> "<draft duty>"
 ```
 
 Use only duties the user confirmed. Do not run this for `pending` or `done`.
-For the verifying phase, the duty should include embedding verification commands in the verifying phase duty.
-Use this canonical verifying-duty example when it fits: "#
-    );
-    prompt.push_str(CANONICAL_VERIFYING_DUTY_EXAMPLE);
-    prompt.push_str(
-        r#"
 
-After setting the verifying-phase duty, also set a gate on it so that agira enforces the
-verification commands before recording any artifact. Run:
+If the workflow includes an `enriching` phase (Option 2 / spec-heavy alternative), set its
+duty using the canonical enriching template: "Rewrite the task description as a complete
+spec with sections: ## Goal, ## Acceptance Criteria, ## Constraints. Persist with
+`agira task update <id> --description \"...\"`, then advance."
+
+**Set the deterministic gate on the implementing phase.** This is the most important step:
+it enforces lint, format, type-check, and unit tests automatically before the implementing
+agent can record any artifact. Run:
 
 ```sh
-agira phase update verifying --set-gate "<verification commands joined by &&>"
+agira phase update in_progress --set-gate "<deterministic check commands joined by &&>"
 ```
 
-Use the same commands that appear in the verifying-phase duty (e.g. `cargo fmt -- --check && cargo test && cargo clippy -- -D warnings`).
+Canonical example: `"#
+    );
+    prompt.push_str(CANONICAL_GATE_COMMAND);
+    prompt.push_str(
+        r#"`
+
+Derive the actual gate commands from your scan findings (CI, Makefile, project scripts).
+Use the same commands you identified as the implementing-phase gate commands in Step 3.
 
 ## Step 7 — Write CLAUDE.md
 
@@ -627,7 +640,7 @@ fn auto_detected_defaults_block(defaults: &Config, commands: &[String]) -> Strin
 **agira auto-detected these defaults; verify them, don't blindly trust them. Treat them as a starting point for Step 3 recommendations.**
 
 - `stack={stack}`
-- suggested verifying-phase duty commands: `{commands}`
+- suggested implementing-phase gate commands: `{commands}`
 
 "#,
             stack = defaults.stack,
@@ -673,6 +686,62 @@ fn has_required_flags(flags: &InitFlags) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Acceptance criteria for task-146: init prompt teaching model
+    #[test]
+    fn init_prompt_sets_gate_on_implementing_phase() {
+        let defaults = scan_result_for_stack(
+            "rust",
+            vec![
+                "cargo fmt -- --check".to_owned(),
+                "cargo clippy -- -D warnings".to_owned(),
+                "cargo test".to_owned(),
+            ],
+            2,
+        );
+        let prompt = bare_invocation_prompt(&defaults.config, &defaults.commands);
+        // (a) must instruct setting a gate on the implementing / in_progress phase
+        assert!(
+            prompt.contains("in_progress --set-gate"),
+            "prompt must contain 'in_progress --set-gate', got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn init_prompt_presents_enriching_as_alternative_not_recommended_default() {
+        let defaults = scan_result_for_stack("rust", vec![], 2);
+        let prompt = bare_invocation_prompt(&defaults.config, &defaults.commands);
+        // (b) enriching must appear as an alternative option, not the default
+        // The prompt should describe it as "Option 2" or "alternative"
+        let lower = prompt.to_lowercase();
+        assert!(
+            lower.contains("option 2") || lower.contains("alternative"),
+            "prompt must present enriching as an alternative (Option 2), got:\n{prompt}"
+        );
+        // enriching:opus must appear in an example that is NOT the first/recommended option
+        assert!(
+            prompt.contains("enriching"),
+            "prompt must mention 'enriching', got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn init_prompt_does_not_recommend_standalone_verifying_agent_phase() {
+        let defaults = scan_result_for_stack("rust", vec![], 2);
+        let prompt = bare_invocation_prompt(&defaults.config, &defaults.commands);
+        // (c) must NOT recommend a standalone verifying agent phase
+        // The recommended/Option 1 example must not contain "verifying"
+        // We look for the Option 1 example line and ensure it doesn't include verifying
+        assert!(
+            !prompt.contains("verifying:haiku"),
+            "prompt must not recommend 'verifying:haiku' phase, got:\n{prompt}"
+        );
+        // The phrase "verifying vs accepting" block should not appear
+        assert!(
+            !prompt.contains("verifying` vs `accepting"),
+            "prompt must not contain old 'verifying vs accepting' block, got:\n{prompt}"
+        );
+    }
 
     #[test]
     fn default_phases_seed_only_in_progress_and_accepting() {
