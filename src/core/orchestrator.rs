@@ -14,7 +14,7 @@ Idle-wait protocol:
 
 Agira CLI protocol:
 - Call `agira task todo --runner "$AGIRA_RUNNER_ID"` to claim and print the next task prompt.
-- Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact "<evidence>"`.
+- Advance the task yourself using: `agira task todo --task <id> --from <phase> --artifact "<evidence>"`, where `<id>` and `<phase>` come from the `## Task` header of the task prompt (not from a `## Completion` section — dispatched-phase prompts no longer include one).
 - Include the runner identity through `AGIRA_RUNNER_ID` for all runner-owned task claims.
 
 Backend routing:
@@ -127,9 +127,12 @@ mod tests {
         assert!(prompt.contains("agira-orchestrator-template-v3"));
         assert!(prompt.contains("Thin-orchestrator rule"));
         assert!(prompt.contains("`agira task todo --runner \"$AGIRA_RUNNER_ID\"`"));
+        // The orchestrator now constructs the advance command from id+phase in the ## Task header,
+        // not by copying a ## Completion section (which is absent from dispatched-phase prompts).
         assert!(prompt.contains(
-            "Use the exact `## Completion` command from the task prompt: `agira task todo --task <id> --from <phase> --artifact \"<evidence>\"`"
+            "Advance the task yourself using: `agira task todo --task <id> --from <phase> --artifact \"<evidence>\"`"
         ));
+        assert!(prompt.contains("dispatched-phase prompts no longer include one"));
         assert!(prompt.contains("| implementing | dispatch exec -a codex |"));
     }
 
