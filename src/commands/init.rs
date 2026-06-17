@@ -191,14 +191,6 @@ fn config_for_stack(stack: &str, max_retries: u32) -> Config {
 fn default_phases() -> Vec<(String, PhaseDef)> {
     vec![
         (
-            "enriching".to_owned(),
-            PhaseDef {
-                model: Some("opus".to_owned()),
-                duty: None,
-                gate: None,
-            },
-        ),
-        (
             "in_progress".to_owned(),
             PhaseDef {
                 model: Some("sonnet".to_owned()),
@@ -210,14 +202,6 @@ fn default_phases() -> Vec<(String, PhaseDef)> {
             "accepting".to_owned(),
             PhaseDef {
                 model: Some("sonnet".to_owned()),
-                duty: None,
-                gate: None,
-            },
-        ),
-        (
-            "verifying".to_owned(),
-            PhaseDef {
-                model: Some("haiku".to_owned()),
                 duty: None,
                 gate: None,
             },
@@ -684,4 +668,54 @@ fn detect_missing_flags(flags: &InitFlags) -> Vec<String> {
 
 fn has_required_flags(flags: &InitFlags) -> bool {
     flags.stack.is_some() && flags.phases.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_phases_seed_only_in_progress_and_accepting() {
+        let phases = default_phases();
+
+        assert_eq!(
+            phases,
+            vec![
+                (
+                    "in_progress".to_owned(),
+                    PhaseDef {
+                        model: Some("sonnet".to_owned()),
+                        duty: None,
+                        gate: None,
+                    },
+                ),
+                (
+                    "accepting".to_owned(),
+                    PhaseDef {
+                        model: Some("sonnet".to_owned()),
+                        duty: None,
+                        gate: None,
+                    },
+                ),
+            ]
+        );
+
+        let names = phases
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"enriching"));
+        assert!(!names.contains(&"verifying"));
+
+        let (_, sequence) = normalize_palette_and_sequence(phases, Vec::new());
+        assert_eq!(
+            sequence,
+            vec![
+                "pending".to_owned(),
+                "in_progress".to_owned(),
+                "accepting".to_owned(),
+                "done".to_owned(),
+            ]
+        );
+    }
 }

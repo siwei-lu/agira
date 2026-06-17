@@ -1,6 +1,6 @@
 # agira
 
-A CLI tool for AI-assisted task management. Tracks tasks through a state machine (`pending → enriching → in_progress → verifying → done`) and orchestrates autonomous Claude workers to execute them.
+A CLI tool for AI-assisted task management. Tracks tasks through a state machine (`pending → in_progress → accepting → done`) and orchestrates autonomous Claude workers to execute them.
 
 ## Install the CLI
 
