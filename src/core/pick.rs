@@ -199,7 +199,7 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     let duty = effective_task_duty(task, &task.state, config);
 
     let mut subagent = format!(
-        "# Agira Task Prompt\n\n## Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
+        "# Task\n- ID: {}\n- Title: {}\n- Current phase: {}",
         task.id, task.title, task.state,
     );
     if let Some(m) = model {
@@ -214,22 +214,22 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     } else {
         task.description.as_str()
     };
-    subagent.push_str(&format!("\n\n## Description\n{description_text}"));
+    subagent.push_str(&format!("\n\n# Description\n{description_text}"));
 
     if description_warning_applies(task, config) {
         let description_len = task.description.chars().count();
         subagent.push_str(&format!(
-            "\n\n## Description Quality Warning\nThis description is short ({description_len} chars). If the enriching phase did not produce a complete spec, update it before proceeding:\n  agira task update {} --description \"<complete spec>\"\nOr block for clarification:\n  agira task block {} --reason \"description too thin to implement\"",
+            "\n\n# Description Quality Warning\nThis description is short ({description_len} chars). If the enriching phase did not produce a complete spec, update it before proceeding:\n  agira task update {} --description \"<complete spec>\"\nOr block for clarification:\n  agira task block {} --reason \"description too thin to implement\"",
             task.id, task.id
         ));
     }
 
     if let Some(duty) = duty {
-        subagent.push_str(&format!("\n\n## Phase Duty\n{duty}"));
+        subagent.push_str(&format!("\n\n# Phase Duty\n{duty}"));
     }
 
     if !task.phases.is_empty() {
-        subagent.push_str("\n\n## Acceptance Criteria");
+        subagent.push_str("\n\n# Acceptance Criteria");
         for (phase_name, phase) in prior_phases(task, config) {
             let artifact = if phase.artifact.is_empty() {
                 "<empty>"
@@ -263,13 +263,13 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
         }
 
         subagent.push_str(&format!(
-            "\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n{}/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.",
+            "\n\n# Attachments\nSave evidence files (screenshots, recordings, test output) to:\n{}/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.",
             attachments_path.display()
         ));
     }
 
     subagent.push_str(&format!(
-        "\n\n## Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block {} --reason \"<questions>\"`",
+        "\n\n# Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block {} --reason \"<questions>\"`",
         task.id
     ));
 
@@ -280,7 +280,7 @@ fn format_task_prompt_output(task: &Task, config: &Config, state_dir: &Path) -> 
     let phase_has_model = model.is_some();
     if task.state != INITIAL_PHASE_NAME && !phase_has_model {
         subagent.push_str(&format!(
-            "\n\n## Completion\n`agira task todo --task {} --from {} --artifact \"<evidence>\"`",
+            "\n\n# Completion\n`agira task todo --task {} --from {} --artifact \"<evidence>\"`",
             task.id, task.state
         ));
     }
@@ -706,15 +706,15 @@ mod tests {
         let task = test_task();
 
         let output = format_task_prompt_output(&task, &config, state_dir);
-        // The implementing phase has a model ("dispatch exec -a codex"), so ## Completion is
+        // The implementing phase has a model ("dispatch exec -a codex"), so # Completion is
         // omitted — the orchestrator advances the task, not the sub-agent.
-        let expected = "# Agira Task Prompt\n\n## Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n## Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n## Phase Duty\nImplement the task.\n\n## Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n## Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block task-109 --reason \"<questions>\"`";
+        let expected = "# Task\n- ID: task-109\n- Title: inject previous review feedback\n- Current phase: implementing\n- Agent role: dispatch exec -a codex\n\n# Description\nImplement retry feedback in the todo prompt so later implementers can see the most recent reviewer rejection and inspect previously written attachment evidence before changing code.\n\n# Phase Duty\nImplement the task.\n\n# Attachments\nSave evidence files (screenshots, recordings, test output) to:\n/tmp/agira-state/attachments/task-109/\nCreate the directory if it does not exist. Reference saved files in your --artifact text.\n\n# Checkpoints\nNEVER ask the user a question in-session. If a user decision is required to proceed, block the task instead of proceeding or guessing. Blocking is the correct escalation path whenever a checkpoint is needed, not a last resort. Write each question clearly on its own line in the reason, then stop. Run:\n`agira task block task-109 --reason \"<questions>\"`";
 
         assert_eq!(output, expected);
         assert!(!output.contains("## Previous Review Feedback"));
         assert!(!output.contains("Read any existing files under"));
         assert!(
-            !output.contains("## Completion"),
+            !output.contains("# Completion"),
             "dispatched phase must not expose Completion"
         );
     }
@@ -999,8 +999,8 @@ mod tests {
         }
     }
 
-    /// Phase with a model (dispatched to sub-agent): ## Completion must be absent.
-    /// ## Checkpoints and ## Phase Duty must still be present.
+    /// Phase with a model (dispatched to sub-agent): # Completion must be absent.
+    /// # Checkpoints and # Phase Duty must still be present.
     #[test]
     fn prompt_with_model_omits_completion_section() {
         let config = config_with_model();
@@ -1010,20 +1010,20 @@ mod tests {
         let output = format_task_prompt_output(&task, &config, state_dir);
 
         assert!(
-            !output.contains("## Completion"),
+            !output.contains("# Completion"),
             "Completion must be absent when phase has a model"
         );
         assert!(
-            output.contains("## Checkpoints"),
+            output.contains("# Checkpoints"),
             "Checkpoints must still be present"
         );
         assert!(
-            output.contains("## Phase Duty"),
+            output.contains("# Phase Duty"),
             "Phase Duty must still be present"
         );
     }
 
-    /// Phase without a model (direct human/CLI execution): ## Completion must be present.
+    /// Phase without a model (direct human/CLI execution): # Completion must be present.
     #[test]
     fn prompt_without_model_includes_completion_section() {
         let config = config_without_model();
@@ -1033,7 +1033,7 @@ mod tests {
         let output = format_task_prompt_output(&task, &config, state_dir);
 
         assert!(
-            output.contains("## Completion"),
+            output.contains("# Completion"),
             "Completion must be present when phase has no model"
         );
         assert!(
